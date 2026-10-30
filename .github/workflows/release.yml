@@ -1,0 +1,57 @@
+name: Release
+
+# A tag names a version of the recovery for this phone: the image is built from
+# it and published, and the update page of every phone running an older build
+# sees it. The stock recovery the image rides on is not in this repository, so
+# the workflow takes it from the STOCK_RECOVERY_URL secret, checked against
+# STOCK_RECOVERY_SHA256 when that is set as well.
+on:
+  push:
+    tags: ["bronco-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  image:
+    name: Build and publish the recovery image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+
+      - name: Take the stock recovery the image rides on
+        env:
+          URL: ${{ secrets.STOCK_RECOVERY_URL }}
+          SHA256: ${{ secrets.STOCK_RECOVERY_SHA256 }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::error::set STOCK_RECOVERY_URL in the repository secrets: the stock recovery is Motorola's to hand out"
+            exit 1
+          fi
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/stock-recovery.img" "$URL"
+          if [ -n "$SHA256" ]; then
+            echo "$SHA256  $RUNNER_TEMP/stock-recovery.img" | sha256sum -c -
+          fi
+
+      - name: Build
+        run: scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"
+
+      - name: Publish the image and its sums
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp out/skyward-bronco.img.sha256 SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" \
+            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}."
+          gh release upload "$TAG" out/skyward-bronco.img SHA256SUMS --clobber
