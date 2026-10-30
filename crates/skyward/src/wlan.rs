@@ -718,8 +718,8 @@ const KEPT: (&str, &str) = ("wlan", "wpa_supplicant.conf");
 /// are kept that can hold it, and a home in memory until then, which forgets
 /// on a restart.
 fn settings_dir() -> (PathBuf, bool) {
-    for root in crate::kept::places() {
-        let kept = crate::kept::folder(root, KEPT.0);
+    for root in skyward_sys::kept::places() {
+        let kept = skyward_sys::kept::folder(root, KEPT.0);
         // The supplicant runs as the wifi user, so it has to be able to write
         // its configuration back here; this phone's own build of it dies
         // rather than saying it cannot.

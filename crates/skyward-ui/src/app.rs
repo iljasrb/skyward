@@ -2135,6 +2135,15 @@ const MIN_BRIGHTNESS: f32 = 0.02;
 const SLIDER_STEP: f32 = 0.1;
 /// Where both sliders start: one step of the keys from their left end.
 pub const SLIDER_START: f32 = SLIDER_STEP;
+/// `value` as a share the sliders can hold: one written outside them, or
+/// not written at all, comes as `fallback`.
+fn clamp_share(value: f32, fallback: f32) -> f32 {
+    match value.is_finite() {
+        true => value.clamp(0.0, 1.0),
+        false => fallback,
+    }
+}
+
 /// How long changed settings wait after the last change before they are
 /// written to the owner's storage, so a slider dragged across the page is
 /// written once.
@@ -2767,6 +2776,16 @@ impl App {
     /// before the storage opened is never overruled.
     pub fn set_saved_settings(&mut self, saved: SavedSettings) {
         let start = SavedSettings::default();
+        // A file that was cut short, or edited by hand, must not take the
+        // pages down with it: every value is brought into the range the pages
+        // can show before it is used, and one that cannot be is left out.
+        let saved = SavedSettings {
+            brightness: clamp_share(saved.brightness, start.brightness),
+            vibration: clamp_share(saved.vibration, start.vibration),
+            screen_off: if saved.screen_off < SCREEN_OFF.len() { saved.screen_off } else { start.screen_off },
+            time_zone: if saved.time_zone < TIME_ZONES.len() { saved.time_zone } else { start.time_zone },
+            ..saved
+        };
         if self.state.lang == start.lang {
             self.state.lang = saved.lang;
         }
@@ -7365,6 +7384,32 @@ mod tests {
         app.touch(Touch::Down(x, y), &f, 1000);
         app.touch(Touch::Move(x, y + t.m.dp(30.0)), &f, 1050);
         assert!(app.row_press.is_none());
+    }
+
+    #[test]
+    fn settings_out_of_range_are_brought_back_into_it_instead_of_taking_the_pages_down() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.frame(&f, &i);
+        let nonsense = SavedSettings {
+            lang: Lang::En,
+            dark: true,
+            brightness: 17.5,
+            screen_off: 99,
+            time_zone: 42,
+            vibrate: false,
+            vibration: f32::NAN,
+            file_transfer: true,
+            wlan: true,
+        };
+        app.set_saved_settings(nonsense);
+        assert_eq!(app.state.screen_off, SavedSettings::default().screen_off, "a screen-off time that is not one");
+        assert_eq!(app.state.time_zone, SavedSettings::default().time_zone, "a time zone that is not one");
+        assert_eq!(app.state.brightness, 1.0, "a brightness over the slider's end");
+        assert_eq!(app.state.vibration, SavedSettings::default().vibration, "a vibration that is not a number");
+        // The pages still draw, which is what a panic here would have stopped.
+        app.frame(&f, &i);
+        assert_eq!(app.state.lang, Lang::En, "and what was sound is still taken");
     }
 
     #[test]

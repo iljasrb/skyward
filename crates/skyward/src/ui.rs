@@ -67,11 +67,12 @@ const STORAGE_LOGS: &str = "Skyward/logs";
 /// where that is.
 const SETTINGS: (&str, &str) = ("settings", "values");
 
-/// Read the settings the previous boots kept, once the owner's storage has
-/// opened; a key the file does not name stays at the value it starts at.
-fn saved_settings() -> SavedSettings {
+/// Read the settings the boots before kept, and where they were found, so
+/// that they go back there; a key the file does not name stays at the value
+/// it starts at.
+fn saved_settings() -> (SavedSettings, Option<PathBuf>) {
     let mut saved = SavedSettings::default();
-    let Ok(Some(text)) = crate::kept::read(SETTINGS.0, SETTINGS.1) else { return saved };
+    let Some((path, text)) = skyward_sys::kept::read(SETTINGS.0, SETTINGS.1) else { return (saved, None) };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim();
@@ -99,7 +100,7 @@ fn saved_settings() -> SavedSettings {
             _ => {}
         }
     }
-    saved
+    (saved, Some(path))
 }
 
 fn parse_flag(value: &str) -> Option<bool> {
@@ -113,7 +114,7 @@ fn parse_flag(value: &str) -> Option<bool> {
 /// Write the settings as they stand, for the boots to come; a storage that
 /// cannot be written keeps them only until it opens, and this says why
 /// rather than failing.
-fn write_settings(settings: &SavedSettings) {
+fn write_settings(settings: &SavedSettings, was: Option<&Path>) {
     let language = match settings.lang {
         Lang::Hans => "hans",
         Lang::Hant => "hant",
@@ -124,7 +125,7 @@ fn write_settings(settings: &SavedSettings) {
         settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
         settings.file_transfer, settings.wlan
     );
-    match crate::kept::write(SETTINGS.0, SETTINGS.1, &text) {
+    match skyward_sys::kept::write(SETTINGS.0, SETTINGS.1, &text, was) {
         Ok(path) => {
             let _ = skyward_sys::kmsg(&format!("the settings are kept in {}", path.display()));
         }
@@ -1319,7 +1320,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // What the boots before kept: brightness, the theme, the language and
     // the rest are back before the first frame is drawn, and a WLAN that was
     // on is brought back up by itself.
-    let saved = saved_settings();
+    let (saved, settings_where) = saved_settings();
     let wlan_was_on = saved.wlan;
     app.set_saved_settings(saved);
     if wlan_was_on {
@@ -1753,7 +1754,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // What the user changed goes to the partition the phone keeps it on
         // a moment after the last change.
         if let Some(settings) = app.settings_due(now) {
-            write_settings(&settings);
+            write_settings(&settings, settings_where.as_deref());
         }
         let mut checked = false;
         if let Some(c) = &checker {
