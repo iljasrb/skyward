@@ -70,6 +70,17 @@ falls back to the default instead of failing. `wlan/wpa_supplicant.conf` beside
 it belongs to the supplicant, which writes back the network it joined — the one
 joined last, and it joins it again on the next boot.
 
+## What a restore must not touch
+
+`persist` is left out of the baseband set the backup and restore page takes,
+even though it holds the recovery's own remembered settings: it also holds the
+secure world's non-volatile storage — the keymaster and gatekeeper state the
+screen lock is bound to. Restoring an older copy of it makes the trustlet
+derive a proof the data partition did not record, and the phone's PIN stops
+matching: `GatekeeperHalDevice: resp->status: -30`, `cmd lock_settings verify`
+says `didn't match`, and nothing but a new credential (or a reset) recovers it.
+This happened on hardware once, and once was enough.
+
 ## What this fork changes
 
 - **The ThinkPhone's own fixes**, each one written against the phone: the

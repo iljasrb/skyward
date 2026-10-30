@@ -307,7 +307,14 @@ strength = { lightest = 0.5, strongest = 1.0 }
 # The baseband's own copy of the phone's identity and the sensors' calibration.
 # `fsg` is kept per slot on this phone; the other slot's is the same
 # partition's twin, and the one it runs from is the one backed up.
-efs = ["modemst1", "modemst2", "fsg", "fsc", "persist", "devinfo", "utags"]
+#
+# `persist` is deliberately not here. It holds the secure world's own
+# non-volatile storage -- the keymaster and gatekeeper state the screen lock
+# is bound to -- so restoring an older copy of it leaves the phone's PIN
+# unverifiable: the trustlet derives a different proof than the one the data
+# partition recorded. A backup of it is worth taking by hand, with a ring of
+# salt; restoring one is not a thing to do by accident.
+efs = ["modemst1", "modemst2", "fsg", "fsc", "devinfo", "utags"]
 data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
 
 # Where the phone's own programs keep logs and crash records in the data
