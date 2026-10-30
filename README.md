@@ -19,8 +19,9 @@ Rust — for one phone, the 2023 Motorola ThinkPhone (`bronco`). Verified on A16
 
 The recovery rides on the phone's own recovery ramdisk: its init, adbd,
 fastbootd, SELinux policy and libraries stay, and only `system/bin/recovery`
-becomes Skyward. That base is Motorola's to hand out, so it is not here — take
-`recovery_b` out of a stock firmware package:
+becomes Skyward. That base is not in this repository — use the recovery image
+of the ROM the phone runs (`out/target/product/bronco/recovery.img` from a
+LineageOS or Infinity-X build), or `recovery_b` out of a stock firmware package:
 
 ```sh
 rustup target add aarch64-linux-android
