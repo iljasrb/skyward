@@ -32,7 +32,8 @@ use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
     FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS, INSTALL_UNFINISHED, USB_DRIVE,
+    RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
+    INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang, Surface};
@@ -61,6 +62,85 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 /// storage the others do.
 const TMP_LOGS: &str = "/tmp/skyward-logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
+
+/// Where the settings the user changes are kept: the owner's storage, beside
+/// the logs, where they survive a restart of the recovery and show in the
+/// file manager too.
+const SETTINGS_FILE: &str = "Skyward/settings";
+
+/// Read the settings the previous boots kept, once the owner's storage has
+/// opened; a key the file does not name stays at the value it starts at.
+fn saved_settings() -> SavedSettings {
+    let mut saved = SavedSettings::default();
+    let path = Path::new(skyward_crypto::data::SDCARD).join(SETTINGS_FILE);
+    let Ok(text) = fs::read_to_string(&path) else { return saved };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let value = value.trim();
+        let on = |at: &mut bool| {
+            if let Some(v) = parse_flag(value) {
+                *at = v;
+            }
+        };
+        match key.trim() {
+            "language" => {
+                saved.lang = match value {
+                    "hant" => Lang::Hant,
+                    "en" => Lang::En,
+                    _ => Lang::Hans,
+                }
+            }
+            "dark" => on(&mut saved.dark),
+            "vibrate" => on(&mut saved.vibrate),
+            "file_transfer" => on(&mut saved.file_transfer),
+            "wlan" => on(&mut saved.wlan),
+            "brightness" => saved.brightness = value.parse().unwrap_or(saved.brightness),
+            "vibration" => saved.vibration = value.parse().unwrap_or(saved.vibration),
+            "screen_off" => saved.screen_off = value.parse().unwrap_or(saved.screen_off),
+            "time_zone" => saved.time_zone = value.parse().unwrap_or(saved.time_zone),
+            _ => {}
+        }
+    }
+    saved
+}
+
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "true" | "on" => Some(true),
+        "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Write the settings as they stand, for the boots to come; a storage that
+/// cannot be written keeps them only until it opens, and this says why
+/// rather than failing.
+fn write_settings(settings: &SavedSettings) {
+    let language = match settings.lang {
+        Lang::Hans => "hans",
+        Lang::Hant => "hant",
+        Lang::En => "en",
+    };
+    let text = format!(
+        "language = {language}\ndark = {}\nbrightness = {:.3}\nscreen_off = {}\ntime_zone = {}\nvibrate = {}\nvibration = {:.3}\nfile_transfer = {}\nwlan = {}\n",
+        settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
+        settings.file_transfer, settings.wlan
+    );
+    let kept = (|| -> Result<()> {
+        let dir = Path::new(skyward_crypto::data::SDCARD).join("Skyward");
+        fs::create_dir_all(&dir).with_context(|| format!("make {}", dir.display()))?;
+        let path = Path::new(skyward_crypto::data::SDCARD).join(SETTINGS_FILE);
+        fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    })();
+    match kept {
+        Ok(()) => {
+            let _ = skyward_sys::kmsg("the settings are kept where the owner's storage keeps them");
+        }
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("the settings are not kept: {e:#}"));
+        }
+    }
+}
 
 /// The folder of internal storage the system saves its own screenshots in,
 /// which the gallery shows as its screenshots, and where a screenshot waits
@@ -1245,6 +1325,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         None => None,
     };
     let mut scanned_at = Instant::now();
+    // Whether the settings the owner's storage keeps have been read this
+    // boot, which waits until it opens.
+    let mut settings_read = false;
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1663,6 +1746,25 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if app.screen() == Screen::Wlan && wlan_on && scanned_at.elapsed() >= SCAN_EVERY {
             scanned_at = Instant::now();
             wlan_worker(&wlan)?.send(wlan::Command::Scan);
+        }
+        // The settings the owner's storage keeps are read the moment it is
+        // open, and written back a moment after the user stops changing
+        // them.
+        if !settings_read && app.state.data.storage_open() {
+            settings_read = true;
+            let saved = saved_settings();
+            let wlan_saved = saved.wlan;
+            app.set_saved_settings(saved);
+            if wlan_saved && app.state.wlan.as_ref().is_some_and(|w| w.power != WlanPower::On) {
+                if let Some(w) = &wlan {
+                    w.send(wlan::Command::On);
+                }
+            }
+        }
+        if app.state.data.storage_open() {
+            if let Some(settings) = app.settings_due(now) {
+                write_settings(&settings);
+            }
         }
         let mut checked = false;
         if let Some(c) = &checker {
