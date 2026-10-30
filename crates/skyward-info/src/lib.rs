@@ -13,6 +13,17 @@ use std::str::FromStr;
 /// Version of this build, shown on the About page.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// When this build was made, as the time it was made in UTC
+/// (`2026-10-30T19:37:12Z`), or `unknown` when the build did not stamp it.
+///
+/// A release says when it was published in the same way, and two such stamps
+/// compare as they are written, which is all the update page needs: nothing
+/// here parses a time.
+pub const BUILD: &str = match option_env!("SKYWARD_BUILD") {
+    Some(stamp) => stamp,
+    None => "unknown",
+};
+
 const CPU: &str = "/sys/devices/system/cpu";
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 const SYS_BLOCK: &str = "/sys/class/block";
