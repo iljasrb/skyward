@@ -38,6 +38,10 @@ jobs:
           grep -E '  recovery\.img$' SHA256SUMS | sed 's/  recovery\.img$/  stock-recovery.img/' | sha256sum -c -
 
       - name: Build
+        # Stamped with the tag it is built from, which is what the update page
+        # of a phone on that build compares against the newest release.
+        env:
+          SKYWARD_BUILD: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"
 
       - name: Publish the image and its sums

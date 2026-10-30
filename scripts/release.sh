@@ -3,7 +3,12 @@
 # update page reads: the newest release that carries the phone's image is the
 # one it offers.
 #
+#   SKYWARD_BUILD=bronco-20261101 scripts/build-bronco.sh --stock ... --out ...
 #   scripts/release.sh /path/to/skyward-bronco.img --tag bronco-20261101
+#
+# The image names the tag as its build stamp, which is how a phone running it
+# knows the release it came from; a build with no tag to name is stamped with
+# the time it was made, and is offered the newest release.
 #   scripts/release.sh ... --dry-run          # print what would be published
 #
 # Needs a token with `contents: write` in GITHUB_TOKEN (a release is created
