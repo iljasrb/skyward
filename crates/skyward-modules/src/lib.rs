@@ -23,6 +23,10 @@ pub fn source_dir(source: &str) -> Result<PathBuf> {
 /// loaded. Returns the files loaded, dependencies first.
 pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
     let mut loaded = Vec::new();
+    // Two programs of the same phone share most of their dependencies, and
+    // each name brings its own closure: what one name loaded is not loaded
+    // again for the next.
+    let mut had = BTreeSet::new();
     for name in names {
         let file = format!("{name}.ko");
         let dir = dirs
@@ -31,6 +35,9 @@ pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
             .ok_or_else(|| anyhow!("{file} is in none of {dirs:?}"))?;
         let graph = parse_dep(dir)?;
         for m in graph.load_order(std::slice::from_ref(&file)) {
+            if !had.insert(m.clone()) {
+                continue;
+            }
             let path = graph
                 .resolve_path(&m)
                 .ok_or_else(|| anyhow!("{m} is listed in {}/modules.dep but missing", dir.display()))?;
