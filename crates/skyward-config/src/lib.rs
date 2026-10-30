@@ -152,8 +152,8 @@ pub struct Firmware {
     pub partition: Option<String>,
 }
 
-/// The phone maker's update server, which the stock updater asks about the
-/// installed system.
+/// Where this phone's recovery images are published, which the update page
+/// asks for a newer one than the build it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Update {
     /// The fork whose releases carry this phone's recovery images, as
