@@ -15,6 +15,7 @@ mod android {
 
     const GET_FREE: u32 = 0x4C82;
     const CONFIGURE: u32 = 0x4C0A;
+    const CLEAR: u32 = 0x4C01;
 
     /// The device only ever reads. It stays pointed at the file until the
     /// recovery ends, which is as long as anything mounted from it lasts.
@@ -72,6 +73,16 @@ mod android {
             return Err(std::io::Error::last_os_error()).with_context(|| format!("point {} at {}", path.display(), file.display()));
         }
         Ok(path)
+    }
+
+    /// Give the device back, for one whose filesystem could not be read: a
+    /// device that has had a mount asked of it takes no other.
+    pub fn detach(device: &Path) -> Result<()> {
+        let file = File::options().write(true).open(device).with_context(|| format!("open {}", device.display()))?;
+        if unsafe { libc::ioctl(file.as_raw_fd(), CLEAR as libc::Ioctl) } < 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| format!("give {} back", device.display()));
+        }
+        Ok(())
     }
 
     /// Where the kernel put the loop device it just handed out: Android
