@@ -17,6 +17,12 @@ use tar::{Archive, Builder, EntryType, Header};
 
 /// How the archive's extended headers name what a tar header leaves out.
 const XATTR: &str = "SCHILY.xattr.";
+
+/// The key an attribute whose value is not text goes under, its value in
+/// hex: an extended header is a run of lines, and a value with a newline in
+/// it -- `security.sehash`, a raw hash the kernel stamps on what it has
+/// labelled -- cannot be one of them.
+const XATTR_HEX: &str = "SKYWARD.xattr-hex.";
 const PROJECT: &str = "SKYWARD.project";
 const INHERITS: &str = "SKYWARD.project-inherit";
 const KEY_ROOT: &str = "SKYWARD.key-root";
@@ -410,13 +416,18 @@ fn remove_any(path: &Path) -> Result<()> {
 
 fn records(entry: &mut tar::Entry<impl Read>) -> Result<Records> {
     let mut r = Records::default();
-    let Some(extensions) = entry.pax_extensions()? else { return Ok(r) };
-    for ext in extensions {
-        let ext = ext?;
+    // An extended header written by something else may hold what this reader
+    // cannot parse -- one made before values that are not text went in hex,
+    // above all. Its records are lost, and the files are not.
+    let Ok(Some(extensions)) = entry.pax_extensions() else { return Ok(r) };
+    for ext in extensions.flatten() {
         let key = ext.key()?;
         let value = ext.value_bytes();
         if let Some(name) = key.strip_prefix(XATTR) {
             r.xattrs.push((name.to_string(), value.to_vec()));
+        } else if let Some(name) = key.strip_prefix(XATTR_HEX) {
+            let bytes = unhex(std::str::from_utf8(value)?).with_context(|| format!("read the attribute {name}, kept in hex"))?;
+            r.xattrs.push((name.to_string(), bytes));
         } else if key == PROJECT {
             r.project = Some(std::str::from_utf8(value)?.parse()?);
         } else if key == INHERITS {
@@ -428,6 +439,15 @@ fn records(entry: &mut tar::Entry<impl Read>) -> Result<Records> {
         }
     }
     Ok(r)
+}
+
+/// The bytes a hex string stands for; an error where it is not one.
+fn unhex(text: &str) -> Result<Vec<u8>> {
+    ensure!(text.len().is_multiple_of(2), "a hex string is in pairs");
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).with_context(|| format!("read {text} as hex")))
+        .collect()
 }
 
 /// A time as the extended header writes it: seconds, and nanoseconds after
@@ -530,7 +550,14 @@ fn beyond(path: &Path, meta: &fs::Metadata) -> Result<Vec<(String, Vec<u8>)>> {
             return Err(io::Error::last_os_error()).with_context(|| format!("read its attribute {name:?}"));
         }
         value.truncate(len as usize);
-        out.push((format!("{XATTR}{}", String::from_utf8_lossy(raw)), value));
+        let name = String::from_utf8_lossy(raw);
+        match std::str::from_utf8(&value) {
+            Ok(_) => out.push((format!("{XATTR}{name}"), value)),
+            Err(_) => {
+                let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
+                out.push((format!("{XATTR_HEX}{name}"), hex.into_bytes()));
+            }
+        }
     }
     if meta.is_file() || meta.is_dir() {
         let fsx = fs_attributes(path)?;
@@ -653,6 +680,57 @@ mod tests {
         }
         fs::create_dir_all(&at).unwrap();
         at
+    }
+
+    #[test]
+    fn an_attribute_kept_in_hex_comes_back_as_the_bytes_it_was() {
+        assert_eq!(unhex("00ff10").unwrap(), [0x00, 0xff, 0x10]);
+        assert!(unhex("0f0").is_err(), "half a byte");
+        assert!(unhex("zz").is_err(), "not hex at all");
+        // What `security.sehash` holds, which is why any of this exists.
+        assert_eq!(unhex("7301b8c83dda7d7040400a2f").unwrap(), b"s\x01\xb8\xc8=\xda}p@@\n/");
+    }
+
+    /// An archive holding an extended header the tar reader cannot parse, of
+    /// the kind written before values that are not text went in hex: its
+    /// files come back all the same.
+    #[test]
+    fn a_pax_header_that_does_not_parse_does_not_take_the_files_with_it() {
+        let at = scratch("pax");
+        let mut bytes = Vec::new();
+        {
+            let mut b = Builder::new(&mut bytes);
+            // A value with a newline in it, its record's length covering the
+            // whole of it, so what parses the header as lines cannot split it.
+            let record = [b"SCHILY.xattr.security.sehash=".as_slice(), b"\x01\x02\n\x03"].concat();
+            let mut len = record.len() + 5;
+            loop {
+                let head = format!("{len} ");
+                if head.len() + record.len() + 1 == len {
+                    break;
+                }
+                len = head.len() + record.len() + 1;
+            }
+            let body = [format!("{len} ").into_bytes(), record, b"\n".to_vec()].concat();
+            let mut header = Header::new_ustar();
+            header.set_entry_type(EntryType::XHeader);
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            b.append_data(&mut header, "PaxHeaders/bad", io::Cursor::new(body)).unwrap();
+            let mut plain = Header::new_ustar();
+            plain.set_entry_type(EntryType::Regular);
+            plain.set_size(3);
+            plain.set_mode(0o644);
+            plain.set_uid(1000);
+            plain.set_gid(1000);
+            plain.set_mtime(1_700_000_000);
+            b.append_data(&mut plain, "kept", io::Cursor::new(b"abc".to_vec())).unwrap();
+            b.finish().unwrap();
+        }
+        let root = at.join("out");
+        fs::create_dir_all(&root).unwrap();
+        unpack(io::Cursor::new(bytes), &root, &Skipped::new(&[]), &AtomicBool::new(false), &mut |_| {}).expect("the files are restored");
+        assert_eq!(fs::read(root.join("kept")).unwrap(), b"abc");
     }
 
     fn fifo(path: &Path) {
