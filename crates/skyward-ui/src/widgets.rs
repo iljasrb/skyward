@@ -2190,17 +2190,45 @@ const NOTES_STEP: f32 = 38.0;
 const NOTES_PITCH: f32 = 18.0;
 
 /// A card that says something the user has to weigh before going on, in the
-/// colours the pages keep for what would cost them something: a warning is
-/// read before the choices under it, not after.
+/// colours the pages keep for what would cost them something: an exclamation
+/// mark, and beside it the words, together in the middle of the card. A
+/// warning is read before the choices under it, not after.
 pub fn warning(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) -> f32 {
     let m = &t.m;
     let (left, right) = (m.margin, m.w as f32 - m.margin);
-    let (x, px, pad, pitch) = (left + m.inner, m.dp(NOTES_PX), m.dp(NOTES_PAD) * 0.6, m.dp(NOTES_PITCH));
-    let lines = wrap(c, &f.body, text, px, right - m.inner - x);
-    let height = pad * 2.0 + pitch * lines.len() as f32;
+    let inner = left + m.inner;
+    let px = m.dp(NOTES_PX);
+    let pitch = m.dp(NOTES_PITCH);
+    let pad = m.dp(NOTES_PAD) * 0.6;
+    // The mark keeps a column of its own, and the words the rest; what the
+    // words are laid out in is centred in that rest, so a short warning sits
+    // in the middle of its card and a long one fills it.
+    let mark = m.dp(19.0);
+    let gap = m.dp(11.0);
+    let column = inner + mark + gap;
+    let lines = wrap(c, &f.body, text, px, right - m.inner - column);
+    // The words are centred on the card, and the mark goes just before them;
+    // where they are too wide for that, they start after it instead.
+    let widest = lines.iter().map(|line| c.text_width(&f.body, line, px)).fold(0.0_f32, f32::max);
+    let x = ((left + right) / 2.0 - widest / 2.0).max(column);
+    let mark_x = (x - gap - mark).max(inner);
+    // The mark sits on the card's middle line, and the words are centred on
+    // it by the ink their own glyphs take: a line drawn by its centre is
+    // placed by a Chinese character's box, which Latin sits high in, and the
+    // room below would be the odd one.
+    let (box_top, box_bottom) = f.body.ink(px);
+    let (ink_top, ink_bottom) = f.body.ink_v(text, px).unwrap_or((box_top, box_bottom));
+    let nudge = (box_top + box_bottom) / 2.0 - (ink_top + ink_bottom) / 2.0;
+    let steps = lines.len().saturating_sub(1) as f32;
+    let words = steps * pitch + (ink_bottom - ink_top);
+    let height = words.max(mark) + pad * 2.0;
     c.fill_round_rect(left, top, right - left, height, m.card_radius, t.pal.danger_soft);
-    for (k, line) in lines.iter().enumerate() {
-        c.text_vc(&f.body, line, x, top + pad + pitch * k as f32, px, t.pal.danger, None);
+    let middle = top + height / 2.0;
+    let mark_w = c.text_width(&f.heading, "!", mark);
+    c.text_vc(&f.heading, "!", mark_x + (mark - mark_w) / 2.0, middle, mark, t.pal.danger, None);
+    let first = middle - steps * pitch / 2.0 + nudge;
+    for (k, l) in lines.iter().enumerate() {
+        c.text_vc(&f.body, l, x, first + pitch * k as f32, px, t.pal.danger, None);
     }
     top + height
 }

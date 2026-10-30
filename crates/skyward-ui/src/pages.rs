@@ -1660,12 +1660,13 @@ pub fn backup(cx: &Ctx) -> Frame {
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
-    // Said before the choices, not after them: what a backup cannot carry
-    // decides when one is worth taking.
+    // Said above the choices, not in the notes under them: a backup holds
+    // nothing of the phone's secure storage, so the time to take one is
+    // while no screen lock is set.
     let sound = l.pick([
-        "最好在设置锁屏密码之前备份。备份不含手机安全世界的存储（锁屏密码绑定于此），而带回旧的一份会让密码无法再验证，且在设有锁屏时无法挽回。",
-        "最好在設定螢幕鎖定密碼之前備份。備份不含手機安全世界的儲存空間（螢幕鎖定密碼綁定於此），而帶回舊的一份會讓密碼無法再驗證，且在設有鎖定時無法挽回。",
-        "Best taken before a screen lock is set. A backup carries nothing of the phone's secure storage, which the lock is bound to, and an older copy of that storage can neither be restored under a lock nor undone once it is.",
+        "请在没有设置锁屏密码时进行备份，这样还原时手机才不会无法解锁。",
+        "請在沒有設定螢幕鎖定密碼時進行備份，這樣還原時手機才不會無法解鎖。",
+        "Make the backup with no screen lock set, so that restoring it cannot leave the phone locked out.",
     ]);
     let y = widgets::warning(&mut c, t, f, top, sound) + t.m.dp(12.0);
     let y = widgets::section_first(&mut c, t, f, y, l.pick(["备份内容", "備份內容", "Contents"]));

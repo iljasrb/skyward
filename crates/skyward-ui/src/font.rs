@@ -149,6 +149,23 @@ impl Face {
         span
     }
 
+    /// Where the ink of `text` set at `em_px` starts and ends above and below
+    /// the baseline (negative is above), the glyphs' outlines taken together;
+    /// none while there is nothing in it that draws.
+    pub fn ink_v(&self, text: &str, em_px: f32) -> Option<(f32, f32)> {
+        let mut span: Option<(f32, f32)> = None;
+        for ch in text.chars() {
+            let glyph = self.font.glyph_id(ch).with_scale_and_position(self.scale(em_px), ab_glyph::point(0.0, 0.0));
+            let Some(outline) = self.font.outline_glyph(glyph) else { continue };
+            let b = outline.px_bounds();
+            span = Some(match span {
+                None => (b.min.y, b.max.y),
+                Some((top, bottom)) => (top.min(b.min.y), bottom.max(b.max.y)),
+            });
+        }
+        span
+    }
+
     fn bounds(&self, ch: char, em_px: f32) -> (f32, f32) {
         let glyph = self.font.glyph_id(ch).with_scale_and_position(self.scale(em_px), ab_glyph::point(0.0, 0.0));
         let og = self.font.outline_glyph(glyph).unwrap_or_else(|| panic!("font has no outline for {ch:?}"));
