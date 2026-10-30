@@ -64,7 +64,7 @@ fn note(read: &mut Reader) -> Result<Token> {
     if let Err(e) = status::ok(read) {
         return Err(match status::refused_with(&e) {
             Some(RETRY_TIMEOUT) => e.context("the phone is holding off further tries"),
-            Some(_) => e.context("the secure world does not recognise that credential"),
+            Some(code) => e.context(format!("the secure world does not recognise that credential ({code})")),
             None => e.context("have the secure world check the credential"),
         });
     }
@@ -120,7 +120,7 @@ fn hardware_note(read: &mut Answer) -> Result<Token> {
     match said {
         RIGHT | RIGHT_BUT_RENEW => {}
         HOLDING_OFF => bail!("the phone is holding off further tries for another {} seconds", (wait + 999) / 1000),
-        _ => bail!("the secure world does not recognise that credential"),
+        _ => bail!("the secure world does not recognise that credential ({said})"),
     }
     if length == 0 {
         bail!("the secure world took the credential but wrote no note for the key service");
