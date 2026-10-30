@@ -330,12 +330,53 @@ impl Station {
             Ok(r) => {
                 self.running = Some(r);
                 self.state.power = Power::On;
+                self.resume();
                 self.command(Command::Scan);
             }
             Err(e) => {
                 let _ = skyward_sys::kmsg(&format!("the WLAN did not come up: {e:#}"));
                 self.state.power = Power::Failed(format!("{e:#}"));
             }
+        }
+    }
+
+    /// The network the session before joined and the supplicant kept: it is
+    /// chosen again, so a recovery that comes back up is on the network it
+    /// left without the user typing the password again. Choosing it makes the
+    /// supplicant report the connection the way it reports one asked for
+    /// here, which is what asks for an address and shows how it goes.
+    fn resume(&mut self) {
+        let mut joined = None;
+        let mut lost = None;
+        if let Some(r) = &self.running {
+            match r.control.ask("LIST_NETWORKS") {
+                Ok(list) => {
+                    if let Some(kept) = supplicant::remembered(&list) {
+                        let security = r
+                            .control
+                            .ask(&format!("GET_NETWORK {} key_mgmt", kept.id))
+                            .map(|key| supplicant::security(&key))
+                            .unwrap_or(supplicant::Security::Psk);
+                        match r.control.order(&format!("SELECT_NETWORK {}", kept.id)) {
+                            Ok(()) => {
+                                let _ = skyward_sys::kmsg(&format!("joining {} again, as it was joined last", String::from_utf8_lossy(&kept.ssid)));
+                                joined = Some(Joined {
+                                    name: String::from_utf8_lossy(&kept.ssid).into_owned(),
+                                    ssid: kept.ssid,
+                                    security,
+                                    stage: Stage::Joining,
+                                });
+                            }
+                            Err(e) => lost = Some(e),
+                        }
+                    }
+                }
+                Err(e) => lost = Some(e),
+            }
+        }
+        match lost {
+            Some(e) => self.lost(e),
+            None => self.state.joined = joined,
         }
     }
 
@@ -686,6 +727,14 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
             ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
             thread::sleep(Duration::from_millis(100));
         }
+    }
+    // The node is not the interface yet: the driver takes it down and up
+    // again as the firmware it starts with comes up, and until it settles
+    // even its address cannot be read.
+    let until = Instant::now() + INTERFACE_WAIT;
+    while let Err(e) = iface::hardware_address(&cfg.interface) {
+        ensure!(Instant::now() < until, "{} is there but cannot be read in {} seconds: {e}", cfg.interface, INTERFACE_WAIT.as_secs());
+        thread::sleep(Duration::from_millis(100));
     }
     iface::set_up(&cfg.interface, true)
 }

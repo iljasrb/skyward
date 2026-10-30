@@ -148,6 +148,41 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A network the supplicant kept from an earlier session: its number and the
+/// name it is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remembered {
+    pub id: u32,
+    pub ssid: Vec<u8>,
+}
+
+/// The first network `LIST_NETWORKS` names, whose first line is the heading;
+/// none while it knows of none.
+pub fn remembered(list: &str) -> Option<Remembered> {
+    list.lines().skip(1).find_map(|line| {
+        // id, the name as it is written, the access point or `any`, then
+        // the flags, all but the last separated by tabs.
+        let mut columns = line.split('\t');
+        let id = columns.next()?.trim().parse().ok()?;
+        let ssid = columns.next()?.as_bytes().to_vec();
+        (!ssid.is_empty()).then_some(Remembered { id, ssid })
+    })
+}
+
+/// How a network is protected, from the `key_mgmt` the supplicant kept for
+/// it, such as `WPA-PSK WPA-PSK-SHA256` or `SAE`.
+pub fn security(key_mgmt: &str) -> Security {
+    let words: Vec<&str> = key_mgmt.split_whitespace().collect();
+    let has = |word: &str| words.iter().any(|w| w.eq_ignore_ascii_case(word));
+    match (has("WPA-PSK"), has("SAE")) {
+        (true, true) => Security::PskSae,
+        (false, true) => Security::Sae,
+        (true, false) => Security::Psk,
+        _ if has("OWE") => Security::Owe,
+        _ => Security::Open,
+    }
+}
+
 /// What sets up a network with id `id` to join it: its name, how it is
 /// protected and its password. The name and a WPA3 password go as hex,
 /// which takes any byte; a WPA2 password goes in quotes, which the
@@ -340,6 +375,30 @@ mod control {
     /// one stays out of the log.
     fn first_word(command: &str) -> &str {
         command.split(' ').next().unwrap_or(command)
+    }
+}
+
+#[cfg(test)]
+mod remembered_tests {
+    use super::*;
+
+    #[test]
+    fn the_first_network_listed_is_the_one_remembered() {
+        let list = "network id / ssid / bssid / flags\n0\tmarie 5G\tany\t[ENABLED,CURRENT]\n1\tlab\tany\t[DISABLED]\n";
+        assert_eq!(remembered(list), Some(Remembered { id: 0, ssid: b"marie 5G".to_vec() }));
+        assert_eq!(remembered("network id / ssid / bssid / flags\n"), None, "nothing kept");
+        assert_eq!(remembered(""), None);
+        assert_eq!(remembered("not a line the supplicant writes"), None);
+        assert_eq!(remembered("0\t\tany\t[ENABLED]"), None, "a network with no name");
+    }
+
+    #[test]
+    fn the_key_management_says_how_the_network_is_protected() {
+        assert_eq!(security("WPA-PSK WPA-PSK-SHA256\n"), Security::Psk);
+        assert_eq!(security("SAE\n"), Security::Sae);
+        assert_eq!(security("WPA-PSK SAE\n"), Security::PskSae);
+        assert_eq!(security("OWE\n"), Security::Owe);
+        assert_eq!(security("NONE\n"), Security::Open);
     }
 }
 
