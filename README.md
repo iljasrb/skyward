@@ -81,6 +81,27 @@ matching: `GatekeeperHalDevice: resp->status: -30`, `cmd lock_settings verify`
 says `didn't match`, and nothing but a new credential (or a reset) recovers it.
 This happened on hardware once, and once was enough.
 
+### If it has already happened
+
+The screen lock stops matching after such a restore: `GatekeeperHalDevice:
+resp->status: -30`, `cmd lock_settings verify --old …` says `didn't match`. A
+factory reset does **not** fix it, because the stale records are in `persist`,
+which a reset leaves alone. From this recovery's shell (its adbd is root; a
+wiped `/data` takes any root with it):
+
+```sh
+kill $(pidof sec_nvm) $(pidof spdaemon)
+rm -rf /mnt/vendor/persist/secnvm/* /mnt/vendor/persist/iar_db/*
+sync
+```
+
+The SPSS makes them afresh on the next start, and a new credential can be set.
+Only if that is not enough: `/mnt/vendor/persist/data/misc/keystore` (keymaster's
+own store, costs attestation identities), then `secdata` + `secdataBackup`
+(costs Widevine/attestation state). Never the whole `persist` unless you are
+willing to lose the Wi-Fi MAC and the sensors' calibration, and never
+`spss_a`/`spss_b` or `misc`.
+
 ## What this fork changes
 
 - **The ThinkPhone's own fixes**, each one written against the phone: the
