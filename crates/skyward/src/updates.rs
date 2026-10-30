@@ -1,12 +1,15 @@
-//! Asking the phone maker's update server for the newest system and
-//! downloading its full package, on a thread of their own that tells the
-//! screen how far they have come.
+//! The recovery's own updates: asking the fork's releases on GitHub for a
+//! newer image of this phone, downloading it, and writing it over the
+//! recovery partitions -- each on a thread of its own that tells the screen
+//! how far it has come.
 
+use crate::recovery;
 use anyhow::{Context, Result};
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
-use skyward_net::release::{self, Installed, Release, Unanswered};
+use skyward_net::release::{self, Release, Unanswered};
+use skyward_vab::Slot;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,13 +30,17 @@ const TRIES: u32 = 5;
 const BETWEEN: Duration = Duration::from_secs(3);
 
 pub enum Task {
-    /// Ask `server` for the newest system for `installed`. Where that
-    /// fails, `probe`, the page that tells whether the network joined
-    /// reaches the internet, says whether the network is why.
-    Check { server: String, probe: String, installed: Installed },
-    /// Download `release`'s full package to `path`; `server` is asked again
-    /// for where it is when the addresses it gave have run out.
-    Download { server: String, installed: Installed, release: Release, path: PathBuf },
+    /// Ask `repo` for its newest release that carries `asset`, and whether it
+    /// is newer than the build running, `build`. Where that fails, `probe`,
+    /// the page that tells whether the network joined reaches the internet,
+    /// says whether the network is why.
+    Check { repo: String, asset: String, build: String, probe: String },
+    /// Download `release`'s image to `path`, checked against the SHA-256 the
+    /// release publishes; `sha256` is that, where it is already known.
+    Download { release: Release, sha256: Option<String>, path: PathBuf },
+    /// Write the image at `path` over the recovery partitions: the one the
+    /// phone runs `active` from, and the other when it holds this recovery.
+    Install { path: PathBuf, active: Slot },
 }
 
 pub enum Event {
@@ -42,6 +49,10 @@ pub enum Event {
     /// second.
     Progress(Progress, u64),
     Ended(End),
+    /// How many bytes of how many were written and read back.
+    Writing(u64, u64),
+    /// The slots written, or why they could not be.
+    Installed(Result<Vec<Slot>, String>),
 }
 
 pub enum End {
@@ -81,26 +92,43 @@ impl Worker {
                     unsafe { libc::write(signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
                 };
                 match task {
-                    // The package's exact length is asked of where it is
-                    // downloaded from: the server gives it rounded, in units
-                    // of 1024. Without it the rounded one shows.
-                    Task::Check { server, probe, installed } => {
+                    Task::Check { repo, asset, build, probe } => {
                         let a = http::agent(servers.clone());
                         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let mut answer = release::ask(&a, &server, &installed).map_err(|e| unanswered(&e, &server, &probe, &servers));
-                        if let Ok(Some(r)) = &mut answer {
-                            match release::length(&a, &r.urls[0]) {
-                                Ok(length) => r.length = Some(length),
-                                Err(e) => {
-                                    let _ = skyward_sys::kmsg(&format!("how long {} is: {e:#}", r.name));
-                                }
-                            }
+                        let answer = release::newest(&a, &repo, &asset)
+                            .map_err(|e| unanswered(&e, &repo, &probe, &servers))
+                            .and_then(|found| match found {
+                                // A release nothing can be checked against is
+                                // no release to offer.
+                                Some(r) if r.is_newer_than(&build) && (r.image.digest.is_some() || r.sums.is_some()) => Ok(Some(r)),
+                                Some(r) if r.is_newer_than(&build) => Err(Unanswered::Failed(format!(
+                                    "the release {} of {repo} publishes no SHA-256 to check its image against",
+                                    r.tag
+                                ))),
+                                _ => Ok(None),
+                            });
+                        if let Ok(Some(r)) = &answer {
+                            let _ = skyward_sys::kmsg(&format!("a newer recovery is published: {} ({})", r.tag, r.published));
                         }
                         tell(Event::Checked(answer));
                     }
-                    Task::Download { server, installed, release, path } => {
-                        let end = fetch(&servers, &server, &installed, release, &path, &stopping, &using, &tell);
+                    Task::Download { release, sha256, path } => {
+                        let end = fetch(&servers, release, sha256, &path, &stopping, &using, &tell);
                         tell(Event::Ended(end));
+                    }
+                    Task::Install { path, active } => {
+                        let mut told = Instant::now() - PROGRESS_EVERY;
+                        let written = recovery::slots(active).and_then(|slots| {
+                            recovery::install(&path, &slots, &mut |done, total| {
+                                if done == total || told.elapsed() >= PROGRESS_EVERY * 5 {
+                                    told = Instant::now();
+                                    tell(Event::Writing(done, total));
+                                }
+                            })
+                            .map(|()| slots)
+                        });
+                        let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
+                        tell(Event::Installed(written.map_err(|e| format!("{e:#}"))));
                     }
                 }
             })
@@ -138,13 +166,13 @@ impl Drop for Worker {
     }
 }
 
-/// Why `server` gave no answer: that the network joined wants a login
-/// first, or reaches nothing, where `probe` shows it, rather than how
-/// asking failed through such a network.
-fn unanswered(e: &anyhow::Error, server: &str, probe: &str, servers: &Servers) -> Unanswered {
+/// Why `repo` gave no answer: that the network joined wants a login first, or
+/// reaches nothing, where `probe` shows it, rather than how asking failed
+/// through such a network.
+fn unanswered(e: &anyhow::Error, repo: &str, probe: &str, servers: &Servers) -> Unanswered {
     let dns = servers.lock().expect("the DNS servers are not held by a thread that panicked").clone();
     let reach = reach::probe(probe, &dns);
-    let _ = skyward_sys::kmsg(&format!("asking {server}: {e:#}; the network joined {reach}"));
+    let _ = skyward_sys::kmsg(&format!("asking {repo}: {e:#}; the network joined {reach}"));
     match reach {
         Reach::Online => Unanswered::Failed(format!("{e:#}")),
         Reach::Login(_) => Unanswered::Login,
@@ -152,23 +180,35 @@ fn unanswered(e: &anyhow::Error, server: &str, probe: &str, servers: &Servers) -
     }
 }
 
-/// Download the package, trying again while the connection fails and
-/// something more comes each time, and asking the server again for where it
-/// is once the addresses it gave run out.
-#[allow(clippy::too_many_arguments)]
+/// Read the SHA-256 a release publishes for its image: the one GitHub
+/// reports, or else the line for it in the file of sums.
+fn published_sha(agent: &ureq::Agent, release: &Release, known: Option<String>) -> Result<String> {
+    if let Some(known) = known {
+        return Ok(known);
+    }
+    if let Some(sums) = release.sha256(None) {
+        return Ok(sums);
+    }
+    let asset = release.sums.as_ref().context("the release publishes no SHA-256 for its image")?;
+    let mut response = agent.get(&asset.url).call().with_context(|| format!("ask {}", asset.url))?;
+    let status = response.status();
+    anyhow::ensure!(status.is_success(), "{} answered {status}", asset.url);
+    let body = response.body_mut().read_to_string().with_context(|| format!("read {}", asset.url))?;
+    release.sha256(Some(&body)).with_context(|| format!("{} says nothing of {}", asset.name, release.image.name))
+}
+
+/// Download the image, trying again while the connection fails and something
+/// more comes each time.
 fn fetch(
     servers: &Servers,
-    server: &str,
-    installed: &Installed,
-    mut release: Release,
+    release: Release,
+    known: Option<String>,
     path: &std::path::Path,
     stop: &AtomicBool,
     using: &Mutex<Option<ureq::Agent>>,
     tell: &dyn Fn(Event),
 ) -> End {
-    let mut url = 0;
     let mut failed = 0;
-    let mut asked_again = false;
     let mut samples: Vec<(Instant, u64)> = Vec::new();
     let mut told = Instant::now() - PROGRESS_EVERY;
     loop {
@@ -177,9 +217,12 @@ fn fetch(
         }
         let a = http::agent(servers.clone());
         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
+        let sha256 = match published_sha(&a, &release, known.clone()) {
+            Ok(sha) => sha,
+            Err(e) => return End::Failed(Failure::Other(format!("{e:#}"))),
+        };
         let mut came = None::<u64>;
         let mut gained = false;
-        let mut last = None;
         let mut progress = |p: Progress| {
             if let Progress::Downloading { done, .. } = p {
                 let now = Instant::now();
@@ -198,13 +241,11 @@ fn fetch(
                 told = Instant::now();
                 tell(Event::Progress(p, rate));
             }
-            last = Some((p, rate));
         };
-        let result = download::fetch(&a, &release.urls[url], path, &release.md5, stop, &mut progress);
+        let result = download::fetch(&a, &release.image.url, path, &sha256, stop, &mut progress);
         // How far it came shows in the end, whatever stopped it.
-        if let Some((p, rate)) = last {
-            tell(Event::Progress(p, rate));
-        }
+        let done = samples.last().map_or(0, |&(_, done)| done);
+        tell(Event::Progress(Progress::Downloading { done, total: release.image.size }, 0));
         let e = match result {
             Ok(()) => return End::Downloaded,
             Err(e) => e,
@@ -218,27 +259,14 @@ fn fetch(
         if e.is::<Damaged>() {
             return End::Failed(Failure::Damaged);
         }
-        let _ = skyward_sys::kmsg(&format!("downloading {} from {}: {e:#}", release.name, host(&release.urls[url])));
-        if e.is::<Refused>() && !asked_again {
-            // A signed address runs out a day after the server gave it.
-            asked_again = true;
-            match release::ask(&a, server, installed) {
-                Ok(Some(fresh)) if fresh.md5 == release.md5 => {
-                    release = fresh;
-                    url = 0;
-                    continue;
-                }
-                Ok(_) => return End::Failed(Failure::Changed),
-                Err(again) => {
-                    let _ = skyward_sys::kmsg(&format!("asking where {} is: {again:#}", release.name));
-                }
-            }
+        if e.is::<Refused>() {
+            return End::Failed(Failure::Other(format!("{e:#}")));
         }
+        let _ = skyward_sys::kmsg(&format!("downloading {} from {}: {e:#}", release.image.name, release.image.url));
         failed = if gained { 1 } else { failed + 1 };
         if failed >= TRIES {
             return End::Failed(Failure::Other(format!("{e:#}")));
         }
-        url = (url + 1) % release.urls.len();
         let until = Instant::now() + BETWEEN;
         while Instant::now() < until {
             if stop.load(Ordering::Relaxed) {
@@ -247,10 +275,4 @@ fn fetch(
             thread::sleep(Duration::from_millis(100));
         }
     }
-}
-
-/// The host of a download's address, for the log; the signature after it
-/// stays out.
-fn host(url: &str) -> &str {
-    url.split('/').nth(2).unwrap_or(url)
 }

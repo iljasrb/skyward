@@ -24,6 +24,8 @@ mod pty;
 #[cfg(target_os = "android")]
 mod readings;
 #[cfg(target_os = "android")]
+mod recovery;
+#[cfg(target_os = "android")]
 mod relabel;
 #[cfg(target_os = "android")]
 mod secure;

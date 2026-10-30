@@ -25,9 +25,9 @@ use skyward_sys::control::{Control, Request};
 use skyward_sys::Power;
 use skyward_files::Ownership;
 use skyward_block::usb::{self, Drive};
-use skyward_net::download::{self, Failure};
+use skyward_net::download;
 use skyward_net::http::Servers;
-use skyward_net::release::{Installed, Release, Unanswered};
+use skyward_net::release::Release;
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
@@ -959,26 +959,13 @@ fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
 
-/// The installed system, as the update server is told of it.
-fn installed(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo) -> Result<Installed> {
-    let slot = info.slot.context("only an A/B phone is updated")?;
-    let props = skyward_info::installed_props(slot)?;
-    let prop = |name: &str| props.get(name).cloned().with_context(|| format!("the installed system says no {name}"));
-    Ok(Installed {
-        device: prop("ro.product.mod_device")?,
-        version: prop(&cfg.device.os_version_prop)?,
-        android: prop("ro.build.version.release")?,
-        unlocked: skyward_block::boot_param("androidboot.flash.locked")?.as_deref() == Some("0"),
-    })
-}
-
-/// Where `release`'s full package is downloaded to.
+/// Where `release`'s image is downloaded to.
 fn downloaded(release: &Release) -> PathBuf {
-    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(&release.name)
+    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(&release.image.name)
 }
 
-/// What internal storage holds of `release`'s full package; nothing while it
-/// cannot be read.
+/// What internal storage holds of `release`'s image; nothing while it cannot
+/// be read.
 fn have(app: &App, release: &Release) -> Have {
     if !app.state.data.storage_open() {
         return Have::Nothing;
@@ -1048,7 +1035,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
     app.set_screen_corners(cfg.display.corner_radius as f32);
     // The pages speak the language the system named with the work it asks
-    // for, or else the one the installed system is built to start in.
+    // for, or else the one the installed system is built to start in, or else
+    // English.
     if let Some(locale) = request.locale.as_deref().or(info.locale.as_deref()) {
         app.state.lang = Lang::for_locale(locale)?;
         skyward_sys::kmsg(&format!("the pages speak {:?}, for the locale {locale}", app.state.lang))?;
@@ -1253,6 +1241,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
     let mut downloader: Option<updates::Worker> = None;
+    let mut writer: Option<updates::Worker> = None;
     // The USB drive plugged in, looked for each second.
     let mut plugged: Option<Plugged> = None;
     let mut seen: Option<String> = None;
@@ -1688,22 +1677,42 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 match ev {
                     updates::Event::Progress(progress, rate) => app.download_progress(progress, rate),
                     updates::Event::Ended(end) => {
-                        let release = app.state.newest().context("a download is of the newest system")?.clone();
+                        let release = app.state.newest().context("a download is of the newest recovery")?.clone();
                         let end = match end {
                             updates::End::Downloaded => DownloadEnd::Downloaded,
                             updates::End::Stopped => DownloadEnd::Stopped,
                             updates::End::Failed(why) => DownloadEnd::Failed(why),
                         };
-                        skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.name))?;
+                        skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.image.name))?;
                         app.download_ended(end, have(&app, &release), now);
                         fetched = true;
                     }
-                    updates::Event::Checked(_) => unreachable!("a download asks nothing of its own"),
+                    updates::Event::Checked(_) | updates::Event::Writing(..) | updates::Event::Installed(_) => {
+                        unreachable!("a download asks nothing and writes nothing")
+                    }
                 }
             }
         }
         if fetched {
             downloader = None;
+        }
+        let mut wrote = false;
+        if let Some(w) = &writer {
+            for ev in w.events() {
+                match ev {
+                    updates::Event::Writing(done, total) => app.install_progress(if total == 0 { 0.0 } else { done as f32 / total as f32 }),
+                    updates::Event::Installed(outcome) => {
+                        app.install_ended(outcome.map(drop), now);
+                        wrote = true;
+                    }
+                    updates::Event::Checked(_) | updates::Event::Progress(..) | updates::Event::Ended(_) => {
+                        unreachable!("writing asks nothing and downloads nothing")
+                    }
+                }
+            }
+        }
+        if wrote {
+            writer = None;
         }
         if let Some(ended) = decryptor.as_ref().and_then(Decryptor::ended) {
             decryptor = None;
@@ -2130,29 +2139,31 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // What the installed system is called is the page's to
                     // report when it cannot be read.
                     Effect::CheckUpdate => {
-                        ensure!(checker.is_none(), "the update server is being asked already");
-                        let server = cfg.update.as_ref().context("the phone's update server is not known")?.server.clone();
+                        ensure!(checker.is_none(), "the releases are being asked already");
+                        let update = cfg.update.as_ref().context("this phone's releases are not known")?;
                         let probe = cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
-                        match installed(cfg, &info) {
-                            Ok(installed) => {
-                                checker = Some(updates::Worker::start(updates::Task::Check { server, probe, installed }, servers.clone())?)
-                            }
-                            Err(e) => app.update_checked(Err(Unanswered::Failed(format!("{e:#}"))), Have::Nothing),
-                        }
+                        let task = updates::Task::Check {
+                            repo: update.repo.clone(),
+                            asset: update.asset.clone(),
+                            build: skyward_info::BUILD.to_string(),
+                            probe,
+                        };
+                        checker = Some(updates::Worker::start(task, servers.clone())?);
                     }
                     Effect::Download(release) => {
-                        ensure!(downloader.is_none(), "the full package is being downloaded already");
-                        let server = cfg.update.as_ref().context("the phone's update server is not known")?.server.clone();
+                        ensure!(downloader.is_none(), "the image is being downloaded already");
                         let path = downloaded(&release);
-                        match installed(cfg, &info) {
-                            Ok(installed) => {
-                                let task = updates::Task::Download { server, installed, release, path };
-                                downloader = Some(updates::Worker::start(task, servers.clone())?);
-                            }
-                            Err(e) => app.download_ended(DownloadEnd::Failed(Failure::Other(format!("{e:#}"))), have(&app, &release), now),
-                        }
+                        let task = updates::Task::Download { release: release.clone(), sha256: None, path };
+                        downloader = Some(updates::Worker::start(task, servers.clone())?);
                     }
                     Effect::StopDownload => downloader.as_ref().context("there is no download to stop")?.stop(),
+                    Effect::InstallRecovery => {
+                        ensure!(writer.is_none(), "the image is being written already");
+                        let release = app.state.newest().context("there is no downloaded image to write")?.clone();
+                        let active = info.slot.context("only an A/B phone has a recovery partition to write")?;
+                        let task = updates::Task::Install { path: downloaded(&release), active };
+                        writer = Some(updates::Worker::start(task, servers.clone())?);
+                    }
                     // Logs that cannot be saved are the page's to report;
                     // the recovery carries on.
                     Effect::ExportLogs { recovery, kernel, storage } => {
