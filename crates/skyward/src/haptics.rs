@@ -135,9 +135,16 @@ fn share(strength: &Strength, position: f32) -> f32 {
 /// it in, in tenths of a hertz.
 fn resonance(file: &str) -> Result<f32> {
     let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
-    let tenths: u32 = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{file} holds {text:?}"))?;
-    ensure!(tenths > 0, "{file} says the motor swings at 0 Hz");
-    Ok(tenths as f32 / 10.0)
+    let first = text.split_whitespace().next().with_context(|| format!("{file} is empty"))?;
+    let value: f32 = first.parse().with_context(|| format!("{file} holds {text:?}"))?;
+    // Drivers say it two ways: in tenths of a hertz with nothing after the
+    // number, as Xiaomi's do, or in whole hertz with the unit after it, as
+    // this phone's does. Reading the second as the first made a motor
+    // swinging at 231 Hz swing at 23, which no one feels.
+    let hertz = first.contains('.') || text.to_ascii_lowercase().contains("hz");
+    let hz = if hertz { value } else { value / 10.0 };
+    ensure!((10.0..=1000.0).contains(&hz), "{file} says the motor swings at {hz} Hz, which is no motor");
+    Ok(hz)
 }
 
 /// A click's samples at [`RATE`] for a motor that swings at `hz`: whole
@@ -264,6 +271,23 @@ mod tests {
         let quarter = (RATE as f32 / 172.4 / 4.0).round() as usize;
         assert!(samples[quarter] > 120, "it rises first");
         assert!(samples[drive + quarter] < -120, "it falls first once turned over");
+    }
+
+    #[test]
+    fn the_resonance_is_read_in_tenths_or_in_hertz_with_its_unit() {
+        let dir = std::env::temp_dir().join(format!("skyward-haptics-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let write = |text: &str| {
+            let path = dir.join("lra_frequency_hz");
+            fs::write(&path, text).unwrap();
+            resonance(path.to_str().unwrap())
+        };
+        assert_eq!(write("231 Hz\n").unwrap(), 231.0, "whole hertz, unit after it");
+        assert_eq!(write("2050\n").unwrap(), 205.0, "tenths of a hertz, nothing after it");
+        assert_eq!(write("172.4 Hz").unwrap(), 172.4, "hertz to the tenth");
+        assert!(write("0\n").is_err());
+        assert!(write("3 Hz\n").is_err(), "no motor swings at 3 Hz");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
