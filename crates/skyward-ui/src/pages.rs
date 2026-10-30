@@ -18,7 +18,7 @@ use crate::theme::Theme;
 use crate::tr;
 use crate::icons::{self, Icon};
 use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, Tone, Trail};
-use skyward_info::{DeviceInfo, VERSION};
+use skyward_info::{DeviceInfo, BUILD, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
 use skyward_net::supplicant::Security;
@@ -297,7 +297,7 @@ fn update_value(cx: &Ctx) -> &'static str {
     if s.downloading() {
         return l.pick(["正在下载", "正在下載", "Downloading"]);
     }
-    if s.newest().is_some_and(|r| cx.info.os_version.as_deref() != Some(r.version.as_str())) {
+    if s.newest().is_some() {
         return l.pick(["有新版本", "有新版本", "New version"]);
     }
     fmt::update_value(l, &s.update)
@@ -2396,7 +2396,7 @@ const ACTIONS: Text = ["操作", "操作", "Actions"];
 /// went to: how far a merge under way has come, and a swipe to merge one
 /// that waits there for the system to start it.
 pub fn update(cx: &Ctx) -> Frame {
-    let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let mut c = long_page(cx);
     let top = t.m.content_top;
     let mut out = Vec::new();
@@ -2413,11 +2413,10 @@ pub fn update(cx: &Ctx) -> Frame {
         let y = widgets::footnote(&mut c, t, f, y, note);
         return Frame::new(t, fit(c, t, y), out, l.pick(UPDATE), top);
     }
-    let mut y = top;
-    if let Some(v) = &i.os_version {
-        y = widgets::section_first(&mut c, t, f, y, l.pick(["本机", "本機", "This phone"]));
-        y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["当前版本", "目前版本", "Current version"]), v.clone())]);
-    }
+    // The recovery this page updates, and when it was built.
+    let build = fmt::build_date(l, BUILD);
+    let mut y = widgets::section_first(&mut c, t, f, top, l.pick(["本机", "本機", "This recovery"]));
+    y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["当前版本", "目前版本", "Current build"]), build)]);
     if s.update_server {
         let online_update = l.pick(["在线更新", "線上更新", "Online update"]);
         y = if y == top { widgets::section_first(&mut c, t, f, y, online_update) } else { widgets::section(&mut c, t, f, y, online_update) };
@@ -2455,11 +2454,11 @@ pub fn update(cx: &Ctx) -> Frame {
 /// has joined no network that reaches the internet.
 const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
 
-/// Asking the update server for the newest system, then its full package:
-/// downloading it, how far that has come, and installing it once it is
-/// whole; then what to note before installing it.
+/// Asking the fork's releases for a newer recovery, then its image:
+/// downloading it, how far that has come, writing it over this recovery once
+/// it is whole, and what to do next.
 fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
-    let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let release = match &s.check {
         Check::Asking => return widgets::list(c, t, f, y, &[Row::new(l.pick(["正在检查更新", "正在檢查更新", "Checking for updates"])).trail(Trail::None)]).bottom,
         Check::Answered(Some(r)) => r,
@@ -2473,22 +2472,38 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             return match other {
                 Check::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
                 Check::Answered(None) => {
-                    let none = l.pick(["暂无本机的系统更新信息。", "目前沒有本機的系統更新資訊。", "The server knows of no system update for this phone."]);
+                    let none = l.pick(["已是最新版本。", "已是最新版本。", "This recovery is the newest one published."]);
                     widgets::footnote(c, t, f, check.bottom, none)
                 }
                 _ => check.bottom,
             };
         }
     };
-    let newer = i.os_version.as_deref() != Some(release.version.as_str());
-    let version = &release.version;
-    let title = if newer { tr!(l, "新版本 {version}", "新版本 {version}", "New version {version}") } else { l.pick(["已是最新版本", "已是最新版本", "Up to date"]).to_string() };
-    let size = match release.length {
-        Some(length) => fmt::file_size(length),
-        None => fmt::package_size(&release.size),
-    };
-    let package = tr!(l, "完整更新包 {size}", "完整更新檔 {size}", "Full OTA package {size}");
-    let mut y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Layers).subtitle(&package).trail(Trail::None)]).bottom;
+    // What is published, and how big it is.
+    let build = fmt::build_date(l, &release.published);
+    let size = fmt::file_size(release.image.size);
+    let title = tr!(l, "新版本 {build}", "新版本 {build}", "New build {build}");
+    let image = tr!(l, "恢复镜像 {size}", "復原鏡像 {size}", "Recovery image {size}");
+    let mut y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Layers).subtitle(&image).trail(Trail::None)]).bottom;
+    if let Some(share) = s.installing {
+        let p = percent(share);
+        let detail = tr!(l, "已写入 {p}%", "已寫入 {p}%", "{p}% written");
+        y = widgets::progress_card(c, t, f, y + t.m.card_gap, l.pick(["正在写入", "正在寫入", "Writing"]), &detail, Some(share));
+        return y;
+    }
+    if let Some(outcome) = &s.installed {
+        let said = match outcome {
+            Ok(()) => l.pick(["已写入，重启后使用新版本。", "已寫入，重新啟動後使用新版本。", "Written; a restart brings up the new one."]).to_string(),
+            Err(why) => fmt::install_failed(l, why),
+        };
+        y = widgets::footnote(c, t, f, y, &said);
+        if outcome.is_ok() {
+            let restart = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(l.pick(["重启到 recovery", "重新啟動到 recovery", "Restart into recovery"])).trail(Trail::None)]);
+            out.extend(hits(&restart.rows, &[Action::RebootTo(Target::Recovery)]));
+            y = restart.bottom;
+        }
+        return y;
+    }
     match (&s.download, s.have) {
         (Some(job), _) if job.outcome.is_none() => {
             let (heading, detail, share) = match job.progress {
@@ -2513,9 +2528,13 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             y = stop.bottom;
         }
         (_, Have::Whole(_)) => {
-            let row = Row::new(l.pick(["安装", "安裝", "Install"])).subtitle(l.pick(["已下载到内部存储", "已下載到內部儲存空間", "Downloaded to internal storage"]));
+            let row = Row::new(l.pick(["写入", "寫入", "Write it"])).subtitle(l.pick([
+                "已下载到内部存储，校验通过后写入本机 recovery 分区",
+                "已下載到內部儲存空間，驗證通過後寫入本機 recovery 分割區",
+                "Downloaded to internal storage; it is checked and written over this recovery's partition",
+            ]));
             let install = widgets::list(c, t, f, y + t.m.card_gap, &[row]);
-            out.extend(hits(&install.rows, &[Action::InstallDownloaded]));
+            out.extend(hits(&install.rows, &[Action::InstallRecovery]));
             y = install.bottom;
         }
         (job, have) => {
@@ -2547,19 +2566,15 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
     }
     let saved = tr!(
         l,
-        "完整更新包将保存到\"/sdcard/{DOWNLOADS}\"中，安装后不会自动删除。",
-        "完整更新檔將儲存到「/sdcard/{DOWNLOADS}」中，安裝後不會自動刪除。",
-        "The full OTA package is saved in “/sdcard/{DOWNLOADS}”, and stays there after it's installed."
+        "镜像将保存到\"/sdcard/{DOWNLOADS}\"，写入后不会自动删除。",
+        "鏡像將儲存到「/sdcard/{DOWNLOADS}」，寫入後不會自動刪除。",
+        "The image is saved in “/sdcard/{DOWNLOADS}”, and stays there once it's written."
     );
     let points = [
-        l.pick(["安装系统更新不会删除用户数据，建议在安装前进行备份。", "安裝系統更新不會刪除使用者資料，建議在安裝前進行備份。", "Installing a system update deletes no user data. Backing up first is still wise."]),
+        l.pick(["只写入 recovery 分区，不碰系统与用户数据。", "只寫入 recovery 分割區，不碰系統與使用者資料。", "Only the recovery partitions are written; the system and your files are untouched."]),
         saved.as_str(),
+        l.pick(["写入后每个分区都会读回校验，读回与写入不一致会报告。", "寫入後每個分割區都會讀回驗證，讀回與寫入不一致會回報。", "Every partition is read back and compared once written, and a mismatch is reported."]),
         l.pick(["下载中断后可继续下载，已下载的部分会保留。", "下載中斷後可繼續下載，已下載的部分會保留。", "A download cut short can be resumed, keeping what was downloaded."]),
-        l.pick([
-            "更新后，系统会在后台进行一系列优化，期间可能出现发热、耗电增加等情况，1 ~ 3 天内将自行恢复。",
-            "更新後，系統會在背景進行一系列最佳化，期間可能出現發熱、耗電增加等情況，1 ~ 3 天內將自行恢復。",
-            "After the update the system optimizes itself in the background, and the phone may run warm or use more battery for 1 to 3 days.",
-        ]),
     ];
     widgets::notes(c, t, f, y + t.m.card_gap, l.pick(["注意事项", "注意事項", "Notes"]), &points)
 }

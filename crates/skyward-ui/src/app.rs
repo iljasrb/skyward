@@ -1201,8 +1201,8 @@ pub enum Action {
     /// it.
     Download,
     StopDownload,
-    /// Install the full package downloaded.
-    InstallDownloaded,
+    /// Write the downloaded recovery image over this recovery.
+    InstallRecovery,
     /// A control whose work is not wired up yet; touching it says so.
     Unavailable(&'static str),
 }
@@ -1610,9 +1610,13 @@ pub struct State {
     pub update_server: bool,
     pub check: Check,
     pub have: Have,
-    /// Downloading the newest system's full package, or how that last
-    /// ended.
+    /// Downloading the newest recovery, or how that last ended.
     pub download: Option<DownloadJob>,
+    /// Writing the downloaded image over this recovery, as the share of it
+    /// done; some while it is under way.
+    pub installing: Option<f32>,
+    /// How writing it ended: nothing until it has.
+    pub installed: Option<Result<(), String>>,
     /// How fast data went over the network joined in the last second.
     pub traffic: Traffic,
 }
@@ -1691,6 +1695,8 @@ impl Default for State {
             check: Check::Idle,
             have: Have::Nothing,
             download: None,
+            installing: None,
+            installed: None,
             traffic: Traffic::default(),
         }
     }
@@ -1797,6 +1803,9 @@ pub enum Effect {
     /// Start installing the file at this path from the top of a place,
     /// telling how it goes as [`Effect::Sideload`] does.
     InstallFile(Place, String),
+    /// Write the downloaded recovery image over this recovery, telling how
+    /// far it has come and then how it went.
+    InstallRecovery,
     /// Start installing the file at this full path, opened in the file
     /// manager, telling how it goes as [`Effect::Sideload`] does.
     InstallPath(String),
@@ -3325,6 +3334,36 @@ impl App {
         if self.screen() == Screen::Update {
             self.refresh();
         }
+    }
+
+    /// Writing the downloaded image over this recovery has started.
+    pub fn install_started(&mut self) {
+        self.state.installing = Some(0.0);
+        self.state.installed = None;
+        self.refresh();
+    }
+
+    /// How far writing it has come, as the share of it done.
+    pub fn install_progress(&mut self, share: f32) {
+        self.state.installing = Some(share);
+        if self.screen() == Screen::Update {
+            self.refresh();
+        }
+    }
+
+    /// It has ended: `Ok` it now reads back as written, or why it does not.
+    pub fn install_ended(&mut self, outcome: Result<(), String>, now: u64) {
+        self.state.installing = None;
+        self.state.installed = Some(outcome.clone());
+        let (text, lit) = match &outcome {
+            Ok(()) => (self.state.lang.pick(["已写入，重启即可使用新版本", "已寫入，重新啟動即可使用新版本", "Written; a restart brings up the new one"]).to_string(), true),
+            Err(why) => (crate::fmt::install_failed(self.state.lang, why), false),
+        };
+        self.wake(now);
+        if !lit {
+            self.say(&text, now);
+        }
+        self.refresh();
     }
 
     /// Downloading the full package has ended, leaving `have` of it: the
@@ -5152,10 +5191,11 @@ impl App {
                     return vec![Effect::StopDownload];
                 }
             }
-            Action::InstallDownloaded => {
-                let name = self.state.newest().expect("the package installed is the newest system's").name.clone();
-                let Have::Whole(size) = self.state.have else { unreachable!("only a whole package is offered to install") };
-                return self.install_file(Place::Storage, format!("{DOWNLOADS}/{name}"), size, now);
+            Action::InstallRecovery => {
+                self.state.newest().expect("only the newest recovery is installed");
+                let Have::Whole(_) = self.state.have else { unreachable!("only a whole image is offered to install") };
+                self.install_started();
+                return vec![Effect::InstallRecovery];
             }
             Action::Unavailable(text) => self.say(text, now),
         }
@@ -10099,17 +10139,20 @@ mod tests {
 
     fn newest() -> Release {
         Release {
-            version: "OS3.0.310.0.WMACNXM".into(),
-            name: "ishtar-ota_full-OS3.0.310.0.WMACNXM-user-16.0-0123456789.zip".into(),
-            urls: vec!["https://ultimateota.d.miui.com/OS3.0.310.0.WMACNXM/ishtar-ota_full.zip".into()],
-            md5: "0123456789abcdef0123456789abcdef".into(),
-            size: "7.1G".into(),
-            length: Some(7_572_375_802),
+            tag: "bronco-20261101".into(),
+            published: "2026-11-01T10:00:00Z".into(),
+            image: skyward_net::release::Asset {
+                name: "skyward-bronco.img".into(),
+                url: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
+                size: 104_857_600,
+                digest: Some("sha256:0123456789abcdef".into()),
+            },
+            sums: None,
         }
     }
 
     #[test]
-    fn the_update_page_asks_for_the_newest_system_and_downloads_its_full_package_to_install() {
+    fn the_update_page_asks_for_the_newest_recovery_and_downloads_its_image_to_write() {
         let f = fonts();
         let i = DeviceInfo { os_version: Some("OS3.0.308.0.WMACNXM".into()), ..info() };
         let mut app = App::new(Screen::Advanced, W, H, PPD);
@@ -10142,12 +10185,12 @@ mod tests {
         assert_eq!(tap_at(&mut app, &f, &i, Action::Download, 2000), vec![Effect::Download(newest())], "a download stopped carries on");
         let damaged = skyward_net::download::Failure::Damaged;
         app.download_ended(DownloadEnd::Failed(damaged.clone()), Have::Nothing, 3000);
-        assert_eq!(fmt::download_failure(Lang::Hans, &damaged), "完整更新包校验失败，已删除，请重新下载。");
+        assert_eq!(fmt::download_failure(Lang::Hans, &damaged), "镜像校验失败，已删除，请重新下载。");
         assert_eq!(tap_at(&mut app, &f, &i, Action::Download, 5000), vec![Effect::Download(newest())]);
         app.download_ended(DownloadEnd::Downloaded, Have::Whole(7_572_375_802), 6000);
-        let fx = tap_at(&mut app, &f, &i, Action::InstallDownloaded, 8000);
-        assert_eq!(fx, vec![Effect::InstallFile(Place::Storage, format!("downloaded_rom/{}", newest().name))]);
-        assert_eq!(app.screen(), Screen::Installing);
+        let fx = tap_at(&mut app, &f, &i, Action::InstallRecovery, 8000);
+        assert_eq!(fx, vec![Effect::InstallRecovery]);
+        assert!(app.state.installing.is_some(), "the page says it is writing");
     }
 
     #[test]

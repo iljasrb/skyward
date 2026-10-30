@@ -425,6 +425,22 @@ pub fn update(l: Lang, s: &Standing, next: Option<Slot>) -> (&'static str, Optio
 }
 
 /// Where an update standing so is, beside the entry of its page.
+/// A build's stamp (`2026-10-30T19:37:12Z`) as the page shows it: the day,
+/// then the time to the minute; a build that was never stamped says so.
+pub fn build_date(l: Lang, stamp: &str) -> String {
+    match stamp.get(..16) {
+        Some(head) if stamp.len() == 20 && stamp.ends_with('Z') && stamp.as_bytes().get(10) == Some(&b'T') => {
+            format!("{} {}", &head[..10], &head[11..16])
+        }
+        _ => l.pick(["未知", "未知", "Unknown"]).to_string(),
+    }
+}
+
+/// Why writing the downloaded image over this recovery failed.
+pub fn install_failed(l: Lang, why: &str) -> String {
+    tr!(l, "写入失败：{why}", "寫入失敗：{why}", "Couldn't write it: {why}")
+}
+
 pub fn update_value(l: Lang, s: &Standing) -> &'static str {
     l.pick(match s {
         Standing::None => ["暂无", "無", "None"],
@@ -1312,10 +1328,10 @@ pub fn download_failure(l: Lang, f: &DownloadFailure) -> String {
             )
         }
         DownloadFailure::Damaged => l
-            .pick(["完整更新包校验失败，已删除，请重新下载。", "完整更新檔驗證失敗，已刪除，請重新下載。", "The full OTA package didn't verify and was deleted. Download it again."])
+            .pick(["镜像校验失败，已删除，请重新下载。", "鏡像驗證失敗，已刪除，請重新下載。", "The image didn't verify and was deleted. Download it again."])
             .into(),
         DownloadFailure::Changed => {
-            l.pick(["服务器上的版本已更新，请重新检查更新。", "伺服器上的版本已更新，請重新檢查更新。", "The server has a newer version now. Check for updates again."]).into()
+            l.pick(["该版本已被替换，请重新检查更新。", "該版本已被取代，請重新檢查更新。", "That release has been replaced. Check for updates again."]).into()
         }
         DownloadFailure::Other(why) => tr!(l, "下载失败：{why}", "下載失敗：{why}", "Download failed: {why}"),
     }

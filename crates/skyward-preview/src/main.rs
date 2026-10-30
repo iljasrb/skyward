@@ -128,7 +128,7 @@ fn main() -> Result<()> {
         eprintln!("axis {tag}: {min}..{max} (default {def})");
     }
 
-    let cfg = DeviceConfig::load(root.join("devices/nezha.toml"))?;
+    let cfg = DeviceConfig::load(root.join("devices/bronco.toml"))?;
     let (w, h) = (cfg.display.width, cfg.display.height);
     let ppd = cfg.display.density as f32 / 160.0;
     let light = Theme::light(w, h, ppd);
@@ -757,11 +757,12 @@ fn main() -> Result<()> {
         }),
         ("150-update-light-latest", Screen::Update, false, &|app| {
             online(app);
-            app.update_checked(Ok(Some(Release { version: "OS4.0.4.0.XPACNXM".into(), ..newest() })), Have::Nothing);
+            let older = Release { published: "2026-10-28T09:12:00Z".into(), ..newest() };
+            app.update_checked(Ok(Some(older)), Have::Nothing);
         }),
         ("151-update-light-unanswered", Screen::Update, false, &|app| {
             online(app);
-            let why = "ask https://update.miui.com/updates/miotaV3.php: io: the DNS server at 192.168.1.1:53 did not answer";
+            let why = "ask https://api.github.com/repos/iljasrb/skyward/releases: io: the DNS server at 192.168.1.1:53 did not answer";
             app.update_checked(Err(Unanswered::Failed(why.into())), Have::Nothing);
         }),
         ("183-update-light-login", Screen::Update, false, &|app| {
@@ -1345,16 +1346,19 @@ fn router_link() -> Link {
     }
 }
 
-/// A newer system than the 17 Ultra's own, as the update server tells of
+/// A newer recovery than the one running, as the fork's releases tell of
 /// one.
 fn newest() -> Release {
     Release {
-        version: "OS4.0.6.0.XPACNXM".into(),
-        name: "nezha-ota_full-OS4.0.6.0.XPACNXM-user-17.0-3f2a9c81d4.zip".into(),
-        urls: vec!["https://ultimateota.d.miui.com/OS4.0.6.0.XPACNXM/nezha-ota_full-OS4.0.6.0.XPACNXM-user-17.0-3f2a9c81d4.zip".into()],
-        md5: "3f2a9c81d4e05b7a6c1e9d2f8b7a6c5d".into(),
-        size: "7.1G".into(),
-        length: Some(7_572_375_802),
+        tag: "bronco-20261101".into(),
+        published: "2026-11-01T10:00:00Z".into(),
+        image: skyward_net::release::Asset {
+            name: "skyward-bronco.img".into(),
+            url: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
+            size: 7_572_375_802,
+            digest: Some("sha256:3f2a9c81d4e05b7a6c1e9d2f8b7a6c5d".into()),
+        },
+        sums: None,
     }
 }
 
