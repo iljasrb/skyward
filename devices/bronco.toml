@@ -297,7 +297,9 @@ probe = "http://connectivitycheck.gstatic.com/generate_204"
 # qcom-hv-haptics. The LRA frequency is measured at boot and kept by the
 # driver; the click is made from samples at that frequency. Untuned.
 [haptics]
-resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+# The motor's driver here plays a constant force for as long as the effect
+# lasts, at the strength asked for; it takes no made periodic samples.
+length = 40
 strength = { lightest = 0.5, strongest = 1.0 }
 
 # The partitions a baseband and EFS backup takes, and what of the data
