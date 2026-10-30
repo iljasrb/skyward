@@ -2,9 +2,9 @@ name: Release
 
 # A tag names a version of the recovery for this phone: the image is built from
 # it and published, and the update page of every phone running an older build
-# sees it. The stock recovery the image rides on is not in this repository, so
-# the workflow takes it from the STOCK_RECOVERY_URL secret, checked against
-# STOCK_RECOVERY_SHA256 when that is set as well.
+# sees it. The stock recovery the image rides on is not in this repository; it
+# is taken from the mirror the ROM is published on, checked against the sums
+# published beside it.
 on:
   push:
     tags: ["bronco-*"]
@@ -28,19 +28,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
 
-      - name: Take the stock recovery the image rides on
+      - name: Take the recovery image the ROM publishes
         env:
-          URL: ${{ secrets.STOCK_RECOVERY_URL }}
-          SHA256: ${{ secrets.STOCK_RECOVERY_SHA256 }}
+          ROM: https://rom.flac.moe/bronco/latest
         run: |
-          if [ -z "$URL" ]; then
-            echo "::error::set STOCK_RECOVERY_URL in the repository secrets: the stock recovery is Motorola's to hand out"
-            exit 1
-          fi
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/stock-recovery.img" "$URL"
-          if [ -n "$SHA256" ]; then
-            echo "$SHA256  $RUNNER_TEMP/stock-recovery.img" | sha256sum -c -
-          fi
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o SHA256SUMS "$ROM/SHA256SUMS"
+          curl -fsSL --retry 3 -o stock-recovery.img "$ROM/recovery.img"
+          grep -E '  recovery\.img$' SHA256SUMS | sed 's/  recovery\.img$/  stock-recovery.img/' | sha256sum -c -
 
       - name: Build
         run: scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"

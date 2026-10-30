@@ -32,9 +32,10 @@ fastboot flash recovery_b out/skyward-bronco.img
 ```
 
 Pushing a `bronco-*` tag builds and publishes the image with
-`.github/workflows/release.yml`, which reads the stock recovery from the
-`STOCK_RECOVERY_URL` repository secret (and checks it against
-`STOCK_RECOVERY_SHA256` when that is set too).
+`.github/workflows/release.yml`: it takes `recovery.img` from
+[rom.flac.moe](https://rom.flac.moe/bronco/latest/), checked against the sums
+published beside it, builds the image on it, and publishes the image and its
+`SHA256SUMS`, which is what the update page reads.
 
 Nothing is published yet, so the update page reports this build as the newest.
 
