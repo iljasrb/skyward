@@ -272,6 +272,20 @@ mod sys {
         Ok(parked)
     }
 
+    /// Say `line` on the kernel log.
+    #[cfg(target_os = "android")]
+    fn kernel_log(line: &str) {
+        use std::io::Write;
+        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+            let _ = writeln!(kmsg, "skyward: {line}");
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn kernel_log(line: &str) {
+        eprintln!("skyward: {line}");
+    }
+
     fn unpark(parked: Parked) -> Result<()> {
         for (home, at) in &parked.moved {
             move_mount(at, home)?;
@@ -280,8 +294,19 @@ mod sys {
         if !parked.moved.is_empty() {
             fs::remove_dir(PARK).with_context(|| format!("remove {PARK}"))?;
         }
+        // Whether the mounts taken private are shared again changes nothing
+        // this recovery does -- it is what other mounts would follow them
+        // into, and nothing else is mounting here -- so one that cannot be
+        // put back does not undo the work the parking was for: the mount
+        // point may not even be one any more, as when what was mounted there
+        // has just been unmounted.
         for p in &parked.privatized {
-            remount(p, libc::MS_SHARED, "shared")?;
+            if let Err(e) = remount(p, libc::MS_SHARED, "shared") {
+                // Said on the kernel log, which is where a step that failed
+                // without stopping the work is said; the recovery's own log
+                // is a crate above this one, which cannot be reached here.
+                kernel_log(&format!("{} is not shared again: {e:#}", p.display()));
+            }
         }
         Ok(())
     }
