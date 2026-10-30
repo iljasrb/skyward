@@ -2272,6 +2272,15 @@ pub fn author_line(t: &Theme, f: &Fonts, text: &str) -> Sprite {
     hero_line(t, f, text, t.m.dp(AUTHOR_BELOW_DP))
 }
 
+/// How far below the author's line the fork's stands.
+const FORK_BELOW_DP: f32 = 17.0;
+
+/// Whose fork this is, a line under the author's, in the same type and set
+/// the same way: the one credit under another, so the two read as one.
+pub fn fork_line(t: &Theme, f: &Fonts, text: &str) -> Sprite {
+    hero_line(t, f, text, t.m.dp(AUTHOR_BELOW_DP + FORK_BELOW_DP))
+}
+
 /// A line centred under the About wordmark in the version's type, `below`
 /// the version's place.
 fn hero_line(t: &Theme, f: &Fonts, text: &str, below: f32) -> Sprite {

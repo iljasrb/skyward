@@ -447,6 +447,10 @@ pub fn mount(cx: &Ctx) -> Frame {
 /// Who made the recovery, as the About page names them under its version.
 const AUTHOR: &str = "© 2026 Kirk Lin";
 
+/// Whose fork of it this build is, said under the author: a name of its own,
+/// so it is written the same in every language.
+const FORK: &str = "Fork by @iljasrb";
+
 /// About this device, modelled on the stock「我的设备」: the wordmark, the
 /// version and its author over a moving colour field, and the summary,
 /// hardware and link cards scrolling over it. Only the cards are drawn
@@ -464,6 +468,7 @@ pub fn about(cx: &Ctx) -> Frame {
         wordmark: widgets::wordmark(t, f, "Skyward", m.dp(233.7), m.dp(37.8)),
         version: widgets::version_line(t, f, VERSION),
         author: widgets::author_line(t, f, AUTHOR),
+        fork: widgets::fork_line(t, f, FORK),
         runs: canvas.runs(),
     };
     Frame { header: false, hero: Some(art), ..Frame::new(t, canvas, out, cx.state.lang.pick(ABOUT), summary_top) }
