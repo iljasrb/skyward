@@ -72,6 +72,10 @@ pub fn write_in(roots: &[&Path], folder: &str, name: &str, text: &str, was: Opti
         if fs::create_dir_all(dir).is_err() {
             continue;
         }
+        // Nothing secret is kept here, but a partition the phone's own
+        // calibration lives on is no place for a folder anyone may write in.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o755));
         match swap(&path, text) {
             Ok(()) => return Ok(path),
             Err(e) => last = Some(e.context(format!("write {}", path.display()))),

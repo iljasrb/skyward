@@ -20,7 +20,7 @@ Verified on an A16 build, `W1TBS36H.1-63-2-9`, with the recovery flashed over
 | WLAN | on, scan, join; the network joined is kept for the next boot |
 | File transfer, adb, fastbootd | `mtp,adb` and `fastbootd` both bind |
 | Recovery updates | checked, downloaded and written from this fork's releases |
-| Settings | kept on the owner's storage: brightness, theme, language, screen-off, time zone, vibration, file transfer, WLAN |
+| Settings | kept between boots: brightness, theme, language, screen-off, time zone, vibration, file transfer, WLAN |
 | Backup, wipe, installs, audio | not exercised yet |
 
 ## Building
@@ -52,6 +52,23 @@ and compared with what was written.
 
 Nothing is published for this phone yet, so the page says it is the newest one
 until a release is made (see `scripts/release.sh`).
+
+## What the recovery remembers
+
+Changed a setting and the recovery writes it a couple of seconds later, whole
+and flushed, to the first of these it can:
+
+1. `/mnt/vendor/persist/skyward/` — the partition the phone keeps its own
+   calibration in, which the recovery mounts as it comes up and no reset wipes;
+2. `/data/skyward/` — opens once the decrypt page is answered;
+3. `/sdcard/Skyward/` — waits on the user's screen lock as well.
+
+Which of them is used is decided by what is there: the newest copy is the one
+read, and it is written back where it was found. The file is `settings/values`,
+one `name = value` per line; a value that is missing, unreadable or out of range
+falls back to the default instead of failing. `wlan/wpa_supplicant.conf` beside
+it belongs to the supplicant, which writes back the network it joined — the one
+joined last, and it joins it again on the next boot.
 
 ## What this fork changes
 
