@@ -304,7 +304,10 @@ strength = { lightest = 0.5, strongest = 1.0 }
 # partition an older copy would not open: the TEE's own storage and the
 # SPU-backed keystore state.
 [backup]
-efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+# The baseband's own copy of the phone's identity and the sensors' calibration.
+# `fsg` is kept per slot on this phone; the other slot's is the same
+# partition's twin, and the one it runs from is the one backed up.
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist", "devinfo", "utags"]
 data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
 
 # Where the phone's own programs keep logs and crash records in the data

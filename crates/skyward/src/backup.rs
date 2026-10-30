@@ -272,6 +272,18 @@ fn partition(name: &str) -> PathBuf {
     Path::new(BY_NAME).join(name)
 }
 
+/// The partition `name` as this phone has it: as it is named, or, for what
+/// a phone keeps one of per slot, that of the slot it runs from. None while
+/// it has neither.
+fn efs_partition(name: &str, slot: Slot) -> Option<PathBuf> {
+    let plain = partition(name);
+    if plain.exists() {
+        return Some(plain);
+    }
+    let slotted = partition(&format!("{name}{}", slot.suffix()));
+    slotted.exists().then_some(slotted)
+}
+
 /// Tells how far a part has come in a pass over it, at most every
 /// [`PROGRESS_EVERY`].
 struct Telling<'a> {
@@ -374,12 +386,25 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
         needed += entries * ENTRY_BYTES;
     }
     if efs {
+        // The baseband's partitions are the phone's own, not the build's: one
+        // this phone does not have, or has only for a slot it does not run,
+        // is left out and said so rather than taking the backup with it --
+        // no two phones agree on the list, and a backup of the rest is worth
+        // more than none.
+        let mut left_out = Vec::new();
         for name in &t.efs {
-            let device = partition(name);
-            ensure!(device.exists(), "the phone has no partition {name}");
-            let size = skyward_block::size_bytes(&device)?;
-            plan.push((Part::Efs, name.clone(), Source::Block(device), size));
+            match efs_partition(name, slot) {
+                Some(device) => {
+                    let size = skyward_block::size_bytes(&device)?;
+                    plan.push((Part::Efs, name.clone(), Source::Block(device), size));
+                }
+                None => left_out.push(name.clone()),
+            }
         }
+        if !left_out.is_empty() {
+            let _ = skyward_sys::kmsg(&format!("this phone has no {} to back up, so they are left out", left_out.join(", ")));
+        }
+        ensure!(plan.iter().any(|(part, ..)| *part == Part::Efs), "this phone has none of the baseband partitions the configuration names: {}", t.efs.join(", "));
     }
     // Compressed, what the files take is not known until they are written.
     needed += plan.iter().map(|p| p.3).sum::<u64>();
@@ -575,7 +600,10 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
 /// The partition a part of a backup goes back to.
 fn target(item: &Item, slot: Slot) -> PathBuf {
     match item.part {
-        Part::Efs => partition(&item.name),
+        // Written back where this phone keeps it now, which is not always
+        // where the backup found it: a phone with one baseband partition per
+        // slot restores into the slot it runs from.
+        Part::Efs => efs_partition(&item.name, slot).unwrap_or_else(|| partition(&item.name)),
         _ => partition(&format!("{}{}", item.name, slot.suffix())),
     }
 }
