@@ -50,6 +50,9 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const EARLY_LOADER: &str = "/system/bin/bootstrap/linker64";
 const RUNTIME_BUNDLE: &str = "com.android.runtime";
 const BUNDLE_LOADER: &str = "bin/linker64";
+/// The recovery's own loader, for a phone whose installed runtime bundle a
+/// recovery cannot open.
+const RECOVERY_LOADER: &str = "/system/bin/linker64";
 
 /// Which programs may register which hardware services, and where the
 /// directory for those services looks for that.
@@ -87,12 +90,20 @@ pub fn prepare_hardware_directory(wanted: &[String]) -> Result<()> {
     // A loader and the lowest libraries are built together and agree
     // between them on how a program's own storage is laid out, so the
     // installed system's programs are loaded by the installed system's
-    // loader rather than by the older one a recovery carries.
+    // loader rather than by the older one a recovery carries. A phone whose
+    // installed runtime is a bundle a recovery cannot open has only the
+    // recovery's own loader, which came from the same build as those
+    // programs where the recovery is the system's own.
     let loader = Path::new(EARLY_LOADER);
-    let from = bundle(RUNTIME_BUNDLE)?
-        .map(|at| at.join(BUNDLE_LOADER))
-        .filter(|p| p.is_file())
-        .with_context(|| format!("the installed system carries no {RUNTIME_BUNDLE}, which holds the loader its own programs ask for"))?;
+    let from = match bundle(RUNTIME_BUNDLE) {
+        Ok(Some(at)) => Some(at.join(BUNDLE_LOADER)).filter(|p| p.is_file()),
+        Ok(None) => None,
+        Err(e) => {
+            skyward_sys::kmsg(&format!("the installed runtime is out of reach: {e:#}"))?;
+            None
+        }
+    }
+    .unwrap_or_else(|| PathBuf::from(RECOVERY_LOADER));
     let dir = loader.parent().expect("the loader is in a directory");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     // Made under the recovery's own umask the folder is root's alone, and
