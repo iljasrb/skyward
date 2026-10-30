@@ -2189,6 +2189,22 @@ const NOTES_PAD: f32 = 25.0;
 const NOTES_STEP: f32 = 38.0;
 const NOTES_PITCH: f32 = 18.0;
 
+/// A card that says something the user has to weigh before going on, in the
+/// colours the pages keep for what would cost them something: a warning is
+/// read before the choices under it, not after.
+pub fn warning(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) -> f32 {
+    let m = &t.m;
+    let (left, right) = (m.margin, m.w as f32 - m.margin);
+    let (x, px, pad, pitch) = (left + m.inner, m.dp(NOTES_PX), m.dp(NOTES_PAD) * 0.6, m.dp(NOTES_PITCH));
+    let lines = wrap(c, &f.body, text, px, right - m.inner - x);
+    let height = pad * 2.0 + pitch * lines.len() as f32;
+    c.fill_round_rect(left, top, right - left, height, m.card_radius, t.pal.danger_soft);
+    for (k, line) in lines.iter().enumerate() {
+        c.text_vc(&f.body, line, x, top + pad + pitch * k as f32, px, t.pal.danger, None);
+    }
+    top + height
+}
+
 /// [`section`] with a word at its right end that does something, such as
 /// the WLAN page's「刷新」: where the word can be touched.
 pub fn section_action(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, label: &str, action: &str) -> (f32, Rect) {
