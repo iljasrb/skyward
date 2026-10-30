@@ -709,19 +709,31 @@ fn place(file: &Firmware) -> Result<()> {
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
 }
 
-/// Where the network last joined is kept, once the owner's storage is open:
-/// the supplicant writes its own configuration back here, so a recovery that
-/// comes back up joins the network it joined last.
-const KEPT: &str = "/sdcard/Skyward/wlan";
+/// The folder the supplicant's configuration is kept in, and the file
+/// itself: the network joined last comes back with the next boot. See
+/// `kept` for where that is.
+const KEPT: (&str, &str) = ("wlan", "wpa_supplicant.conf");
 
-/// Where the supplicant keeps its configuration: the owner's storage when it
-/// is open, and a home made of memory until then, which forgets on a restart.
+/// Where the supplicant keeps its configuration: the first place the settings
+/// are kept that can hold it, and a home in memory until then, which forgets
+/// on a restart.
 fn settings_dir() -> (PathBuf, bool) {
-    let kept = Path::new(KEPT);
-    match fs::create_dir_all(kept) {
-        Ok(()) => (kept.to_path_buf(), true),
-        Err(_) => (PathBuf::from(HOME), false),
+    for root in crate::kept::places() {
+        let kept = crate::kept::folder(root, KEPT.0);
+        // The supplicant runs as the wifi user, so it has to be able to write
+        // its configuration back here; this phone's own build of it dies
+        // rather than saying it cannot.
+        let ready = fs::create_dir_all(&kept)
+            .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
+            .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
+        match ready {
+            Ok(()) => return (kept, true),
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
+            }
+        }
     }
+    (PathBuf::from(HOME), false)
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
@@ -736,7 +748,7 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     // kept from the last session is still in it.
     let (dir, kept) = settings_dir();
     let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {} ({kept})", dir.display()));
-    let settings = dir.join("wpa_supplicant.conf");
+    let settings = dir.join(KEPT.1);
     if !settings.exists() {
         fs::write(&settings, format!("ctrl_interface={}\nupdate_config=1\nap_scan=1\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
             .with_context(|| format!("write {}", settings.display()))?;

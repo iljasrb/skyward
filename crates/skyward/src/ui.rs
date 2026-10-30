@@ -63,17 +63,15 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 const TMP_LOGS: &str = "/tmp/skyward-logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
 
-/// Where the settings the user changes are kept: the owner's storage, beside
-/// the logs, where they survive a restart of the recovery and show in the
-/// file manager too.
-const SETTINGS_FILE: &str = "Skyward/settings";
+/// The folder the settings are kept in, and the file in it; see `kept` for
+/// where that is.
+const SETTINGS: (&str, &str) = ("settings", "values");
 
 /// Read the settings the previous boots kept, once the owner's storage has
 /// opened; a key the file does not name stays at the value it starts at.
 fn saved_settings() -> SavedSettings {
     let mut saved = SavedSettings::default();
-    let path = Path::new(skyward_crypto::data::SDCARD).join(SETTINGS_FILE);
-    let Ok(text) = fs::read_to_string(&path) else { return saved };
+    let Ok(Some(text)) = crate::kept::read(SETTINGS.0, SETTINGS.1) else { return saved };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim();
@@ -126,15 +124,9 @@ fn write_settings(settings: &SavedSettings) {
         settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
         settings.file_transfer, settings.wlan
     );
-    let kept = (|| -> Result<()> {
-        let dir = Path::new(skyward_crypto::data::SDCARD).join("Skyward");
-        fs::create_dir_all(&dir).with_context(|| format!("make {}", dir.display()))?;
-        let path = Path::new(skyward_crypto::data::SDCARD).join(SETTINGS_FILE);
-        fs::write(&path, text).with_context(|| format!("write {}", path.display()))
-    })();
-    match kept {
-        Ok(()) => {
-            let _ = skyward_sys::kmsg("the settings are kept where the owner's storage keeps them");
+    match crate::kept::write(SETTINGS.0, SETTINGS.1, &text) {
+        Ok(path) => {
+            let _ = skyward_sys::kmsg(&format!("the settings are kept in {}", path.display()));
         }
         Err(e) => {
             let _ = skyward_sys::kmsg(&format!("the settings are not kept: {e:#}"));
@@ -1324,10 +1316,21 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         None => None,
     };
+    // What the boots before kept: brightness, the theme, the language and
+    // the rest are back before the first frame is drawn, and a WLAN that was
+    // on is brought back up by itself.
+    let saved = saved_settings();
+    let wlan_was_on = saved.wlan;
+    app.set_saved_settings(saved);
+    if wlan_was_on {
+        match &wlan {
+            Some(w) => w.send(wlan::Command::On),
+            None => {
+                let _ = skyward_sys::kmsg("the WLAN was on, and this phone's recovery brings none up");
+            }
+        }
+    }
     let mut scanned_at = Instant::now();
-    // Whether the settings the owner's storage keeps have been read this
-    // boot, which waits until it opens.
-    let mut settings_read = false;
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1747,24 +1750,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             scanned_at = Instant::now();
             wlan_worker(&wlan)?.send(wlan::Command::Scan);
         }
-        // The settings the owner's storage keeps are read the moment it is
-        // open, and written back a moment after the user stops changing
-        // them.
-        if !settings_read && app.state.data.storage_open() {
-            settings_read = true;
-            let saved = saved_settings();
-            let wlan_saved = saved.wlan;
-            app.set_saved_settings(saved);
-            if wlan_saved && app.state.wlan.as_ref().is_some_and(|w| w.power != WlanPower::On) {
-                if let Some(w) = &wlan {
-                    w.send(wlan::Command::On);
-                }
-            }
-        }
-        if app.state.data.storage_open() {
-            if let Some(settings) = app.settings_due(now) {
-                write_settings(&settings);
-            }
+        // What the user changed goes to the partition the phone keeps it on
+        // a moment after the last change.
+        if let Some(settings) = app.settings_due(now) {
+            write_settings(&settings);
         }
         let mut checked = false;
         if let Some(c) = &checker {
