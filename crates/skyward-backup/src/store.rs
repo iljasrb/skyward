@@ -47,6 +47,9 @@ struct Files {
     in_open: u64,
     names: Vec<String>,
     written: u64,
+    /// Whether the storage keeps the holes a seek leaves, which it stops
+    /// being asked for once one is refused.
+    sparse: bool,
 }
 
 impl Files {
@@ -76,11 +79,31 @@ impl Files {
         Ok((self.names, self.written))
     }
 
-    /// Leave `len` bytes of the file open as zeros it does not hold.
+    /// Leave `len` bytes of the file open as zeros it does not hold, or write
+    /// the zeros out where the storage keeps no holes.
     fn hole(&mut self, len: usize) -> io::Result<()> {
-        let file = self.open.as_mut().expect("a file is open");
-        file.seek(SeekFrom::Current(len as i64))?;
-        self.in_open += len as u64;
+        if self.sparse {
+            let file = self.open.as_mut().expect("a file is open");
+            if file.seek(SeekFrom::Current(len as i64)).is_ok() {
+                self.in_open += len as u64;
+                return Ok(());
+            }
+            // The storage does not skip the zeros a seek leaves: every file
+            // it is given takes the zeros of the part.
+            self.sparse = false;
+        }
+        let zeros = [0u8; SPARSE_RUN];
+        let mut left = len;
+        while left > 0 {
+            let take = left.min(SPARSE_RUN);
+            let n = self.open.as_mut().expect("a file is open").write(&zeros[..take])?;
+            if n == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            self.in_open += n as u64;
+            self.written += n as u64;
+            left -= n;
+        }
         Ok(())
     }
 }
@@ -149,7 +172,7 @@ impl Writer {
 
     fn cut_at(folder: &Path, name: &str, compress: bool, ownership: Ownership, limit: u64) -> Writer {
         let files =
-            Files { folder: folder.to_path_buf(), name: name.into(), ownership, limit, open: None, in_open: 0, names: Vec::new(), written: 0 };
+            Files { folder: folder.to_path_buf(), name: name.into(), ownership, limit, open: None, in_open: 0, names: Vec::new(), written: 0, sparse: true };
         let sink = match compress {
             true => {
                 let info = FrameInfo::new().block_size(BlockSize::Max4MB).content_checksum(true);
@@ -389,6 +412,50 @@ mod tests {
         let mut back = Vec::new();
         r.read_to_end(&mut back).unwrap();
         assert_eq!(back, held, "the part is read back whole, its last files all zeros");
+        r.check(&stored).unwrap();
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn a_part_that_is_all_zeros_is_a_file_of_its_length_with_nothing_in_it() {
+        use std::os::unix::fs::MetadataExt;
+        let at = scratch("zeros");
+        let held = vec![0u8; 3 << 20];
+        let mut w = Writer::cut_at(&at, "misc", false, Ownership::Kept, 1 << 20);
+        w.write_all(&held).unwrap();
+        let stored = w.finish().unwrap();
+        assert_eq!((stored.size, stored.stored), (held.len() as u64, 0), "a part of zeros takes no room at all");
+        assert_eq!(stored.files, ["misc.000", "misc.001", "misc.002"], "and is cut where it was asked to be");
+        for name in &stored.files {
+            let file = fs::metadata(at.join(name)).unwrap();
+            assert_eq!((file.len(), file.blocks()), (1 << 20, 0), "{name} is a megabyte long and holds no block");
+        }
+        let mut r = Reader::open(&at, &stored);
+        let mut back = Vec::new();
+        r.read_to_end(&mut back).unwrap();
+        assert_eq!(back, held, "every byte of it reads back as the zero it is");
+        r.check(&stored).unwrap();
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn the_zeros_are_cut_into_files_like_the_rest_of_the_part() {
+        let at = scratch("straddle");
+        let mut held = vec![0x11; 5_000];
+        held.extend(vec![0u8; 40_000]);
+        held.extend(vec![0x22; 5_000]);
+        let mut w = Writer::cut_at(&at, "boot", false, Ownership::Kept, 8 << 10);
+        w.write_all(&held).unwrap();
+        let stored = w.finish().unwrap();
+        assert_eq!(stored.size, held.len() as u64, "the part is as long as it was");
+        assert!(stored.stored < held.len() as u64 / 2, "the zeros take little of it: {} of {}", stored.stored, held.len());
+        for name in &stored.files {
+            assert!(fs::metadata(at.join(name)).unwrap().len() <= 8 << 10, "{name} is cut where it was asked to be");
+        }
+        let mut r = Reader::open(&at, &stored);
+        let mut back = Vec::new();
+        r.read_to_end(&mut back).unwrap();
+        assert_eq!(back, held, "the part is read back whole across the files it is cut into");
         r.check(&stored).unwrap();
         fs::remove_dir_all(&at).unwrap();
     }
