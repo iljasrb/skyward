@@ -1468,43 +1468,43 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
-            fds.push(i.fd());
+            fds.push(i.worker.fd());
         }
         if let Some(c) = &control {
             fds.push(c.fd());
         }
         if let Some(e) = &eraser {
-            fds.push(e.fd());
+            fds.push(e.worker.fd());
         }
         if let Some(sh) = &shell {
             fds.extend(sh.fds());
         }
         if let Some(w) = &worker {
-            fds.push(w.fd());
+            fds.push(w.worker.fd());
         }
         if let Some(r) = &relabeler {
-            fds.push(r.fd());
+            fds.push(r.worker.fd());
         }
         if let Some(b) = &backuper {
-            fds.push(b.fd());
+            fds.push(b.worker.fd());
         }
         if let Some(m) = &merger {
-            fds.push(m.fd());
+            fds.push(m.worker.fd());
         }
         if let Some(d) = &decryptor {
-            fds.push(d.fd());
+            fds.push(d.worker.fd());
         }
         if let Some(p) = &part_worker {
-            fds.push(p.fd());
+            fds.push(p.worker.fd());
         }
         if let Some(w) = &wlan {
             fds.push(w.fd());
         }
         if let Some(c) = &checker {
-            fds.push(c.fd());
+            fds.push(c.worker.fd());
         }
         if let Some(d) = &downloader {
-            fds.push(d.fd());
+            fds.push(d.worker.fd());
         }
         fds.push(readings.fd());
         wait(&fds, timeout)?;
@@ -1517,7 +1517,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // What the installer and the eraser told comes first, so a touch
         // acts on the page as it now stands.
         {
-            let told = installer.as_ref().map(Installer::events).unwrap_or_default();
+            let told = installer.as_ref().map(|i| i.worker.events()).unwrap_or_default();
             for ev in told {
                 use skyward_install::{Event as Told, Outcome};
                 let finished = matches!(ev, Told::Finished(_));
@@ -1587,7 +1587,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut erased = false;
         if let Some(e) = &eraser {
-            for ev in e.events() {
+            for ev in e.worker.events() {
                 match ev {
                     // Rescue's page says only that erasing is under way.
                     wipe::Event::At(_) | wipe::Event::Progress(..) if rescue_erasing => {}
@@ -1652,7 +1652,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         };
         let mut worked = false;
         if let Some(w) = &worker {
-            for ev in w.events() {
+            for ev in w.worker.events() {
                 match ev {
                     filework::Event::Progress(p) => app.file_progress((p.bytes, p.total_bytes), (p.entries, p.total_entries)),
                     filework::Event::Relabeling(_) => unreachable!("work on files gives no labels"),
@@ -1665,7 +1665,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut relabeled = false;
         if let Some(r) = &relabeler {
-            for ev in r.events() {
+            for ev in r.worker.events() {
                 match ev {
                     filework::Event::Relabeling(p) => app.relabel_progress(p.checked, p.total, p.changed),
                     filework::Event::Progress(_) => unreachable!("relabeling moves no bytes"),
@@ -1681,7 +1681,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut parted = false;
         if let Some(p) = &part_worker {
-            for ev in p.events() {
+            for ev in p.worker.events() {
                 match ev {
                     partwork::Event::Listed(names) => app.part_listed(names),
                     partwork::Event::At(index) => app.part_at(index),
@@ -1727,7 +1727,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut backed = false;
         if let Some(b) = &backuper {
-            for ev in b.events() {
+            for ev in b.worker.events() {
                 match ev {
                     backup::Event::Plan(plan) => app.backup_plan(plan),
                     backup::Event::At { item, done, of, checking } => app.backup_at(BackupAt { item, done, of, checking }),
@@ -1743,7 +1743,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(m) = &merger {
             let slot = info.slot.context("only an A/B phone merges an update")?;
-            for ev in m.events() {
+            for ev in m.worker.events() {
                 match ev {
                     merge::Event::Looked(look) => {
                         eprintln!("merge {look:?}");
@@ -1763,7 +1763,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             }
             // Merged or not, the phone's readings say where the update
             // stands now.
-            if m.ended() {
+            if m.worker.finished() {
                 merger = None;
                 read_at = Instant::now();
                 info = skyward_info::collect(cfg)?;
@@ -1792,7 +1792,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut checked = false;
         if let Some(c) = &checker {
-            for ev in c.events() {
+            for ev in c.worker.events() {
                 let updates::Event::Checked(answer) = ev else { unreachable!("asking the server downloads nothing") };
                 let have = match &answer {
                     Ok(Some(release)) => have(&app, release),
@@ -1807,7 +1807,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut fetched = false;
         if let Some(d) = &downloader {
-            for ev in d.events() {
+            for ev in d.worker.events() {
                 match ev {
                     updates::Event::Progress(progress, rate) => app.download_progress(progress, rate),
                     updates::Event::Ended(end) => {
@@ -1832,7 +1832,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut wrote = false;
         if let Some(w) = &writer {
-            for ev in w.events() {
+            for ev in w.worker.events() {
                 match ev {
                     updates::Event::Writing(done, total) => app.install_progress(if total == 0 { 0.0 } else { done as f32 / total as f32 }),
                     updates::Event::Installed(outcome) => {
@@ -1848,7 +1848,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if wrote {
             writer = None;
         }
-        if let Some(ended) = decryptor.as_ref().and_then(Decryptor::ended) {
+        if let Some(ended) = decryptor.as_ref().and_then(|d| d.worker.recv()) {
             decryptor = None;
             match ended {
                 decrypt::Ended::Opened(Ok(opening)) => {

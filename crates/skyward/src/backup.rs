@@ -7,17 +7,16 @@ use skyward_backup::store::{self, Reader, Stored, Writer};
 use skyward_backup::{Item, Manifest, Part, FORMAT};
 use skyward_block::{mount, BY_NAME};
 use skyward_files::{Cancelled, Ownership};
+use skyward_sys::worker;
 use skyward_vab::{Slot, SnapshotState};
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// The most often how far the work has come is told.
@@ -178,82 +177,45 @@ pub enum End {
 }
 
 pub struct Worker {
-    events: Receiver<Event>,
-    /// Readable while events wait.
-    wake: OwnedFd,
+    pub worker: worker::Worker<Event>,
     cancel: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(io::Error::last_os_error()).context("make the backup worker's wake pipe");
-        }
-        let (wake, signal) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        let (tx, events) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let thread = thread::Builder::new()
-            .name("backup".into())
-            .spawn(move || {
-                let tell = |event: Event| {
-                    // The screen only stops listening once it has let the
-                    // worker go.
-                    let _ = tx.send(event);
-                    unsafe { libc::write(signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-                };
-                let ended = match task {
-                    Task::Backup(t) => backup(t, &tell, &stop).map(End::Saved),
-                    Task::Restore(t) => restore(t, &tell, &stop).map(|unmade| End::Restored { unmade }),
-                };
-                let end = match ended {
-                    Ok(end) => end,
-                    Err(e) if e.is::<Cancelled>() => End::Stopped,
-                    Err(e) => match e.downcast::<Refusal>() {
-                        Ok(refusal) => End::Refused(refusal),
-                        Err(e) => End::Failed(format!("{e:#}")),
-                    },
-                };
-                let said = match &end {
-                    End::Saved(folder) => format!("backup saved in {}", folder.display()),
-                    End::Restored { unmade } => format!("backup restored, all but {unmade:?}"),
-                    End::Stopped => "backup stopped".into(),
-                    End::Refused(why) => format!("backup refused: {why}"),
-                    End::Failed(why) => format!("backup failed: {why}"),
-                };
-                skyward_sys::kmsg(&said).expect("the kernel log takes a line");
-                tell(Event::Ended(end));
-            })
-            .context("start the backup worker")?;
-        Ok(Worker { events, wake, cancel, thread: Some(thread) })
-    }
-
-    pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
-    }
-
-    /// The events since the last call.
-    pub fn events(&self) -> Vec<Event> {
-        let mut drain = [0u8; 64];
-        while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
-        self.events.try_iter().collect()
+        let worker = worker::Worker::start("backup", "the backup worker", move |tell| {
+            let say = |event: Event| tell.send(event);
+            let ended = match task {
+                Task::Backup(t) => backup(t, &say, &stop).map(End::Saved),
+                Task::Restore(t) => restore(t, &say, &stop).map(|unmade| End::Restored { unmade }),
+            };
+            let end = match ended {
+                Ok(end) => end,
+                Err(e) if e.is::<Cancelled>() => End::Stopped,
+                Err(e) => match e.downcast::<Refusal>() {
+                    Ok(refusal) => End::Refused(refusal),
+                    Err(e) => End::Failed(format!("{e:#}")),
+                },
+            };
+            let said = match &end {
+                End::Saved(folder) => format!("backup saved in {}", folder.display()),
+                End::Restored { unmade } => format!("backup restored, all but {unmade:?}"),
+                End::Stopped => "backup stopped".into(),
+                End::Refused(why) => format!("backup refused: {why}"),
+                End::Failed(why) => format!("backup failed: {why}"),
+            };
+            skyward_sys::kmsg(&said).expect("the kernel log takes a line");
+            say(Event::Ended(end));
+        })?;
+        Ok(Worker { worker, cancel })
     }
 
     /// Ask the work to stop; it does between two chunks, and a restore
     /// only while nothing is written yet.
     pub fn stop(&self) {
         self.cancel.store(true, Ordering::Relaxed);
-    }
-}
-
-impl Drop for Worker {
-    /// The screen lets the worker go once its work has ended.
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the backup worker does not panic");
-        }
     }
 }
 
@@ -330,7 +292,7 @@ fn copy(from: &mut impl Read, to: &mut impl Write, len: u64, cancel: &AtomicBool
 /// with, in hex.
 fn data_key() -> Result<String> {
     let bytes = fs::read(DATA_KEY).with_context(|| format!("read {DATA_KEY}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(skyward_files::hex(&bytes))
 }
 
 /// The bytes free where `path` is, or would be made.

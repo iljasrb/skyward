@@ -11,6 +11,7 @@ pub mod kept;
 pub mod control;
 pub mod ueventd;
 pub mod usb;
+pub mod worker;
 
 /// A system property, or `None` when it is unset.
 #[cfg(target_os = "android")]
