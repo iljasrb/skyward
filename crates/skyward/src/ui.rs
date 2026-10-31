@@ -16,7 +16,7 @@ use crate::wlan;
 use anyhow::{anyhow, ensure, Context, Result};
 use skyward_block::fsck::Fixed;
 use skyward_block::{fstab, mount, probe};
-use skyward_config::{DeviceConfig, Service};
+use skyward_config::{DeviceConfig, Service, SettingsPlace};
 use skyward_crypto::data::{Closed, Opened};
 use skyward_install::asked::{self, Needs};
 use skyward_install::{Detach, Installer, Options};
@@ -67,12 +67,21 @@ const STORAGE_LOGS: &str = "Skyward/logs";
 /// where that is.
 const SETTINGS: (&str, &str) = ("settings", "values");
 
-/// Read the settings the boots before kept, and where they were found, so
-/// that they go back there; a key the file does not name stays at the value
-/// it starts at.
-fn saved_settings() -> (SavedSettings, Option<PathBuf>) {
+/// The configured place the settings are kept in, while it is mounted.
+fn settings_root(cfg: &DeviceConfig) -> Option<&'static str> {
+    let root = match cfg.settings.place {
+        SettingsPlace::Vendor => skyward_sys::kept::VENDOR,
+        SettingsPlace::Data => skyward_sys::kept::DATA,
+    };
+    skyward_sys::kept::mounted(root).then_some(root)
+}
+
+/// Read the settings the boots before kept; a key the file does not name
+/// stays at the value it starts at.
+fn saved_settings(cfg: &DeviceConfig) -> SavedSettings {
     let mut saved = SavedSettings::default();
-    let Some((path, text)) = skyward_sys::kept::read(SETTINGS.0, SETTINGS.1) else { return (saved, None) };
+    let Some(root) = settings_root(cfg) else { return saved };
+    let Some((_, text)) = skyward_sys::kept::read(root, SETTINGS.0, SETTINGS.1) else { return saved };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim();
@@ -100,7 +109,7 @@ fn saved_settings() -> (SavedSettings, Option<PathBuf>) {
             _ => {}
         }
     }
-    (saved, Some(path))
+    saved
 }
 
 fn parse_flag(value: &str) -> Option<bool> {
@@ -114,7 +123,11 @@ fn parse_flag(value: &str) -> Option<bool> {
 /// Write the settings as they stand, for the boots to come; a storage that
 /// cannot be written keeps them only until it opens, and this says why
 /// rather than failing.
-fn write_settings(settings: &SavedSettings, was: Option<&Path>) {
+fn write_settings(cfg: &DeviceConfig, settings: &SavedSettings) {
+    let Some(root) = settings_root(cfg) else {
+        let _ = skyward_sys::kmsg("the settings are not kept: their place is not mounted");
+        return;
+    };
     let language = match settings.lang {
         Lang::Hans => "hans",
         Lang::Hant => "hant",
@@ -125,7 +138,7 @@ fn write_settings(settings: &SavedSettings, was: Option<&Path>) {
         settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
         settings.file_transfer, settings.wlan
     );
-    match skyward_sys::kept::write(SETTINGS.0, SETTINGS.1, &text, was) {
+    match skyward_sys::kept::write(root, SETTINGS.0, SETTINGS.1, &text) {
         Ok(path) => {
             let _ = skyward_sys::kmsg(&format!("the settings are kept in {}", path.display()));
         }
@@ -1320,10 +1333,15 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // What the boots before kept: brightness, the theme, the language and
     // the rest are back before the first frame is drawn, and a WLAN that was
     // on is brought back up by itself.
-    let (saved, mut settings_where) = saved_settings();
-    let wlan_was_on = saved.wlan;
+    let saved = saved_settings(cfg);
+    let mut wlan_wanted = saved.wlan;
+    let mut wlan_touched = false;
     app.set_saved_settings(saved);
-    if wlan_was_on {
+    // A WLAN started before the data partition is open keeps its networks in
+    // memory and saves the ones joined there in it: the supplicant that holds
+    // them is started once the partition they are kept on is open, by the
+    // opening below.
+    if wlan_wanted {
         match &wlan {
             Some(w) => w.send(wlan::Command::On),
             None => {
@@ -1754,7 +1772,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // What the user changed goes to the partition the phone keeps it on
         // a moment after the last change.
         if let Some(settings) = app.settings_due(now) {
-            write_settings(&settings, settings_where.as_deref());
+            write_settings(cfg, &settings);
         }
         let mut checked = false;
         if let Some(c) = &checker {
@@ -1823,6 +1841,26 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;
+                    // The data partition now holds the settings if the device
+                    // keeps them there, and the WLAN's saved networks.
+                    if cfg.settings.place == SettingsPlace::Data {
+                        let saved = saved_settings(cfg);
+                        app.set_saved_settings(saved);
+                        if !wlan_touched {
+                            wlan_wanted = saved.wlan;
+                        }
+                    }
+                    // The supplicant keeps its networks in memory until the
+                    // data partition is open: it reads the ones saved there
+                    // now, and joins one.
+                    if wlan_wanted && !app.state.online() {
+                        if let Some(w) = &wlan {
+                            w.send(wlan::Command::On);
+                        }
+                    }
+                    if let Some(w) = &wlan {
+                        w.send(wlan::Command::Adopt);
+                    }
                 }
                 decrypt::Ended::Opened(Err(why)) => {
                     skyward_sys::kmsg(&format!("the data partition stays closed: {why}"))?;
@@ -2227,7 +2265,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         skyward_sys::kmsg("merging the update, as the update page asked")?;
                         merger = Some(merge::Merger::start(slot, true)?);
                     }
-                    Effect::Wlan(on) => wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off }),
+                    Effect::Wlan(on) => {
+                        wlan_wanted = on;
+                        wlan_touched = true;
+                        wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off })
+                    }
                     Effect::ScanWlan => {
                         scanned_at = Instant::now();
                         wlan_worker(&wlan)?.send(wlan::Command::Scan);
@@ -2333,11 +2375,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         // it, so what it read was nothing and the pages showed
                         // their own defaults. They are read again now that the
                         // storage is there.
-                        let (saved, kept_at) = saved_settings();
-                        let wlan_was_on = saved.wlan;
+                        let saved = saved_settings(cfg);
                         app.set_saved_settings(saved);
-                        settings_where = kept_at;
-                        if wlan_was_on {
+                        if !wlan_touched {
+                            wlan_wanted = saved.wlan;
+                        }
+                        if wlan_wanted {
                             match &wlan {
                                 Some(w) => w.send(wlan::Command::On),
                                 None => {

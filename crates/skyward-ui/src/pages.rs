@@ -2605,6 +2605,14 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on))]);
     out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
     let mut y = switch.bottom;
+    if matches!(s.data, Data::Closed | Data::Opening | Data::Failed(_)) {
+        let note = l.pick([
+            "已保存的网络会在 data 分区解密后连接。",
+            "已儲存的網路會在 data 分割區解密後連線。",
+            "Saved networks connect after the data partition is decrypted.",
+        ]);
+        y = widgets::footnote(&mut c, t, f, y, note);
+    }
     match &w.power {
         Power::Off => {
             let note = l.pick(["开启后，可连接 WLAN 下载系统更新。", "開啟後，可連接 Wi-Fi 下載系統更新。", "When on, system updates can download over Wi-Fi."]);

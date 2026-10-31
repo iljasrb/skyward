@@ -61,6 +61,9 @@ const RETRY: Duration = Duration::from_secs(10);
 pub enum Command {
     On,
     Off,
+    /// Read the networks the boots before saved, once the partition they are
+    /// kept on is open.
+    Adopt,
     Scan,
     Join { ssid: Vec<u8>, name: String, security: Security, password: String },
     Leave,
@@ -266,7 +269,7 @@ impl Station {
                     Inbox::Command(c) => self.command(c),
                     Inbox::Address(n, answer) => self.addressed(n, answer),
                     Inbox::Reach(n, reach) => self.reached(n, reach),
-                    Inbox::End => return self.off(),
+                    Inbox::End => return self.stop(),
                 }
             }
             self.listen();
@@ -290,6 +293,7 @@ impl Station {
         match c {
             Command::On => self.on(),
             Command::Off => self.off(),
+            Command::Adopt => self.adopt(),
             Command::Scan => {
                 if let Some(r) = &self.running {
                     // A scan under way answers FAIL-BUSY, and its results
@@ -321,23 +325,24 @@ impl Station {
     }
 
     fn on(&mut self) {
-        if self.running.is_some() {
-            return;
-        }
-        self.state.power = Power::Starting;
-        (self.tell)(Report::Wlan(self.state.clone()));
-        match self.start() {
-            Ok(r) => {
-                self.running = Some(r);
-                self.state.power = Power::On;
-                self.resume();
-                self.command(Command::Scan);
-            }
-            Err(e) => {
-                let _ = skyward_sys::kmsg(&format!("the WLAN did not come up: {e:#}"));
-                self.state.power = Power::Failed(format!("{e:#}"));
+        // One already up is joined again rather than started again: started
+        // against the driver a second time, this phone's supplicant ends with
+        // SIGSEGV.
+        if self.running.is_none() {
+            self.state.power = Power::Starting;
+            (self.tell)(Report::Wlan(self.state.clone()));
+            match self.start() {
+                Ok(r) => self.running = Some(r),
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("the WLAN did not come up: {e:#}"));
+                    self.state.power = Power::Failed(format!("{e:#}"));
+                    return;
+                }
             }
         }
+        self.state.power = Power::On;
+        self.resume();
+        self.command(Command::Scan);
     }
 
     /// The network the session before joined and the supplicant kept: it is
@@ -415,7 +420,19 @@ impl Station {
         })
     }
 
+    /// Leave the network, and keep the supplicant for the next time the WLAN
+    /// is asked for: started against the driver a second time, it ends with
+    /// SIGSEGV. One that does not answer is noticed by the events read next.
     fn off(&mut self) {
+        self.unaddress();
+        if let Some(r) = &self.running {
+            let _ = r.control.order("DISCONNECT");
+        }
+        self.state = Wlan::default();
+    }
+
+    /// End the supplicant, and the interface with it.
+    fn stop(&mut self) {
         self.unaddress();
         if let Some(mut r) = self.running.take() {
             end(&mut r.child, Some(&r.control));
@@ -429,7 +446,7 @@ impl Station {
     /// The supplicant no longer answers: the WLAN is off, and why is said.
     fn lost(&mut self, e: anyhow::Error) {
         let _ = skyward_sys::kmsg(&format!("the WLAN went away: {e:#}"));
-        self.off();
+        self.stop();
         self.state.power = Power::Failed(format!("{e:#}"));
     }
 
@@ -446,7 +463,67 @@ impl Station {
         r.control.order(&format!("SELECT_NETWORK {id}"))?;
         // What was joined is kept for the boots to come, where the
         // configuration can be written back.
-        r.control.order("SAVE_CONFIG")
+        r.control.order("SAVE_CONFIG")?;
+        self.keep_saved();
+        Ok(())
+    }
+
+    /// Keep what the supplicant wrote where the boots to come read it, once
+    /// that partition is open: its own copy lives in memory until then.
+    fn keep_saved(&self) {
+        let Some(dir) = kept_dir() else { return };
+        let saved = dir.join(KEPT.1);
+        let keep = fs::read(Path::new(HOME).join(KEPT.1))
+            .and_then(|text| fs::write(&saved, text))
+            .and_then(|()| std::os::unix::fs::chown(&saved, Some(WIFI), Some(WIFI)))
+            .and_then(|()| fs::set_permissions(&saved, fs::Permissions::from_mode(0o600)));
+        match keep {
+            Ok(()) => {
+                let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {}", saved.display()));
+            }
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("the WLAN's networks are not kept: {e}"));
+            }
+        }
+    }
+
+    /// Take in the networks the boots before saved, which a supplicant
+    /// started before that partition was open has not read: its own copy
+    /// gains them, and it reads that copy again. Started again it ends with
+    /// SIGSEGV, so reading again is what is asked of it instead.
+    fn adopt(&mut self) {
+        let Some(dir) = kept_dir() else {
+            let _ = skyward_sys::kmsg("the WLAN's saved networks are read once the data partition is decrypted");
+            return;
+        };
+        let Ok(theirs) = fs::read_to_string(dir.join(KEPT.1)) else { return };
+        let Some(at) = theirs.find("network={") else {
+            // Nothing saved on the partition yet: what was joined while it
+            // was closed goes there now.
+            self.keep_saved();
+            return;
+        };
+        let ours = Path::new(HOME).join(KEPT.1);
+        let Ok(mut text) = fs::read_to_string(&ours) else { return };
+        if !text.contains(&theirs[at..]) {
+            text.push_str(&theirs[at..]);
+            if let Err(e) = fs::write(&ours, &text) {
+                let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's saved networks: {e}", ours.display()));
+                return;
+            }
+        }
+        self.keep_saved();
+        let reread = match &self.running {
+            Some(r) => r.control.order("RECONFIGURE"),
+            None => return,
+        };
+        match reread {
+            Ok(()) => {
+                let _ = skyward_sys::kmsg("the WLAN read the networks saved on the data partition");
+                self.resume();
+            }
+            Err(e) => self.lost(e),
+        }
     }
 
     /// Read what the supplicant has told.
@@ -759,30 +836,39 @@ fn place(file: &Firmware) -> Result<()> {
 }
 
 /// The folder the supplicant's configuration is kept in, and the file
-/// itself: the network joined last comes back with the next boot. See
-/// `kept` for where that is.
+/// itself: the network joined last comes back with the next boot. It is on
+/// the data partition, which is encrypted and holds the password.
 const KEPT: (&str, &str) = ("wlan", "wpa_supplicant.conf");
 
-/// Where the supplicant keeps its configuration: the first place the settings
-/// are kept that can hold it, and a home in memory until then, which forgets
-/// on a restart.
-fn settings_dir() -> (PathBuf, bool) {
-    for root in skyward_sys::kept::places() {
-        let kept = skyward_sys::kept::folder(root, KEPT.0);
-        // The supplicant runs as the wifi user, so it has to be able to write
-        // its configuration back here; this phone's own build of it dies
-        // rather than saying it cannot.
-        let ready = fs::create_dir_all(&kept)
-            .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
-            .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
-        match ready {
-            Ok(()) => return (kept, true),
-            Err(e) => {
-                let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
-            }
+/// Where the supplicant's configuration is kept on the data partition, made
+/// ready for the supplicant to write in, if that partition is open.
+fn kept_dir() -> Option<PathBuf> {
+    if !skyward_sys::kept::mounted(skyward_sys::kept::DATA) {
+        return None;
+    }
+    let kept = skyward_sys::kept::folder(skyward_sys::kept::DATA, KEPT.0);
+    // The supplicant runs as the wifi user, so it has to be able to write
+    // its configuration back here; this phone's own build of it dies rather
+    // than saying it cannot.
+    let ready = fs::create_dir_all(&kept)
+        .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
+        .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
+    match ready {
+        Ok(()) => Some(kept),
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
+            None
         }
     }
-    (PathBuf::from(HOME), false)
+}
+
+/// Where the supplicant keeps its configuration: the data partition once it
+/// is open, and a home in memory until then, which forgets on a restart.
+fn settings_dir() -> PathBuf {
+    kept_dir().unwrap_or_else(|| {
+        let _ = skyward_sys::kmsg("the WLAN's networks wait for the data partition to be decrypted");
+        PathBuf::from(HOME)
+    })
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
@@ -790,13 +876,17 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     let home = Path::new(HOME);
     let sockets = home.join("sockets");
     fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
-    fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
+    // The supplicant writes its configuration back beside its socket as the
+    // wifi user, so both folders are its own: a save it cannot make answers
+    // FAIL and the network is lost with the boot.
+    std::os::unix::fs::chown(home, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", home.display()))?;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o770)).with_context(|| format!("open {} to the supplicant", home.display()))?;
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     // The configuration is written only when there is none, so the network
     // kept from the last session is still in it.
-    let (dir, kept) = settings_dir();
-    let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {} ({kept})", dir.display()));
+    let dir = settings_dir();
+    let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {}", dir.display()));
     let settings = dir.join(KEPT.1);
     if !settings.exists() {
         fs::write(&settings, format!("ctrl_interface={}\nupdate_config=1\nap_scan=1\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
