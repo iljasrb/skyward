@@ -328,6 +328,7 @@ impl Station {
         // One already up is joined again rather than started again: started
         // against the driver a second time, this phone's supplicant ends with
         // SIGSEGV.
+        let mut started = false;
         if self.running.is_none() {
             self.state.power = Power::Starting;
             (self.tell)(Report::Wlan(self.state.clone()));
@@ -339,12 +340,17 @@ impl Station {
                     return;
                 }
             }
-            // A boot where the data partition is open already holds the
-            // networks saved on it; none of them was in memory to start from.
-            self.adopt();
+            started = true;
         }
         self.state.power = Power::On;
-        self.resume();
+        if started {
+            // A boot where the data partition is open already holds the
+            // networks saved on it; none of them was in memory to start from.
+            // Taking them in joins one, so nothing is resumed again.
+            self.adopt();
+        } else {
+            self.resume();
+        }
         self.command(Command::Scan);
     }
 
@@ -862,8 +868,6 @@ fn kept_dir() -> Option<PathBuf> {
     }
 }
 
-/// Where the supplicant keeps its configuration: the data partition once it
-/// is open, and a home in memory until then, which forgets on a restart.
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     let home = Path::new(HOME);
@@ -880,13 +884,8 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     // phone's own build of it ends with SIGSEGV on a configuration read from
     // there. The networks saved on the partition are read by the recovery's
     // own code once it is open, and taken in with `Adopt`.
-    match kept_dir() {
-        Some(dir) => {
-            let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {}", dir.display()));
-        }
-        None => {
-            let _ = skyward_sys::kmsg("the WLAN's networks wait for the data partition to be decrypted");
-        }
+    if kept_dir().is_none() {
+        let _ = skyward_sys::kmsg("the WLAN's networks wait for the data partition to be decrypted");
     }
     let settings = home.join(KEPT.1);
     if !settings.exists() {
