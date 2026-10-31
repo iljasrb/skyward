@@ -47,8 +47,8 @@ struct Files {
     in_open: u64,
     names: Vec<String>,
     written: u64,
-    /// Whether the storage keeps the holes a seek leaves, which it stops
-    /// being asked for once one is refused.
+    /// Whether the zeros a part holds are left as holes, which stops once the
+    /// storage refuses one or the backup asks for none.
     sparse: bool,
 }
 
@@ -114,7 +114,10 @@ impl Write for Files {
             self.next()?;
         }
         let room = (self.limit - self.in_open).min(buf.len() as u64) as usize;
-        let (kept, zeros) = split_zero_run(&buf[..room]);
+        let (kept, zeros) = match self.sparse {
+            true => split_zero_run(&buf[..room]),
+            false => (room, 0),
+        };
         if kept == 0 {
             self.hole(zeros)?;
             return Ok(zeros);
@@ -165,14 +168,15 @@ pub struct Writer {
 
 impl Writer {
     /// Begin the part called `name` in the backup's `folder`, its files
-    /// given what `ownership` says.
-    pub fn create(folder: &Path, name: &str, compress: bool, ownership: Ownership) -> Writer {
-        Writer::cut_at(folder, name, compress, ownership, FILE_BYTES)
+    /// given what `ownership` says, and the zeros it holds left as holes
+    /// unless `sparse` says not to.
+    pub fn create(folder: &Path, name: &str, compress: bool, sparse: bool, ownership: Ownership) -> Writer {
+        Writer::cut_at(folder, name, compress, sparse, ownership, FILE_BYTES)
     }
 
-    fn cut_at(folder: &Path, name: &str, compress: bool, ownership: Ownership, limit: u64) -> Writer {
+    fn cut_at(folder: &Path, name: &str, compress: bool, sparse: bool, ownership: Ownership, limit: u64) -> Writer {
         let files =
-            Files { folder: folder.to_path_buf(), name: name.into(), ownership, limit, open: None, in_open: 0, names: Vec::new(), written: 0, sparse: true };
+            Files { folder: folder.to_path_buf(), name: name.into(), ownership, limit, open: None, in_open: 0, names: Vec::new(), written: 0, sparse };
         let sink = match compress {
             true => {
                 let info = FrameInfo::new().block_size(BlockSize::Max4MB).content_checksum(true);
@@ -317,7 +321,7 @@ mod tests {
         for compress in [false, true] {
             let name = if compress { "packed" } else { "plain" };
             let held = sample(2_500);
-            let mut w = Writer::cut_at(&at, name, compress, Ownership::Kept, 1_000);
+            let mut w = Writer::cut_at(&at, name, compress, true, Ownership::Kept, 1_000);
             w.write_all(&held).unwrap();
             let stored = w.finish().unwrap();
             assert_eq!((stored.size, stored.compressed), (2_500, compress));
@@ -337,7 +341,7 @@ mod tests {
     #[test]
     fn a_part_that_changed_after_it_was_stored_fails_its_check() {
         let at = scratch("changed");
-        let mut w = Writer::cut_at(&at, "boot", false, Ownership::Kept, 1_000);
+        let mut w = Writer::cut_at(&at, "boot", false, true, Ownership::Kept, 1_000);
         w.write_all(&sample(1_500)).unwrap();
         let stored = w.finish().unwrap();
         let second = at.join("boot.001");
@@ -357,7 +361,7 @@ mod tests {
     fn what_is_read_back_digests_as_the_part_was_stored() {
         let at = scratch("digest");
         let held = sample(3_000);
-        let mut w = Writer::cut_at(&at, "dtbo", true, Ownership::Kept, 1_000);
+        let mut w = Writer::cut_at(&at, "dtbo", true, true, Ownership::Kept, 1_000);
         w.write_all(&held).unwrap();
         let stored = w.finish().unwrap();
         // A partition is larger than what went into it; only the part's
@@ -379,7 +383,7 @@ mod tests {
         let mut held = sample(1_000);
         held.extend(vec![0u8; 8 << 20]);
         held.extend(vec![0xab; 1_500]);
-        let mut w = Writer::cut_at(&at, "super", false, Ownership::Kept, 1 << 30);
+        let mut w = Writer::cut_at(&at, "super", false, true, Ownership::Kept, 1 << 30);
         w.write_all(&held).unwrap();
         let stored = w.finish().unwrap();
         assert_eq!(stored.size, held.len() as u64, "the part is as long as it was");
@@ -401,7 +405,7 @@ mod tests {
         let at = scratch("trailing");
         let mut held = sample(500);
         held.extend(vec![0u8; 20 << 20]);
-        let mut w = Writer::create(&at, "boot", false, Ownership::Kept);
+        let mut w = Writer::create(&at, "boot", false, true, Ownership::Kept);
         w.write_all(&held).unwrap();
         let stored = w.finish().unwrap();
         assert_eq!(stored.size, held.len() as u64);
@@ -421,7 +425,7 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let at = scratch("zeros");
         let held = vec![0u8; 3 << 20];
-        let mut w = Writer::cut_at(&at, "misc", false, Ownership::Kept, 1 << 20);
+        let mut w = Writer::cut_at(&at, "misc", false, true, Ownership::Kept, 1 << 20);
         w.write_all(&held).unwrap();
         let stored = w.finish().unwrap();
         assert_eq!((stored.size, stored.stored), (held.len() as u64, 0), "a part of zeros takes no room at all");
@@ -444,7 +448,7 @@ mod tests {
         let mut held = vec![0x11; 5_000];
         held.extend(vec![0u8; 40_000]);
         held.extend(vec![0x22; 5_000]);
-        let mut w = Writer::cut_at(&at, "boot", false, Ownership::Kept, 8 << 10);
+        let mut w = Writer::cut_at(&at, "boot", false, true, Ownership::Kept, 8 << 10);
         w.write_all(&held).unwrap();
         let stored = w.finish().unwrap();
         assert_eq!(stored.size, held.len() as u64, "the part is as long as it was");
@@ -461,9 +465,27 @@ mod tests {
     }
 
     #[test]
+    fn the_zeros_are_written_out_when_no_holes_are_asked_for() {
+        let at = scratch("dense");
+        let mut held = vec![0x11; 1_000];
+        held.extend(vec![0u8; 8 << 20]);
+        held.extend(vec![0x22; 1_000]);
+        let mut w = Writer::create(&at, "super", false, false, Ownership::Kept);
+        w.write_all(&held).unwrap();
+        let stored = w.finish().unwrap();
+        assert_eq!((stored.size, stored.stored), (held.len() as u64, held.len() as u64), "every byte of the part takes room");
+        let mut r = Reader::open(&at, &stored);
+        let mut back = Vec::new();
+        r.read_to_end(&mut back).unwrap();
+        assert_eq!(back, held);
+        r.check(&stored).unwrap();
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
     fn an_empty_part_still_has_a_file() {
         let at = scratch("empty");
-        let stored = Writer::cut_at(&at, "fsc", true, Ownership::Kept, 1_000).finish().unwrap();
+        let stored = Writer::cut_at(&at, "fsc", true, true, Ownership::Kept, 1_000).finish().unwrap();
         assert_eq!(stored.files, ["fsc.000"]);
         let mut r = Reader::open(&at, &stored);
         assert_eq!(io::copy(&mut r, &mut io::sink()).unwrap(), 0);

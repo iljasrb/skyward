@@ -2227,7 +2227,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     // An install still stopping may yet write; a backup or
                     // restore waits for it.
-                    Effect::Backup { parts, place, compress, verify } => {
+                    Effect::Backup { parts, place, compress, verify, sparse } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
                         if installer.is_some() {
                             app.report(app.state.lang.pick(INSTALL_UNFINISHED), now);
@@ -2250,6 +2250,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             ownership,
                             compress,
                             verify,
+                            sparse,
                             remount: (place == Place::UsbDrive).then(|| PathBuf::from(USB_DRIVE)),
                             made,
                             device: cfg.device.codename.clone(),

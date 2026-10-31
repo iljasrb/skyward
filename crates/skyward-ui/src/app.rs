@@ -490,6 +490,9 @@ pub enum Switch {
     FileTransfer,
     /// Compress a backup.
     Compress,
+    /// Leave the zeros a part holds as holes in the backup's files, so that a
+    /// partition's unused stretch takes no room on the storage.
+    Sparse,
     /// Read a backup back once it is written.
     Verify,
     /// Run a zip's install script only if the zip was signed with one of
@@ -1571,6 +1574,9 @@ pub struct State {
     pub backup_to: Place,
     pub compress: bool,
     pub verify: bool,
+    /// Whether a backup's files leave the zeros they hold as holes, which
+    /// they do unless asked not to.
+    pub sparse: bool,
     /// The backups found, newest first, those that cannot be read last.
     pub backups: Vec<BackupEntry>,
     /// The backup the restore page shows, as it was found, and which of its
@@ -1708,6 +1714,7 @@ impl Default for State {
             backup_to: Place::Storage,
             compress: false,
             verify: true,
+            sparse: true,
             backups: Vec::new(),
             restore: None,
             backup_job: None,
@@ -1967,7 +1974,7 @@ pub enum Effect {
     /// a folder of their own in `place`, telling how it goes with
     /// [`App::backup_started`], [`App::backup_plan`], [`App::backup_at`]
     /// and [`App::backup_ended`].
-    Backup { parts: [bool; 4], place: Place, compress: bool, verify: bool },
+    Backup { parts: [bool; 4], place: Place, compress: bool, verify: bool, sparse: bool },
     /// Restore the parts ticked of the backup in the folder `name` of
     /// `place`, telling how it goes as a backup does.
     Restore { place: Place, name: String, parts: [bool; 4] },
@@ -4918,6 +4925,7 @@ impl App {
                     Switch::Vibrate => &mut self.state.vibrate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
                     Switch::Compress => &mut self.state.compress,
+                    Switch::Sparse => &mut self.state.sparse,
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
@@ -6157,7 +6165,8 @@ impl App {
                         (Place::UsbDrive, _) => USB_DRIVE_WANTED,
                     })
                 };
-                let backup = Effect::Backup { parts: s.backup, place: s.backup_to, compress: s.compress, verify: s.verify };
+                let backup =
+                    Effect::Backup { parts: s.backup, place: s.backup_to, compress: s.compress, verify: s.verify, sparse: s.sparse };
                 match refused {
                     Some(why) => self.say(l.pick(why), now),
                     None => fx.push(backup),
@@ -9055,6 +9064,20 @@ mod tests {
     }
 
     #[test]
+    fn a_backup_leaves_the_zeros_it_holds_as_holes_unless_asked_not_to() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Backup, &f, &i);
+        app.data_waiting(Some((10, Keys::Digits)));
+        let holes = Effect::Backup { parts: app.state.backup, place: Place::Storage, compress: false, verify: true, sparse: true };
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![holes], "holes are asked for as the page opens");
+        let mut app = opened(Screen::Backup, &f, &i);
+        app.data_waiting(Some((10, Keys::Digits)));
+        tap(&mut app, &f, &i, Action::Toggle(Switch::Sparse));
+        let written = Effect::Backup { parts: app.state.backup, place: Place::Storage, compress: false, verify: true, sparse: false };
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![written], "and not once the row is turned off");
+    }
+
+    #[test]
     fn a_backup_takes_what_is_ticked_to_where_it_is_sent() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Backup, &f, &i);
@@ -9063,7 +9086,7 @@ mod tests {
         assert_eq!(app.deadline(0), Some(TOAST_MS), "and says so");
         // The owner's files open first; another user's still wait.
         app.data_waiting(Some((10, Keys::Digits)));
-        let first = Effect::Backup { parts: [true, true, false, true], place: Place::Storage, compress: false, verify: true };
+        let first = Effect::Backup { parts: [true, true, false, true], place: Place::Storage, compress: false, verify: true, sparse: true };
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![first]);
         tap(&mut app, &f, &i, Action::BackupPart(2));
         assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty(), "the data partition is backed up only with every user's files open");
@@ -9075,7 +9098,7 @@ mod tests {
         tap(&mut app, &f, &i, Action::Toggle(Switch::Verify));
         assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty(), "no drive is plugged in");
         app.set_usb_drive(Some(UsbDrive::Shown));
-        let second = Effect::Backup { parts: [false, true, true, true], place: Place::UsbDrive, compress: true, verify: false };
+        let second = Effect::Backup { parts: [false, true, true, true], place: Place::UsbDrive, compress: true, verify: false, sparse: true };
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![second]);
         for k in 1..4 {
             tap(&mut app, &f, &i, Action::BackupPart(k));

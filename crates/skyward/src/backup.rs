@@ -89,6 +89,8 @@ pub struct BackupTask {
     pub ownership: Ownership,
     pub compress: bool,
     pub verify: bool,
+    /// Whether the zeros a part holds are left as holes in its files.
+    pub sparse: bool,
     /// The mount the place is, when it is shown read-only and so is made
     /// writable for the backup, and read-only again after: a USB drive.
     pub remount: Option<PathBuf>,
@@ -438,7 +440,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
                 (_, false) => format!("{name}.img"),
                 (_, true) => format!("{name}.img.lz4"),
             };
-            let mut writer = Room::new(Writer::create(&folder, &file, t.compress, t.ownership), &t.into, *size);
+            let mut writer = Room::new(Writer::create(&folder, &file, t.compress, t.sparse, t.ownership), &t.into, *size);
             let mut telling = Telling::new(tell, k, *size, false);
             match source {
                 Source::Block(device) => {

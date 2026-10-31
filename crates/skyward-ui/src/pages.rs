@@ -1759,8 +1759,14 @@ pub fn backup(cx: &Ctx) -> Frame {
     let options = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["压缩", "壓縮", "Compress"])).subtitle(l.pick(["备份更小，耗时更长", "備份更小，耗時更長", "Smaller, and slower to make"])).trail(Trail::Switch(s.compress)),
         Row::new(l.pick(["完成后校验", "完成後驗證", "Verify when done"])).subtitle(l.pick(["确认备份文件完整", "確認備份檔案完整", "Checks the backup's files are whole"])).trail(Trail::Switch(s.verify)),
+        Row::new(l.pick(["跳过空白区域", "略過空白區域", "Skip empty space"]))
+            .subtitle(l.pick(["空白部分不占空间", "空白部分不佔空間", "Zeros take no room in the files"]))
+            .trail(Trail::Switch(s.sparse)),
     ]);
-    out.extend(hits(&options.rows, &[Action::Toggle(Switch::Compress), Action::Toggle(Switch::Verify)]));
+    out.extend(hits(
+        &options.rows,
+        &[Action::Toggle(Switch::Compress), Action::Toggle(Switch::Verify), Action::Toggle(Switch::Sparse)],
+    ));
     let note = l.pick([
         "备份将保存在 Skyward/backups 文件夹中，以开始备份的时间命名。",
         "備份將儲存在 Skyward/backups 資料夾中，以開始備份的時間命名。",
