@@ -1303,7 +1303,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut backuper: Option<backup::Worker> = None;
     // An update's merge followed: one the recovery found under way, which
     // the kernel took up again as the snapshots were mapped, or one started
-    // on the update page.
+    // on the install page.
     let mut merger: Option<merge::Merger> = None;
     if let Some(slot) = info.slot {
         let standing = skyward_vab::standing(slot)?;
@@ -2249,20 +2249,24 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         queue.extend(app.backup_deleted(deleted, now));
                     }
                     Effect::StopBackup => backuper.as_ref().context("there is no backup or restore to stop")?.stop(),
+                    // A phone that is not A/B has no update of the other
+                    // slot to look at.
                     Effect::ReadUpdate => {
-                        let slot = info.slot.context("only an A/B phone has an update to merge")?;
-                        // A merge followed tells where it stands itself.
-                        if merger.is_none() {
-                            app.set_update(skyward_vab::standing(slot)?);
+                        if let Some(slot) = info.slot {
+                            // A merge followed tells where it stands itself.
+                            if merger.is_none() {
+                                app.set_update(skyward_vab::standing(slot)?);
+                            }
+                            // An update in the other slot starts with that
+                            // slot, which a system's updater may not have set
+                            // yet.
+                            app.set_boot_slots(read_slots());
                         }
-                        // An update in the other slot starts with that slot,
-                        // which a system's updater may not have set yet.
-                        app.set_boot_slots(read_slots());
                     }
                     Effect::Merge => {
                         ensure!(merger.is_none(), "the update is being merged already");
                         let slot = info.slot.context("only an A/B phone merges an update")?;
-                        skyward_sys::kmsg("merging the update, as the update page asked")?;
+                        skyward_sys::kmsg("merging the update, as the install page asked")?;
                         merger = Some(merge::Merger::start(slot, true)?);
                     }
                     Effect::Wlan(on) => {

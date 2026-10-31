@@ -30,6 +30,12 @@ const MOUNT: Text = ["挂载", "掛載", "Mount"];
 pub const ENTRIES: &[Entry] = &[
     entry(["WLAN", "Wi-Fi", "Wi-Fi"], HOME, Screen::Wlan, &["wuxianwangluo", "wxwl", "wangluo", "wl", "lianwang", "wifi", "wlan"]),
     entry(INSTALL, HOME, Screen::Install, &["anzhuang", "az", "install", "shuaji", "sj"]),
+    entry(
+        ["系统更新", "系統更新", "System update"],
+        INSTALL,
+        Screen::Install,
+        &["xitonggengxin", "xtgx", "hebing", "hb", "merge", "snapshot", "ota"],
+    ),
     entry(["从内部存储安装", "從內部儲存空間安裝", "Install from internal storage"], INSTALL, Screen::Install, &["congneibucunchuanzhuang", "cnbccaz", "neicun", "sdcard", "zip"]),
     entry(["从 U 盘安装", "從 USB 隨身碟安裝", "Install from a USB drive"], INSTALL, Screen::Install, &["congupananzhuang", "cupaz", "upan", "usb", "otg"]),
     entry(["通过电脑安装", "透過電腦安裝", "Install from a computer"], INSTALL, Screen::Install, &["tongguodiannaoanzhuang", "tgdnaz", "sideload", "adb"]),
@@ -54,10 +60,10 @@ pub const ENTRIES: &[Entry] = &[
     ),
     entry(["导出日志", "匯出記錄", "Export logs"], ADVANCED, Screen::Logs, &["daochurizhi", "dcrz", "rizhi", "rz", "logs", "dmesg"]),
     entry(
-        ["系统更新", "系統更新", "System update"],
+        ["Recovery 更新", "Recovery 更新", "Recovery update"],
         ADVANCED,
         Screen::Update,
-        &["xitonggengxin", "xtgx", "hebing", "hb", "xiazai", "xz", "wanzhenggengxinbao", "wzgxb", "update", "ota", "merge", "snapshot", "download"],
+        &["recoverygengxin", "rcgx", "gengxin", "gx", "skyward", "recovery", "update", "xiazai", "xz", "download"],
     ),
     entry(SETTINGS, HOME, Screen::Settings, &["shezhi", "sz", "settings"]),
     entry(["深色模式", "深色模式", "Dark mode"], SETTINGS, Screen::Settings, &["shensemoshi", "ssms", "dark", "theme"]),
@@ -175,7 +181,7 @@ mod tests {
         assert_eq!(titles("wifi"), ["WLAN"]);
         assert_eq!(find_on("wlan", Lang::Hans, true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
         assert!(find_on("wlan", Lang::Hans, false).is_empty());
-        assert_eq!(titles("xiazai"), ["系统更新"]);
+        assert_eq!(titles("xiazai"), ["Recovery 更新"]);
     }
 
     #[test]

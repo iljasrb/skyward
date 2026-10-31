@@ -324,9 +324,9 @@ pub fn backup_refusal(l: Lang, r: &BackupRefusal, restore: bool) -> String {
             match state {
                 SnapshotState::Snapshotted | SnapshotState::Merging => tr!(
                     l,
-                    "更新合并完成前，暂不{what}。你可以在「高级 > 系统更新」中查看。",
-                    "更新合併完成前，暫不{what}。你可以在「進階 > 系統更新」中查看。",
-                    "{parts} aren't {what} until the update merges. You can see it in Advanced > System update."
+                    "更新合并完成前，暂不{what}。你可以在「安装」中查看。",
+                    "更新合併完成前，暫不{what}。你可以在「安裝」中查看。",
+                    "{parts} aren't {what} until the update merges. You can see it in Install."
                 ),
                 SnapshotState::MergeFailed => tr!(
                     l,
@@ -365,9 +365,9 @@ pub fn backup_refusal(l: Lang, r: &BackupRefusal, restore: bool) -> String {
     }
 }
 
-/// What the update page says of an update standing so, and the line under
-/// it on what comes next; `next` is the slot the bootloader starts next,
-/// where the boot control could tell.
+/// What the install page says of the system update standing so, and the
+/// line under it on what comes next; `next` is the slot the bootloader
+/// starts next, where the boot control could tell.
 pub fn update(l: Lang, s: &Standing, next: Option<Slot>) -> (&'static str, Option<String>) {
     let line = |text: Text| Some(l.pick(text).to_string());
     match s {
@@ -439,19 +439,6 @@ pub fn build_date(l: Lang, stamp: &str) -> String {
 /// Why writing the downloaded image over this recovery failed.
 pub fn install_failed(l: Lang, why: &str) -> String {
     tr!(l, "写入失败：{why}", "寫入失敗：{why}", "Couldn't write it: {why}")
-}
-
-pub fn update_value(l: Lang, s: &Standing) -> &'static str {
-    l.pick(match s {
-        Standing::None => ["暂无", "無", "None"],
-        Standing::Unknown => ["无法读取", "無法讀取", "Unreadable"],
-        Standing::Writing => ["未写入完成", "尚未寫入完成", "Not fully written"],
-        Standing::Installed(_) => ["已安装", "已安裝", "Installed"],
-        Standing::Waiting | Standing::Compressed => ["等待合并", "等待合併", "Waiting to merge"],
-        Standing::Merging(_) => ["正在合并", "正在合併", "Merging"],
-        Standing::Failed(_) => ["合并失败", "合併失敗", "Merge failed"],
-        Standing::Merged => ["已合并", "已合併", "Merged"],
-    })
 }
 
 pub fn data(l: Lang, d: &Data) -> &'static str {
@@ -549,17 +536,17 @@ pub fn erase_stop(l: Lang, s: &EraseStop) -> (String, Option<String>) {
     match s {
         EraseStop::Update(Hold::Unconfirmed) => (
             said([
-                "当前槽位的系统更新尚未完成，暂无法清除。你可以在「高级 > 系统更新」中合并后重试。",
-                "目前槽位的系統更新尚未完成，暫時無法清除。你可以在「進階 > 系統更新」中合併後重試。",
-                "The current slot's system update hasn't finished, so nothing can be wiped yet. Merge it in Advanced > System update, then try again.",
+                "当前槽位的系统更新尚未完成，暂无法清除。你可以在「安装」中合并后重试。",
+                "目前槽位的系統更新尚未完成，暫時無法清除。你可以在「安裝」中合併後重試。",
+                "The current slot's system update hasn't finished, so nothing can be wiped yet. Merge it in Install, then try again.",
             ]),
             None,
         ),
         EraseStop::Update(Hold::Merging) => (
             said([
-                "系统更新正在合并，暂无法清除。你可以在「高级 > 系统更新」中查看，合并完成后重试。",
-                "系統更新正在合併，暫時無法清除。你可以在「進階 > 系統更新」中查看，合併完成後重試。",
-                "A system update is merging, so nothing can be wiped yet. You can see it in Advanced > System update; try again once it has merged.",
+                "系统更新正在合并，暂无法清除。你可以在「安装」中查看，合并完成后重试。",
+                "系統更新正在合併，暫時無法清除。你可以在「安裝」中查看，合併完成後重試。",
+                "A system update is merging, so nothing can be wiped yet. You can see it in Install; try again once it has merged.",
             ]),
             None,
         ),

@@ -159,7 +159,8 @@ const ABOUT: Text = ["关于本机", "關於手機", "About phone"];
 const SPECS: Text = ["全部参数与信息", "全部規格與資訊", "All specs"];
 const LOGS: Text = ["导出日志", "匯出記錄", "Export logs"];
 const SCREEN_TIMEOUT: Text = ["息屏时间", "螢幕自動關閉", "Screen timeout"];
-const UPDATE: Text = ["系统更新", "系統更新", "System update"];
+const RECOVERY_UPDATE: Text = ["Recovery 更新", "Recovery 更新", "Recovery update"];
+const SYSTEM_UPDATE: Text = ["系统更新", "系統更新", "System update"];
 const FILES: Text = ["文件管理", "檔案管理", "File manager"];
 const TERMINAL: Text = ["终端", "終端機", "Terminal"];
 const LANGUAGE: Text = ["语言", "語言", "Language"];
@@ -289,18 +290,17 @@ pub fn home(cx: &Ctx) -> Frame {
     Frame { back: false, fold: Some(fold), ..Frame::new(t, c.crop_height(height), out, HOME_TITLE, cards_top) }
 }
 
-/// What the advanced page says beside its system update entry: a download
-/// under way, a newer system found, or where an update the system installed
-/// stands.
-fn update_value(cx: &Ctx) -> &'static str {
+/// What the advanced page says beside its recovery update entry: a download
+/// under way, a newer recovery found, or the build this one is.
+fn update_value(cx: &Ctx) -> String {
     let (s, l) = (cx.state, cx.state.lang);
     if s.downloading() {
-        return l.pick(["正在下载", "正在下載", "Downloading"]);
+        return l.pick(["正在下载", "正在下載", "Downloading"]).to_string();
     }
     if s.newest().is_some() {
-        return l.pick(["有新版本", "有新版本", "New version"]);
+        return l.pick(["有新版本", "有新版本", "New version"]).to_string();
     }
-    fmt::update_value(l, &s.update)
+    fmt::build_date(l, BUILD)
 }
 
 /// Preferences, opening with the stock「显示与亮度」theme previews.
@@ -573,7 +573,7 @@ pub fn specs(cx: &Ctx) -> Frame {
     let mut boot = Vec::new();
     if let Some(s) = i.slot {
         boot.push((l.pick(CURRENT_SLOT), s.letter().to_string()));
-        boot.push((l.pick(UPDATE), fmt::snapshot(l, &i.snapshot).to_string()));
+        boot.push((l.pick(SYSTEM_UPDATE), fmt::snapshot(l, &i.snapshot).to_string()));
     }
     if let Some(unlocked) = i.boot.unlocked {
         let state = if unlocked { ["已解锁", "已解鎖", "Unlocked"] } else { ["已锁定", "已鎖定", "Locked"] };
@@ -790,9 +790,10 @@ pub fn reboot(cx: &Ctx) -> Frame {
 /// Installing, opened from the home page: the system on the phone now, and
 /// where a package can come from.
 pub fn install(cx: &Ctx) -> Frame {
-    let (t, f, i, l) = (cx.t, cx.f, cx.info, cx.state.lang);
+    let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
     let mut c = long_page(cx);
     let top = t.m.content_top;
+    let mut out = Vec::new();
     let mut facts = Vec::new();
     if let Some(v) = &i.os_version {
         facts.push((l.pick(["当前系统", "目前系統", "Current system"]), v.clone()));
@@ -806,17 +807,59 @@ pub fn install(cx: &Ctx) -> Frame {
         facts.push((l.pick(CURRENT_SLOT), detail));
     }
     let ways = l.pick(["安装方式", "安裝方式", "Ways to install"]);
-    let y = if facts.is_empty() {
-        widgets::section_first(&mut c, t, f, top, ways)
+    let mut y = if facts.is_empty() {
+        top
     } else {
         let y = widgets::section_first(&mut c, t, f, top, l.pick(["本机", "本機", "This phone"]));
-        let y = widgets::info_card(&mut c, t, f, y, &facts);
-        widgets::section(&mut c, t, f, y, ways)
+        widgets::info_card(&mut c, t, f, y, &facts)
     };
-    let mut rows = Vec::new();
-    if let Some(note) = fmt::snapshot_note(l, &i.snapshot) {
-        rows.push(Row::new(fmt::snapshot(l, &i.snapshot)).icon(ORANGE, Icon::Layers).subtitle(note).trail(Trail::None));
+    // The system update the phone was given, while one is in flight: a
+    // package installed here leaves one that merges once the new system
+    // starts, or from here.
+    if s.update != Standing::None {
+        let system = l.pick(["系统更新", "系統更新", "System update"]);
+        y = if y == top { widgets::section_first(&mut c, t, f, y, system) } else { widgets::section(&mut c, t, f, y, system) };
+        if let Standing::Merging(done) = s.update {
+            let p = percent(done as f32);
+            let detail = tr!(l, "已完成 {p}%", "已完成 {p}%", "{p}% done");
+            y = widgets::progress_card(&mut c, t, f, y, l.pick(["正在合并更新", "正在合併更新", "Merging the update"]), &detail, Some(done as f32));
+            let note = l.pick([
+                "合并完成前，暂不刷写 super 中的分区。返回后将继续合并。",
+                "合併完成前，暫不刷寫 super 中的分割區。返回後將繼續合併。",
+                "Partitions in super aren't flashed until it merges. Merging goes on after going back.",
+            ]);
+            y = widgets::footnote(&mut c, t, f, y, note);
+        } else {
+            let next = match &s.boot_slots {
+                Some(Ok(slots)) => Some(slots.active),
+                _ => None,
+            };
+            let (title, detail) = fmt::update(l, &s.update, next);
+            let color = match s.update {
+                Standing::None => SLATE,
+                Standing::Merged => GREEN,
+                Standing::Failed(_) | Standing::Unknown => RED,
+                _ => ORANGE,
+            };
+            let mut row = Row::new(title).icon(color, Icon::Layers).trail(Trail::None);
+            if let Some(detail) = &detail {
+                row = row.subtitle(detail);
+            }
+            y = widgets::list(&mut c, t, f, y, &[row]).bottom;
+            if let Some(note) = fmt::snapshot_note(l, &i.snapshot) {
+                y = widgets::footnote(&mut c, t, f, y, note);
+            }
+            if s.update == Standing::Waiting {
+                let (label, danger) = confirm_label(Confirm::Merge, cx.state);
+                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::Merge) });
+                let note = l.pick(["合并后无法回到更新前的系统。", "合併後無法回到更新前的系統。", "Once merged, the system from before the update can't come back."]);
+                y = widgets::footnote(&mut c, t, f, track.y + track.h, note);
+            }
+        }
     }
+    y = if y == top { widgets::section_first(&mut c, t, f, y, ways) } else { widgets::section(&mut c, t, f, y, ways) };
+    let mut rows = Vec::new();
     // Internal storage opens with the data partition, which the decrypt
     // page opens or tells why it does not.
     let data = &cx.state.data;
@@ -843,7 +886,7 @@ pub fn install(cx: &Ctx) -> Frame {
     rows.push(Row::new(install_title(l, Source::Computer)).icon(GREEN, Icon::Usb).subtitle(sideload));
     let methods = widgets::list(&mut c, t, f, y, &rows);
     let from_usb = Action::Open(Screen::Choose(Place::UsbDrive));
-    let mut out = hits(&methods.rows[methods.rows.len() - 3..], &[from_storage, from_usb, Action::Sideload]);
+    out.extend(hits(&methods.rows, &[from_storage, from_usb, Action::Sideload]));
     let what = l.pick([
         "支持安装 A/B 完整更新包和带安装脚本的刷机包，以及刷入 boot、init_boot、vendor_boot、recovery、dtbo、vbmeta 分区镜像。系统更新将安装到另一个槽位，重启后从该槽位启动。选择文件时仅列出文件夹以及 .zip、.img 文件。",
         "支援安裝 A/B 完整更新檔和帶有安裝指令碼的刷機包，以及刷入 boot、init_boot、vendor_boot、recovery、dtbo、vbmeta 分割區映像檔。系統更新將安裝到另一個槽位，重新啟動後從該槽位啟動。選擇檔案時僅列出資料夾以及 .zip、.img 檔案。",
@@ -2065,13 +2108,14 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
     let mut c = page(cx);
     let top = t.m.content_top;
+    let build = update_value(cx);
     let tools = widgets::list(&mut c, t, f, top, &[
         Row::new(l.pick(FILES)).icon(BLUE, Icon::Folder),
         Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal),
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
-        Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
+        Row::new(l.pick(RECOVERY_UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(&build)),
     ]);
     let out = hits(&tools.rows, &[
         Action::Open(Screen::Files),
@@ -2414,54 +2458,18 @@ pub fn update(cx: &Ctx) -> Frame {
     let mut c = long_page(cx);
     let top = t.m.content_top;
     let mut out = Vec::new();
-    if let Standing::Merging(done) = s.update {
-        let share = done as f32;
-        let p = percent(share);
-        let detail = tr!(l, "已完成 {p}%", "已完成 {p}%", "{p}% done");
-        let y = widgets::progress_card(&mut c, t, f, top, l.pick(["正在合并更新", "正在合併更新", "Merging the update"]), &detail, Some(share));
-        let note = l.pick([
-            "合并完成前，暂不刷写 super 中的分区。返回后将继续合并。",
-            "合併完成前，暫不刷寫 super 中的分割區。返回後將繼續合併。",
-            "Partitions in super aren't flashed until it merges. Merging goes on after going back.",
-        ]);
-        let y = widgets::footnote(&mut c, t, f, y, note);
-        return Frame::new(t, fit(c, t, y), out, l.pick(UPDATE), top);
-    }
-    // The recovery this page updates, and when it was built.
-    let build = fmt::build_date(l, BUILD);
+    // The recovery this page updates, and the version it is.
     let mut y = widgets::section_first(&mut c, t, f, top, l.pick(["本机", "本機", "This recovery"]));
-    y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["当前版本", "目前版本", "Current build"]), build)]);
+    y = widgets::info_card(&mut c, t, f, y, &[
+        (l.pick(["当前版本", "目前版本", "Current build"]), format!("Skyward {VERSION}")),
+        (l.pick(["构建时间", "建置時間", "Built"]), fmt::build_date(l, BUILD)),
+    ]);
     if s.update_server {
         let online_update = l.pick(["在线更新", "線上更新", "Online update"]);
         y = if y == top { widgets::section_first(&mut c, t, f, y, online_update) } else { widgets::section(&mut c, t, f, y, online_update) };
         y = online(&mut c, cx, y, &mut out);
     }
-    let next = match &s.boot_slots {
-        Some(Ok(slots)) => Some(slots.active),
-        _ => None,
-    };
-    let (title, detail) = fmt::update(l, &s.update, next);
-    let color = match s.update {
-        Standing::None => SLATE,
-        Standing::Merged => GREEN,
-        Standing::Failed(_) | Standing::Unknown => RED,
-        _ => ORANGE,
-    };
-    let mut row = Row::new(title).icon(color, Icon::Layers).trail(Trail::None);
-    if let Some(detail) = &detail {
-        row = row.subtitle(detail);
-    }
-    let merging = l.pick(["更新合并", "更新合併", "Merging"]);
-    y = if y == top { widgets::section_first(&mut c, t, f, y, merging) } else { widgets::section(&mut c, t, f, y, merging) };
-    y = widgets::list(&mut c, t, f, y, &[row]).bottom;
-    if s.update == Standing::Waiting {
-        let (label, danger) = confirm_label(Confirm::Merge, cx.state);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
-        out.push(Hit { rect: track, action: Action::Confirm(Confirm::Merge) });
-        let note = l.pick(["合并后无法回到更新前的系统。", "合併後無法回到更新前的系統。", "Once merged, the system from before the update can't come back."]);
-        y = widgets::footnote(&mut c, t, f, track.y + track.h, note);
-    }
-    Frame::new(t, fit(c, t, y), out, l.pick(UPDATE), top)
+    Frame::new(t, fit(c, t, y), out, l.pick(RECOVERY_UPDATE), top)
 }
 
 /// What downloading or checking for updates needs first, while the phone

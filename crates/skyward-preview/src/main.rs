@@ -779,12 +779,12 @@ fn main() -> Result<()> {
         ("56-time-zone-light", Screen::TimeZone, false, &|_| {}),
         ("56-time-zone-dark-london", Screen::TimeZone, true, &|app| app.state.time_zone = 5),
         ("57-logs-light", Screen::Logs, false, &|_| {}),
-        ("113-update-light-waiting", Screen::Update, false, &|app| app.set_update(Standing::Waiting)),
-        ("114-update-dark-merging", Screen::Update, true, &|app| app.set_update(Standing::Merging(0.37))),
-        ("115-update-light-installed", Screen::Update, false, &|app| app.set_update(Standing::Installed(Slot::A))),
+        ("113-install-light-waiting", Screen::Install, false, &|app| app.set_update(Standing::Waiting)),
+        ("114-install-dark-merging", Screen::Install, true, &|app| app.set_update(Standing::Merging(0.37))),
+        ("115-install-light-installed", Screen::Install, false, &|app| app.set_update(Standing::Installed(Slot::A))),
         // Installed by an updater that has slot A start next only as it
         // restarts the phone itself.
-        ("118-update-light-installed-unswitched", Screen::Update, false, &|app| {
+        ("118-install-light-installed-unswitched", Screen::Install, false, &|app| {
             app.set_update(Standing::Installed(Slot::A));
             app.set_boot_slots(Ok(BootSlots { active: Slot::B, bootable: [false, true], successful: [false, true] }));
         }),
