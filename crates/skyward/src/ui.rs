@@ -59,7 +59,7 @@ const LEAVE_AFTER_MS: u64 = 1500;
 const TOUCH_WAIT: Duration = Duration::from_secs(5);
 
 /// How long the first page takes to come up out of the dark at the start.
-const APPEAR: Duration = Duration::from_millis(200);
+const APPEAR: Duration = Duration::from_millis(400);
 
 /// Where logs saved to the temporary folder go, and where in internal
 /// storage the others do.
