@@ -1,3 +1,4 @@
+use crate::adbwifi;
 use crate::backup;
 use crate::decrypt::{self, Decryptor};
 use crate::filework;
@@ -30,8 +31,8 @@ use skyward_net::http::Servers;
 use skyward_net::release::Release;
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
-    App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
-    FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
+    App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind,
+    FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
     RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
@@ -1044,6 +1045,9 @@ fn install_options(app: &App) -> Options {
 /// How often the WLAN page scans while it shows.
 const SCAN_EVERY: Duration = Duration::from_secs(10);
 
+/// How long adbd is given to hold the port after init is asked to restart it.
+const ADB_WAIT: Duration = Duration::from_secs(3);
+
 fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
@@ -1356,6 +1360,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
     }
     let mut scanned_at = Instant::now();
+    // When adbd was asked for the network's port, until the kernel is read as showing it holds it.
+    let mut adb_until: Option<Instant> = None;
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1776,6 +1782,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             }
             if let Some(t) = traffic {
                 app.set_traffic(t);
+            }
+        }
+        if let Some(until) = adb_until {
+            if adbwifi::listening() {
+                adb_until = None;
+                app.set_adb_wifi(AdbWifi::On);
+            } else if Instant::now() >= until {
+                adb_until = None;
+                let why = format!("adbd did not take port {}", skyward_ui::app::ADB_WIFI_PORT);
+                skyward_sys::kmsg(&why)?;
+                app.set_adb_wifi(AdbWifi::Failed(why));
             }
         }
         // The WLAN page scans again now and then while it shows, as the
@@ -2290,6 +2307,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         wlan_touched = true;
                         wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off })
                     }
+                    // adbd takes the port a moment after init is asked to restart it; the row tells what came
+                    // of it.
+                    Effect::AdbWifi(on) => match if on { adbwifi::listen() } else { adbwifi::stop() } {
+                        Ok(()) if on => adb_until = Some(Instant::now() + ADB_WAIT),
+                        Ok(()) => app.set_adb_wifi(AdbWifi::Off),
+                        Err(e) => {
+                            skyward_sys::kmsg(&format!("adbd was not asked for the network's port: {e:#}"))?;
+                            app.set_adb_wifi(AdbWifi::Failed(format!("{e:#}")))
+                        }
+                    },
                     Effect::ScanWlan => {
                         scanned_at = Instant::now();
                         wlan_worker(&wlan)?.send(wlan::Command::Scan);

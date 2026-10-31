@@ -499,9 +499,25 @@ pub enum Switch {
     /// over.
     KeepRecovery,
     Wlan,
+    /// Have adbd listened to on the network joined, so a computer reaches the recovery without a cable.
+    AdbWifi,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
 }
+
+/// Whether a computer can reach adbd over the network joined, as the runtime last told it: adbd holds the
+/// port, or it does not and says why.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AdbWifi {
+    #[default]
+    Off,
+    On,
+    Failed(String),
+}
+
+/// The port adbd is asked to listen on, and the one `adb connect` takes when it is given the phone and no
+/// port.
+pub const ADB_WIFI_PORT: u16 = 5555;
 
 /// What a backup can take, in the order the backup page lists it.
 pub const BACKUP_PARTS: [Text; 4] = [
@@ -1632,6 +1648,8 @@ pub struct State {
     /// The WLAN, as the runtime last told it; none on a phone whose WLAN the
     /// recovery does not bring up.
     pub wlan: Option<Wlan>,
+    /// adb over the network joined, as the runtime last told it.
+    pub adb_wifi: AdbWifi,
     /// The network the password page is for, and what is typed there.
     pub joining: Option<Network>,
     /// The network the details page is of, as it was found.
@@ -1723,6 +1741,7 @@ impl Default for State {
             part_work: None,
             update: Standing::None,
             wlan: None,
+            adb_wifi: AdbWifi::Off,
             joining: None,
             details: None,
             adding: None,
@@ -1965,6 +1984,9 @@ pub enum Effect {
     /// Turn the WLAN on or off; how it stands comes back with
     /// [`App::set_wlan`].
     Wlan(bool),
+    /// Have adbd listen on the network the phone joined, or on the USB port alone again; whether it took
+    /// the port comes back with [`App::set_adb_wifi`].
+    AdbWifi(bool),
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
@@ -3407,6 +3429,14 @@ impl App {
         }
         // The status bar shows the network joined over every page.
         self.dirty = true;
+    }
+
+    /// Whether adbd took the network's port, as the runtime last told it.
+    pub fn set_adb_wifi(&mut self, adb: AdbWifi) {
+        if self.state.adb_wifi != adb {
+            self.state.adb_wifi = adb;
+            self.refresh();
+        }
     }
 
     /// How fast data went over the network joined in the last second, which
@@ -4876,6 +4906,13 @@ impl App {
                 self.refresh();
                 return vec![Effect::Wlan(on)];
             }
+            // The switch moves at once; whether adbd takes the port, the runtime then tells.
+            Action::Toggle(Switch::AdbWifi) => {
+                let on = !matches!(self.state.adb_wifi, AdbWifi::On);
+                self.state.adb_wifi = if on { AdbWifi::On } else { AdbWifi::Off };
+                self.refresh();
+                return vec![Effect::AdbWifi(on)];
+            }
             Action::Toggle(switch) => {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
@@ -4886,6 +4923,7 @@ impl App {
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
+                    Switch::AdbWifi => unreachable!("the adb over the network switch is turned above"),
                 };
                 *on = !*on;
                 let now_on = *on;
@@ -10092,6 +10130,29 @@ mod tests {
                 reach: Some(Reach::Online),
             }),
         )
+    }
+
+    #[test]
+    fn adb_over_the_network_is_asked_for_only_where_a_network_reaches() {
+        let (f, i) = (fonts(), info());
+        let row = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Toggle(Switch::AdbWifi));
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.wlan = Some(Wlan { power: Power::On, networks: Vec::new(), joined: None });
+        app.refresh();
+        app.act(Action::Open(Screen::Wlan), 0);
+        assert!(!row(&mut app), "no network joined, nowhere for a computer to reach it");
+        app.set_wlan(connected("Skyward"));
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::AdbWifi)), vec![Effect::AdbWifi(true)]);
+        assert_eq!(app.state.adb_wifi, AdbWifi::On, "the switch moves at once");
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::AdbWifi)), vec![Effect::AdbWifi(false)]);
+        assert_eq!(app.state.adb_wifi, AdbWifi::Off);
+        app.set_adb_wifi(AdbWifi::Failed("adbd did not take port 5555".into()));
+        assert_eq!(app.state.adb_wifi, AdbWifi::Failed("adbd did not take port 5555".into()), "what came of it is kept for the row");
+        assert!(row(&mut app), "the row keeps its place, to be asked for again");
+        // Restarting adbd ends the transfer in it, so no row is offered while a package is written.
+        app.state.installing = Some(0.5);
+        app.refresh();
+        assert!(!row(&mut app));
     }
 
     #[test]
