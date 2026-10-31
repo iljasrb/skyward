@@ -339,6 +339,9 @@ impl Station {
                     return;
                 }
             }
+            // A boot where the data partition is open already holds the
+            // networks saved on it; none of them was in memory to start from.
+            self.adopt();
         }
         self.state.power = Power::On;
         self.resume();
@@ -492,10 +495,7 @@ impl Station {
     /// gains them, and it reads that copy again. Started again it ends with
     /// SIGSEGV, so reading again is what is asked of it instead.
     fn adopt(&mut self) {
-        let Some(dir) = kept_dir() else {
-            let _ = skyward_sys::kmsg("the WLAN's saved networks are read once the data partition is decrypted");
-            return;
-        };
+        let Some(dir) = kept_dir() else { return };
         let Ok(theirs) = fs::read_to_string(dir.join(KEPT.1)) else { return };
         let Some(at) = theirs.find("network={") else {
             // Nothing saved on the partition yet: what was joined while it
@@ -864,13 +864,6 @@ fn kept_dir() -> Option<PathBuf> {
 
 /// Where the supplicant keeps its configuration: the data partition once it
 /// is open, and a home in memory until then, which forgets on a restart.
-fn settings_dir() -> PathBuf {
-    kept_dir().unwrap_or_else(|| {
-        let _ = skyward_sys::kmsg("the WLAN's networks wait for the data partition to be decrypted");
-        PathBuf::from(HOME)
-    })
-}
-
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     let home = Path::new(HOME);
@@ -883,11 +876,19 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     fs::set_permissions(home, fs::Permissions::from_mode(0o770)).with_context(|| format!("open {} to the supplicant", home.display()))?;
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
-    // The configuration is written only when there is none, so the network
-    // kept from the last session is still in it.
-    let dir = settings_dir();
-    let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {}", dir.display()));
-    let settings = dir.join(KEPT.1);
+    // The supplicant is never given the copy on the data partition: this
+    // phone's own build of it ends with SIGSEGV on a configuration read from
+    // there. The networks saved on the partition are read by the recovery's
+    // own code once it is open, and taken in with `Adopt`.
+    match kept_dir() {
+        Some(dir) => {
+            let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {}", dir.display()));
+        }
+        None => {
+            let _ = skyward_sys::kmsg("the WLAN's networks wait for the data partition to be decrypted");
+        }
+    }
+    let settings = home.join(KEPT.1);
     if !settings.exists() {
         fs::write(&settings, format!("ctrl_interface={}\nupdate_config=1\nap_scan=1\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
             .with_context(|| format!("write {}", settings.display()))?;
