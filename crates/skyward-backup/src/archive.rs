@@ -554,8 +554,7 @@ fn beyond(path: &Path, meta: &fs::Metadata) -> Result<Vec<(String, Vec<u8>)>> {
         match std::str::from_utf8(&value) {
             Ok(_) => out.push((format!("{XATTR}{name}"), value)),
             Err(_) => {
-                let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
-                out.push((format!("{XATTR_HEX}{name}"), hex.into_bytes()));
+                out.push((format!("{XATTR_HEX}{name}"), skyward_files::hex(&value).into_bytes()));
             }
         }
     }
