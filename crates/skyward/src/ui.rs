@@ -1048,9 +1048,12 @@ fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
 
-/// Where `release`'s image is downloaded to.
+/// Where `release`'s image is downloaded to, named for the release as well as
+/// the file: every release publishes the same file name, and what an older
+/// one left in the folder was taken for the newest one's, downloaded already,
+/// and written over this recovery in its place.
 fn downloaded(release: &Release) -> PathBuf {
-    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(&release.image.name)
+    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(format!("{}-{}", release.tag, release.image.name))
 }
 
 /// What internal storage holds of `release`'s image; nothing while it cannot
