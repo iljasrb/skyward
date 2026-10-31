@@ -1,6 +1,8 @@
 //! The files a part of a backup is kept in: what the part holds, compressed
 //! or not, cut into files of a size every filesystem a backup may go to
-//! takes, with a digest of what it holds to check it by.
+//! takes, with a digest of what it holds to check it by. The zeros a part
+//! holds are left as holes in those files, so a partition's unused stretch
+//! takes no room on the storage and still reads back as the zeros it is.
 
 use anyhow::{ensure, Context, Result};
 use lz4_flex::frame::{BlockSize, FrameDecoder, FrameEncoder, FrameInfo};
@@ -8,12 +10,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skyward_files::{hex, Ownership};
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// The most one file holds: FAT, which USB drives often hold, takes no file
 /// of 4 GiB or more.
 pub const FILE_BYTES: u64 = 1 << 30;
+
+/// A run of zeros this long is left as a hole in the file rather than
+/// written: a partition's unused stretch takes no room then, and reads back
+/// as the zeros it is. Shorter runs are written out, as a hole costs the
+/// filesystem bookkeeping of its own.
+const SPARSE_RUN: usize = 4096;
 
 /// A part as its files keep it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +53,7 @@ impl Files {
     /// Write the file open to the storage, and make the next one.
     fn next(&mut self) -> io::Result<()> {
         if let Some(full) = self.open.take() {
+            full.set_len(self.in_open)?;
             full.sync_all()?;
         }
         let name = format!("{}.{:03}", self.name, self.names.len());
@@ -61,9 +70,18 @@ impl Files {
             self.next()?;
         }
         if let Some(last) = self.open.take() {
+            last.set_len(self.in_open)?;
             last.sync_all()?;
         }
         Ok((self.names, self.written))
+    }
+
+    /// Leave `len` bytes of the file open as zeros it does not hold.
+    fn hole(&mut self, len: usize) -> io::Result<()> {
+        let file = self.open.as_mut().expect("a file is open");
+        file.seek(SeekFrom::Current(len as i64))?;
+        self.in_open += len as u64;
+        Ok(())
     }
 }
 
@@ -73,7 +91,12 @@ impl Write for Files {
             self.next()?;
         }
         let room = (self.limit - self.in_open).min(buf.len() as u64) as usize;
-        let n = self.open.as_mut().expect("a file is open").write(&buf[..room])?;
+        let (kept, zeros) = split_zero_run(&buf[..room]);
+        if kept == 0 {
+            self.hole(zeros)?;
+            return Ok(zeros);
+        }
+        let n = self.open.as_mut().expect("a file is open").write(&buf[..kept])?;
         self.in_open += n as u64;
         self.written += n as u64;
         Ok(n)
@@ -82,6 +105,27 @@ impl Write for Files {
     fn flush(&mut self) -> io::Result<()> {
         self.open.as_mut().map_or(Ok(()), |f| f.flush())
     }
+}
+
+/// How much of `buf` is written, and how many zeros after it a hole takes
+/// instead: all of it when it holds no run of [`SPARSE_RUN`], and none of it
+/// when it starts with one.
+fn split_zero_run(buf: &[u8]) -> (usize, usize) {
+    let mut at = 0;
+    while at < buf.len() {
+        if buf[at] != 0 {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < buf.len() && buf[at] == 0 {
+            at += 1;
+        }
+        if at - start >= SPARSE_RUN {
+            return (start, at - start);
+        }
+    }
+    (buf.len(), 0)
 }
 
 enum Sink {
@@ -303,6 +347,49 @@ mod tests {
         partition[2_999] ^= 1;
         assert_ne!(digest(partition.as_slice(), stored.size, &mut |_| {}).unwrap(), stored.sha256);
         assert!(digest(&held[..10], stored.size, &mut |_| {}).is_err(), "a partition too small to hold the part");
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn the_zeros_a_part_holds_take_no_room_in_the_backup() {
+        let at = scratch("sparse");
+        let mut held = sample(1_000);
+        held.extend(vec![0u8; 8 << 20]);
+        held.extend(vec![0xab; 1_500]);
+        let mut w = Writer::cut_at(&at, "super", false, Ownership::Kept, 1 << 30);
+        w.write_all(&held).unwrap();
+        let stored = w.finish().unwrap();
+        assert_eq!(stored.size, held.len() as u64, "the part is as long as it was");
+        assert_eq!(stored.stored, 2_500, "the zeros took no room on the disk");
+        let taken = fs::metadata(at.join("super.000")).unwrap();
+        assert_eq!(taken.len(), held.len() as u64, "the file is as long as the part");
+        use std::os::unix::fs::MetadataExt;
+        assert!(taken.blocks() * 512 < 1 << 20, "and holds only what is not zeros: {} bytes", taken.blocks() * 512);
+        let mut r = Reader::open(&at, &stored);
+        let mut back = Vec::new();
+        r.read_to_end(&mut back).unwrap();
+        assert_eq!(back, held, "the zeros read back as the zeros they are");
+        r.check(&stored).unwrap();
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn zeros_at_the_end_of_a_part_keep_its_length() {
+        let at = scratch("trailing");
+        let mut held = sample(500);
+        held.extend(vec![0u8; 20 << 20]);
+        let mut w = Writer::create(&at, "boot", false, Ownership::Kept);
+        w.write_all(&held).unwrap();
+        let stored = w.finish().unwrap();
+        assert_eq!(stored.size, held.len() as u64);
+        assert_eq!(stored.stored, 500, "only what is not zeros takes room");
+        let last = fs::metadata(at.join(&stored.files[0])).unwrap();
+        assert_eq!(last.len(), held.len() as u64, "the file ends where the part does, in a hole no byte was written for");
+        let mut r = Reader::open(&at, &stored);
+        let mut back = Vec::new();
+        r.read_to_end(&mut back).unwrap();
+        assert_eq!(back, held, "the part is read back whole, its last files all zeros");
+        r.check(&stored).unwrap();
         fs::remove_dir_all(&at).unwrap();
     }
 
