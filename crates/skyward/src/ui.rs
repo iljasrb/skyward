@@ -58,6 +58,9 @@ const LEAVE_AFTER_MS: u64 = 1500;
 /// none by then, the pages are worked with the keys, their light shown.
 const TOUCH_WAIT: Duration = Duration::from_secs(5);
 
+/// How long the first page takes to come up out of the dark at the start.
+const APPEAR: Duration = Duration::from_millis(200);
+
 /// Where logs saved to the temporary folder go, and where in internal
 /// storage the others do.
 const TMP_LOGS: &str = "/tmp/skyward-logs";
@@ -1411,12 +1414,20 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             app.set_fastboot(running, link);
             port_at = Instant::now();
         }
+        // The page comes up out of the dark over a moment, rather than the
+        // bootloader's frame snapping into this one, and is drawn again as it
+        // does.
+        let appear = (started.elapsed().as_millis() as f32 / APPEAR.as_millis() as f32).min(1.0);
+        if appear < 1.0 {
+            app.redraw();
+        }
         let panel = app.panel(now);
         let mut shown = false;
         if panel.is_some() {
             if app.take_dirty() {
                 let t0 = Instant::now();
                 app.compose(&mut screen, &fonts, &info, &shown_clock, now);
+                screen.fade(appear);
                 surface.present(&screen)?;
                 eprintln!("frame {:?} in {} ms", app.screen(), t0.elapsed().as_millis());
                 if let Some(path) = dump {
@@ -1449,7 +1460,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // gets at least a millisecond.
         let floor = if shown { 0 } else { 1 };
         let until_due = app.deadline(now).map(|d| d.saturating_sub(now) as i32);
-        let timeout = if ahead { 0 } else { until_due.map_or(1000, |t| t.clamp(floor, 1000)) };
+        // Coming up, the page is stepped rather than waited on.
+        let wait_cap = if appear < 1.0 { 16 } else { 1000 };
+        let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
             fds.push(i.fd());
