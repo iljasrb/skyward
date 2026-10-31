@@ -662,6 +662,23 @@ mod tests {
         }
     }
 
+    /// Every configuration in `devices/` is a phone an image is built for, so
+    /// one that does not parse breaks that phone's build.
+    #[test]
+    fn every_device_in_the_tree_parses() -> Result<()> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../devices");
+        let mut phones = 0;
+        for entry in std::fs::read_dir(&dir).with_context(|| dir.display().to_string())? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "toml") {
+                DeviceConfig::load(&path).with_context(|| path.display().to_string())?;
+                phones += 1;
+            }
+        }
+        assert!(phones > 0, "no devices in {}", dir.display());
+        Ok(())
+    }
+
     #[test]
     fn a_library_for_logd_is_an_absolute_path_to_a_file() {
         let with = |library: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[logd]\nlibraries = [\"{library}\"]\n"));
