@@ -42,17 +42,15 @@ jobs:
         # of a phone on that build compares against the newest release.
         env:
           SKYWARD_BUILD: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: |
-          scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"
-          scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img" --root
+        run: scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"
 
-      - name: Publish the images and their sums
+      - name: Publish the image and its sums
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          cat out/skyward-bronco.img.sha256 out/skyward-bronco-root.img.sha256 > SHA256SUMS
+          cp out/skyward-bronco.img.sha256 SHA256SUMS
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" \
-            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}. skyward-bronco.img is the recovery as it is; skyward-bronco-root.img is the same recovery with Root (beta) compiled in."
-          gh release upload "$TAG" out/skyward-bronco.img out/skyward-bronco-root.img SHA256SUMS --clobber
+            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}. The image carries the Root page (beta)."
+          gh release upload "$TAG" out/skyward-bronco.img SHA256SUMS --clobber

@@ -6,11 +6,10 @@
 # Skyward. That base is the stock recovery partition, which is the phone
 # maker's to hand out and so is not in this repository:
 #
-#   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG] [--root]
+# The image carries FolkPatch's installer, which gives the Root page (marked
+# beta there); a build without it is the recovery as it has always been.
 #
-# --root compiles FolkPatch's installer in, which is opt-in: without it the image
-# is the recovery it has always been. The page it adds is marked beta, and the
-# image is named ...-root.img so the two are never taken for each other.
+#   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG]
 #
 # Needs rustup's aarch64-linux-android target, cargo-ndk, and an Android NDK
 # r29 or newer in ANDROID_NDK_HOME (or one under ~/toolchains).
@@ -20,18 +19,16 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
 stock=${STOCK_RECOVERY:-}
-suffix=
-features=
+out=${OUT:-$root/out/skyward-bronco.img}
+
 while [ $# -gt 0 ]; do
     case $1 in
         --stock) stock=$2; shift 2 ;;
         --out) out=$2; shift 2 ;;
-        --root) suffix=-root; features='--features folkpatch'; shift ;;
         -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
-out=${out:-$root/out/skyward-bronco$suffix.img}
 [ -n "$stock" ] || { echo "no stock recovery: pass --stock (see --help)" >&2; exit 2; }
 [ -f "$stock" ] || { echo "no stock recovery at $stock" >&2; exit 1; }
 
@@ -47,7 +44,7 @@ export ANDROID_NDK_HOME=$ndk
 # compares; nothing at runtime parses a time.
 export SKYWARD_BUILD=${SKYWARD_BUILD:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
-cargo ndk -t arm64-v8a --platform 30 build --release $features -p skyward
+cargo ndk -t arm64-v8a --platform 30 build --release --features folkpatch -p skyward
 cargo build --release -p skyward-pack
 
 mkdir -p "$(dirname "$out")"
