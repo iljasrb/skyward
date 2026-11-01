@@ -156,10 +156,11 @@ fn normal_max(max: u32) -> Result<u32> {
         let cell: [u8; 4] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} is not one cell", path.display()))?;
         Ok(u32::from_be_bytes(cell))
     };
-    let (normal, full) = NORMAL_MAX
-        .iter()
-        .find(|(normal, _)| node.join(normal).exists())
-        .with_context(|| format!("panel {name} gives its normal maximum as none of {NORMAL_MAX:?}"))?;
+    let Some((normal, full)) = NORMAL_MAX.iter().find(|(normal, _)| node.join(normal).exists()) else {
+        // A panel whose device tree keeps no brightness table, as Motorola's
+        // own panels do not: the backlight's maximum is the slider's top.
+        return Ok(max);
+    };
     let (normal, full) = (cell(normal)?, cell(full)?);
     ensure!(normal > 0 && normal <= full, "panel {name}: normal maximum {normal} out of {full}");
     Ok((f64::from(max) * f64::from(normal) / f64::from(full)).round() as u32)
@@ -1051,6 +1052,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     if let Some(locale) = request.locale.as_deref().or(info.locale.as_deref()) {
         app.state.lang = Lang::for_locale(locale)?;
         skyward_sys::kmsg(&format!("the pages speak {:?}, for the locale {locale}", app.state.lang))?;
+    } else {
+        // A boot that names no locale, whose installed system cannot be read
+        // yet -- into fastbootd, whose command carries none and whose
+        // partitions are not mounted -- speaks English, the language most of
+        // the people who flash a recovery read; the pages' own default is
+        // Chinese, and it used to stay that way for the whole session.
+        app.state.lang = Lang::En;
+        skyward_sys::kmsg(&format!("the pages speak {:?}: no locale was named and the installed system's could not be read", app.state.lang))?;
     }
     // The home page tells of a restart into the slot the system does not
     // run from now: an update or a switch left for the next boot.
