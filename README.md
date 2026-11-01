@@ -37,7 +37,7 @@ Pushing a `bronco-*` tag builds and publishes the image with
 published beside it, builds the image on it, and publishes the image and its
 `SHA256SUMS`, which is what the update page reads.
 
-Nothing is published yet, so the update page reports this build as the newest.
+The update page offers the newest `bronco-*` release.
 
 ## What a restore must not touch
 

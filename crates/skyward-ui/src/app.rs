@@ -437,8 +437,11 @@ pub struct RootState {
     pub entered: String,
     /// The key the newest earlier run left on this phone, where one did.
     pub last: Option<skyward_folkpatch::SuperKey>,
-    /// Whether the slot chosen carries the patch already.
+    /// Whether any slot chosen carries the patch already.
     pub patched: bool,
+    /// The patch each slot's image carries, as it was last read; none where
+    /// it has not been asked yet.
+    pub patched_slots: [Option<bool>; 2],
     /// Whether the user chose where the key comes from, which a key found on
     /// file must not answer for them.
     pub chosen: bool,
@@ -459,6 +462,7 @@ impl Default for RootState {
             entered: String::new(),
             last: None,
             patched: false,
+            patched_slots: [None, None],
             chosen: false,
             log: Vec::new(),
             copied: None,
@@ -3479,12 +3483,13 @@ impl App {
         }
     }
 
-    /// Whether the slot the page would write carries the patch already, as the
-    /// runtime found it.
+    /// Whether any slot the page would write carries the patch already, and
+    /// which ones do, as the runtime found them.
     #[cfg(feature = "folkpatch")]
-    pub fn set_root_patched(&mut self, patched: bool) {
+    pub fn set_root_patched(&mut self, patched: bool, slots: [Option<bool>; 2]) {
         let root = self.state.root.get_or_insert_with(RootState::default);
         root.patched = patched;
+        root.patched_slots = slots;
         if self.screen() == Screen::Apatch {
             self.refresh();
         }
@@ -7954,6 +7959,8 @@ mod tests {
         let (f, mut i) = (fonts(), info());
         i.snapshot = SnapshotState::Snapshotted;
         let mut app = App::new(Screen::Home, W, H, PPD);
+        let hits: Vec<Action> = app.frame(&f, &i).hits.iter().map(|h| h.action).collect();
+        assert!(!hits.contains(&Action::Open(Screen::Update)), "the system update's word is not the recovery's own update page");
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Install)), vec![Effect::ReadUpdate]);
         assert_eq!(app.screen(), Screen::Install);
     }
@@ -11535,7 +11542,7 @@ mod tests {
     fn an_image_that_carries_the_patch_is_written_again_only_by_a_swipe_of_its_own() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        app.set_root_patched(true);
+        app.set_root_patched(true, [Some(true), None]);
         root_hits(&mut app, &f, &i);
         assert_eq!(
             swipe(&mut app, &f, &i, Confirm::RootPatch),
@@ -11552,6 +11559,21 @@ mod tests {
         assert_eq!(
             app.confirmed(Confirm::RootRepatch, 1000),
             vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Generate, repatch: true }]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_patch_in_the_other_slot_is_written_again_when_both_are_chosen() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        app.set_root_patched(true, [Some(false), Some(true)]);
+        root_hits(&mut app, &f, &i);
+        tap(&mut app, &f, &i, Action::Root(RootAction::Pick(Pick::Both)));
+        assert_eq!(
+            swipe(&mut app, &f, &i, Confirm::RootPatch),
+            vec![Effect::Root { pick: Pick::Both, key: skyward_folkpatch::Key::Generate, repatch: true }],
+            "the patch in B is seen even though the phone runs from A"
         );
     }
 

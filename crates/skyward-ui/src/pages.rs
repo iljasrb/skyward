@@ -256,7 +256,7 @@ pub fn home(cx: &Ctx) -> Frame {
     }
     if let Some(note) = fmt::snapshot_note(l, &i.snapshot) {
         rows.push(Row::new(fmt::snapshot(l, &i.snapshot)).icon(ORANGE, Icon::Layers).subtitle(note).trail(Trail::Arrow));
-        opens.push(Some(Action::Open(Screen::Update)));
+        opens.push(Some(Action::Open(Screen::Install)));
     }
     if let Some((title, note)) = &next {
         rows.push(Row::new(title).icon(ORANGE, Icon::Power).subtitle(note).trail(Trail::Arrow));
@@ -3897,15 +3897,20 @@ fn ready_to_root(cx: &Ctx) -> bool {
 fn root_notes(l: Lang, cx: &Ctx, root: &crate::app::RootState) -> Vec<String> {
     let mut notes = Vec::new();
     // An image that carries the patch already stops a run before it writes;
-    // it is said here, where the page knows it, not asked about.
-    if root.patched {
-        let slot = cx.info.slot.map(|s| s.letter()).unwrap_or_default();
-        notes.push(tr!(
-            l,
-            "槽位 {slot} 的镜像已打过补丁。",
-            "槽位 {slot} 的映像已打過修補。",
-            "Slot {slot}'s image carries the patch already."
-        ));
+    // it is said here, for each slot the page would write, where the page
+    // knows it, not asked about.
+    if let Some(current) = cx.info.slot {
+        for slot in root.pick.slots(current) {
+            if root.patched_slots[slot.number() as usize] == Some(true) {
+                let slot = slot.letter();
+                notes.push(tr!(
+                    l,
+                    "槽位 {slot} 的镜像已打过补丁。",
+                    "槽位 {slot} 的映像已打過修補。",
+                    "Slot {slot}'s image carries the patch already."
+                ));
+            }
+        }
     }
     if cx.info.slot.is_none() {
         notes.push(l.pick(["这台手机只有一个槽位，没有可写入的 boot 分区。", "這台手機只有一個槽位，沒有可寫入的 boot 分割區。", "This phone has one slot, so there are no boot partitions to write."]).to_string());

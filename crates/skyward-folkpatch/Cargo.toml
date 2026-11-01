@@ -12,10 +12,5 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-vab = { path = "../skyward-vab" }
 
-[build-dependencies]
-sha2 = "0.10.9"
-# The tools are inside the manager's package, so the build unpacks them.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-
 [dev-dependencies]
 tempfile = "3.27.0"

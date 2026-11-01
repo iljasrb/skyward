@@ -41,9 +41,10 @@ const MARGIN: u64 = 8 << 20;
 const KERNEL_AT: u64 = 4096;
 const HEADER: usize = 4096;
 
-/// The footer a signed image ends with, which the bootloader looks for in the
-/// last bytes of the partition.
+/// The footer a signed image ends with, which the bootloader looks for at the
+/// end of the partition: 64 bytes whose first four are this magic.
 const FOOTER: &[u8] = b"AVBf";
+const FOOTER_LEN: u64 = 64;
 
 /// Patch the boot partitions `options` names, or say why not. Every check runs
 /// before the first write, and each slot is patched and written on its own, so
@@ -106,6 +107,9 @@ impl<'a> Run<'a> {
                 key_path: None,
             }))
         };
+        if !options.storage.is_dir() {
+            return Err(Stopped::Refused(Refusal::StorageClosed));
+        }
         let layout = Layout::make(&options.storage, &options.stamp).map_err(failed)?;
         // The private folder is named after the run's own, so that two runs
         // in the same second cannot find each other's key.
@@ -223,9 +227,6 @@ impl<'a> Run<'a> {
             }));
         }
         let storage = &self.options.storage;
-        if !fs::metadata(storage).map(|m| m.is_dir()).unwrap_or(false) {
-            return Err(Stop::Refused(Refusal::StorageClosed));
-        }
         // A partition's own device says where its end is; metadata does not.
         let mut need = MARGIN;
         for slot in &self.slots.clone() {
@@ -282,7 +283,7 @@ impl<'a> Run<'a> {
         let facts = backup::Facts {
             device: &self.options.device,
             current: self.options.current,
-            slots: &self.options.slots,
+            slots: &self.slots,
             kpimg_version: KPIMG_VERSION,
             kpimg_sha256: KPIMG_SHA256,
             kptools_sha256: KPTOOLS_SHA256,
@@ -464,13 +465,13 @@ fn kernel_of(file: &mut File) -> Result<Vec<u8>> {
 /// Whether the last bytes of `file` are the AVB footer a bootloader looks for.
 fn ends_signed(file: &mut File) -> Result<bool> {
     let len = file.seek(SeekFrom::End(0))?;
-    if len < FOOTER.len() as u64 {
+    if len < FOOTER_LEN {
         return Ok(false);
     }
-    file.seek(SeekFrom::End(-(FOOTER.len() as i64)))?;
-    let mut tail = vec![0u8; FOOTER.len()];
-    file.read_exact(&mut tail)?;
-    Ok(tail == FOOTER)
+    file.seek(SeekFrom::End(-(FOOTER_LEN as i64)))?;
+    let mut footer = [0u8; FOOTER_LEN as usize];
+    file.read_exact(&mut footer)?;
+    Ok(footer.starts_with(FOOTER))
 }
 
 /// Whether `kptools -l` says the kernel is patched, and nothing when it says
@@ -543,7 +544,7 @@ fn available(dir: &Path) -> Result<u64> {
 #[cfg(test)]
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    crate::backup::hex(&sha2::Sha256::digest(bytes))
 }
 
 #[cfg(test)]
@@ -580,11 +581,18 @@ mod tests {
     }
 
     #[test]
-    fn a_footer_is_only_found_where_the_last_bytes_are_it() {
+    fn a_footer_is_only_found_where_the_last_sixty_four_bytes_are_one() {
         let dir = tempfile::tempdir().unwrap();
+        let mut footer = FOOTER.to_vec();
+        footer.resize(FOOTER_LEN as usize, 0);
         let signed = dir.path().join("signed.img");
-        fs::write(&signed, [b"ANDROID!".as_slice(), &[0u8; 128], FOOTER].concat()).unwrap();
+        fs::write(&signed, [b"ANDROID!".as_slice(), &[0u8; 128], &footer].concat()).unwrap();
         assert!(ends_signed(&mut File::open(&signed).unwrap()).unwrap());
+        // The magic at the very end is not a footer: a real one is 64 bytes,
+        // its magic at the start of them.
+        let trailing = dir.path().join("trailing.img");
+        fs::write(&trailing, [b"ANDROID!".as_slice(), &[0u8; 128], FOOTER].concat()).unwrap();
+        assert!(!ends_signed(&mut File::open(&trailing).unwrap()).unwrap());
         let unsigned = dir.path().join("unsigned.img");
         fs::write(&unsigned, vec![0u8; 128]).unwrap();
         assert!(!ends_signed(&mut File::open(&unsigned).unwrap()).unwrap());
