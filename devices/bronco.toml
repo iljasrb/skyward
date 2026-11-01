@@ -321,3 +321,9 @@ logs = [
     "/data/vendor/wifi",
     "/data/vendor/wlan_logs",
 ]
+
+# Where this phone's recovery images are published: the fork's releases on
+# GitHub, and the file in a release that this phone is written from.
+[update]
+repo = "iljasrb/skyward"
+asset = "skyward-bronco.img"

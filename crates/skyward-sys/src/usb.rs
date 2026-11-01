@@ -45,5 +45,17 @@ pub fn set(config: &str, timeout: Duration) -> Result<()> {
 /// once the programs behind the new configuration are ready.
 pub fn switch(config: &str, timeout: Duration) -> Result<()> {
     set("none", timeout)?;
-    set(config, timeout)
+    match set(config, timeout) {
+        // A recovery whose init does not know the configuration asked for
+        // takes the port down with it, as nothing is left bound: rather than
+        // that, adb alone comes back and the caller says what went missing.
+        Err(e) => {
+            if config != "adb" {
+                set_mtp(false);
+                let _ = set("adb", timeout);
+            }
+            Err(e)
+        }
+        taken => taken,
+    }
 }

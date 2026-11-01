@@ -76,25 +76,46 @@ mod sys {
     }
 
     /// Mount `device` read-only at `target` with the first of [`FILESYSTEMS`]
-    /// the kernel accepts, and return its name. Only the kernel's answers for
-    /// "not this filesystem" move on to the next one.
+    /// the kernel accepts, and return its name. The kernel's answers for "not
+    /// this filesystem" move on to the next one, and so does its I/O error:
+    /// an erofs driver handed an ext4 superblock, as a phone's runtime bundle
+    /// is, says the reading failed rather than that it does not know it.
     pub fn mount_ro(device: &Path, target: &Path) -> Result<&'static str> {
         let (src, dst) = (cstr(device)?, cstr(target)?);
         let mut refused = Vec::new();
-        for fs in FILESYSTEMS {
+        // A loop device takes one mount, and one that named the wrong
+        // filesystem has taken it: the one the device holds is asked for
+        // first, and the rest only after it.
+        let held = filesystem(device);
+        for fs in held.into_iter().chain(FILESYSTEMS.iter().copied().filter(|f| Some(*f) != held)) {
             let ty = CString::new(fs).expect("filesystem names hold no NUL");
             if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty.as_ptr(), libc::MS_RDONLY, null()) } == 0 {
                 return Ok(fs);
             }
             let e = os_error();
             match e.raw_os_error() {
-                Some(libc::EINVAL | libc::ENODEV) => refused.push(format!("{fs}: {e}")),
+                Some(libc::EINVAL | libc::ENODEV | libc::EIO) => refused.push(format!("{fs}: {e}")),
                 _ => {
                     return Err(e).with_context(|| format!("mount {} on {} as {fs}", device.display(), target.display()))
                 }
             }
         }
         bail!("{} holds none of {} ({})", device.display(), FILESYSTEMS.join(", "), refused.join("; "))
+    }
+
+    /// The filesystem a block device holds, as the magic in its superblock
+    /// says, for the ones Android puts on partitions and bundles.
+    fn filesystem(device: &Path) -> Option<&'static str> {
+        use std::io::Read;
+        let mut block = [0u8; 4096];
+        std::fs::File::open(device).ok()?.read_exact(&mut block).ok()?;
+        let be = |n: usize| u32::from_be_bytes([block[n], block[n + 1], block[n + 2], block[n + 3]]);
+        match be(1024) {
+            0xE0F5_E1E2 => Some("erofs"),
+            0xF2F5_2010 => Some("f2fs"),
+            _ if u16::from_le_bytes([block[1080], block[1081]]) == 0xEF53 => Some("ext4"),
+            _ => None,
+        }
     }
 
     /// Mount `device` at `target` as `filesystem` with `options` as a
