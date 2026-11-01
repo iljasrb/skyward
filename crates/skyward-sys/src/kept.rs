@@ -10,9 +10,9 @@
 //! - the owner's storage inside it, which waits on their screen lock as well.
 //!
 //! Which one is used is decided by what is there: the file newest written is
-//! the one read, and it is written back where it is when that place takes it,
-//! so a boot where the best place was not mounted does not leave two copies
-//! that disagree for good.
+//! the one read, and every place that takes a write gets it, so a place the
+//! last write could not reach is brought up to date by the next instead of
+//! keeping a copy that disagrees for good.
 //!
 //! A write is never half done: what is written goes to a temporary file
 //! beside the real one, is flushed to the flash, and then takes its place in
@@ -44,20 +44,22 @@ pub fn read(folder: &str, name: &str) -> Option<(PathBuf, String)> {
 
 /// As [`read`], among `roots` given in the order they are tried.
 pub fn read_in(roots: &[&Path], folder: &str, name: &str) -> Option<(PathBuf, String)> {
-    roots
-        .iter()
-        .filter_map(|root| {
-            let path = root.join(folder).join(name);
-            let written = fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-            let text = fs::read_to_string(&path).ok()?;
-            Some((written, path, text))
-        })
-        .max_by_key(|(written, ..)| *written)
-        .map(|(_, path, text)| (path, text))
+    let mut best: Option<(SystemTime, PathBuf, String)> = None;
+    for root in roots {
+        let path = root.join(folder).join(name);
+        let Some(text) = fs::read_to_string(&path).ok() else { continue };
+        let written = fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+        // Two written in the same moment came from one write that went to
+        // both, and the first place is the one to trust of them.
+        if best.as_ref().is_none_or(|(at, ..)| written > *at) {
+            best = Some((written, path, text));
+        }
+    }
+    best.map(|(_, path, text)| (path, text))
 }
 
-/// Write `text` as `folder/name`, taking the place `was` is in when it takes
-/// it and the first that does otherwise; the file it wrote is returned.
+/// Write `text` as `folder/name` in every place that takes it, the one `was`
+/// is in first; the first place it went to is returned.
 pub fn write(folder: &str, name: &str, text: &str, was: Option<&Path>) -> Result<PathBuf> {
     write_in(&PLACES.map(Path::new), folder, name, text, was)
 }
@@ -66,8 +68,13 @@ pub fn write(folder: &str, name: &str, text: &str, was: Option<&Path>) -> Result
 pub fn write_in(roots: &[&Path], folder: &str, name: &str, text: &str, was: Option<&Path>) -> Result<PathBuf> {
     let mut places: Vec<PathBuf> = was.map(Path::to_path_buf).into_iter().collect();
     places.extend(roots.iter().map(|root| root.join(folder).join(name)));
+    let mut written: Option<PathBuf> = None;
     let mut last: Option<anyhow::Error> = None;
     for path in places {
+        // The place the file came from is one of the places named already.
+        if written.as_ref().is_some_and(|w| *w == path) {
+            continue;
+        }
         let Some(dir) = path.parent() else { continue };
         if fs::create_dir_all(dir).is_err() {
             continue;
@@ -78,12 +85,18 @@ pub fn write_in(roots: &[&Path], folder: &str, name: &str, text: &str, was: Opti
         for folder in [Some(dir), dir.parent()].into_iter().flatten() {
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
         }
+        // Every place that takes it gets it, so a place the last write could
+        // not reach is caught up here instead of left with a copy the read
+        // may then trust. One place refusing it is not a failure while
+        // another takes it.
         match swap(&path, text) {
-            Ok(()) => return Ok(path),
+            Ok(()) => {
+                written.get_or_insert(path);
+            }
             Err(e) => last = Some(e.context(format!("write {}", path.display()))),
         }
     }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("nowhere to keep {folder}/{name}")))
+    written.ok_or_else(|| last.unwrap_or_else(|| anyhow::anyhow!("nowhere to keep {folder}/{name}")))
 }
 
 /// Put `text` in `path` whole: written beside it, flushed, and then moved
@@ -134,7 +147,8 @@ mod tests {
         assert_eq!(read_in(&roots, "settings", "values"), None, "nothing written yet");
         write_in(&roots[1..], "settings", "values", "wlan = false\n", None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        // The better place takes one later: it is the newer, so it is read.
+        // Both are written in the same moment, and of two written then the
+        // better place is the one read.
         write_in(&roots, "settings", "values", "wlan = true\n", None).unwrap();
         let (path, text) = read_in(&roots, "settings", "values").expect("a file");
         assert_eq!(path, places[0].join("settings/values"));
@@ -142,17 +156,33 @@ mod tests {
     }
 
     #[test]
-    fn a_file_goes_back_where_it_came_from() {
+    fn every_place_that_takes_it_gets_it() {
         let dir = tempfile::tempdir().unwrap();
         let places = roots(dir.path());
         let roots = as_refs(&places);
         let path = write_in(&roots, "settings", "values", "wlan = true\n", None).unwrap();
-        assert_eq!(path, places[0].join("settings/values"), "the best place takes it");
-        // A boot where that place cannot be written keeps the copy where it
-        // was, rather than making a second one that disagrees.
+        assert_eq!(path, places[0].join("settings/values"), "the better place is the one answered with");
+        for place in &places {
+            assert_eq!(fs::read_to_string(place.join("settings/values")).unwrap(), "wlan = true\n", "{} holds it too", place.display());
+        }
+    }
+
+    #[test]
+    fn a_place_the_last_write_could_not_reach_is_caught_up_by_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = roots(dir.path());
+        // A boot where the better place cannot be written puts the copy in
+        // the next one and goes on.
+        fs::write(&places[0], "not a folder").unwrap();
+        let roots = as_refs(&places);
         let elsewhere = places[1].join("settings/values");
-        let again = write_in(&roots, "settings", "values", "wlan = false\n", Some(&elsewhere)).unwrap();
-        assert_eq!(again, elsewhere);
-        assert_eq!(fs::read_to_string(places[0].join("settings/values")).unwrap(), "wlan = true\n");
+        assert_eq!(write_in(&roots, "settings", "values", "wlan = false\n", None).unwrap(), elsewhere);
+        // A boot that can write it reaches both, so the copy the read would
+        // otherwise trust is no longer the older of the two.
+        fs::remove_file(&places[0]).unwrap();
+        write_in(&roots, "settings", "values", "wlan = true\n", Some(&elsewhere)).unwrap();
+        for place in &places {
+            assert_eq!(fs::read_to_string(place.join("settings/values")).unwrap(), "wlan = true\n", "{} has it", place.display());
+        }
     }
 }
