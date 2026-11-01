@@ -53,6 +53,12 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Build the recovery service for the phone
         run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward
+      - name: Check the plain build carries no root
+        run: |
+          if strings target/aarch64-linux-android/release/skyward | grep -qi folkpatch; then
+            echo "the default build carries the Root page" >&2
+            exit 1
+          fi
       - name: Build the packer
         run: cargo build --locked --release -p skyward-pack
       - name: Gather them

@@ -2341,7 +2341,6 @@ dependencies = [
  "skyward-install",
  "skyward-vab",
  "tempfile",
- "zip 8.6.0",
 ]
 
 [[package]]

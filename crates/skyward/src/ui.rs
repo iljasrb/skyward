@@ -36,10 +36,8 @@ use skyward_ui::app::{
     RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
-#[cfg(feature = "folkpatch")]
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang};
-#[cfg(feature = "folkpatch")]
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;

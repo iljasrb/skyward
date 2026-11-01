@@ -30,11 +30,13 @@ pub const BOOT: &str = "boot";
 /// The KernelPatch release the tools are of.
 pub const KPIMG_VERSION: &str = "0.13.9";
 
-// The tools themselves, which the build took from the release and checked
-// against the hashes it pins. Nothing is taken from the tree, so a clone
-// carries no seventeen megabytes of them and an offline build uses what the
-// cache has.
-include!(concat!(env!("OUT_DIR"), "/assets.rs"));
+// The tools themselves, taken from the FolkPatch release and checked against
+// the hashes pinned here. They are carried rather than fetched, so a build
+// needs no network and every clone builds the same bytes.
+pub const KPTOOLS: &[u8] = include_bytes!("../assets/kptools");
+pub const KPTOOLS_SHA256: &str = "ea06a9a46dc1f210c71a61a9f07556fa9b739c327847c7ab16ccbb46fdb7631c";
+pub const KPIMG: &[u8] = include_bytes!("../assets/kpimg");
+pub const KPIMG_SHA256: &str = "7a7aa4b930d1a9d684cbb426a3999f75cb2e2cead26673dcbbc5f70871f01141";
 
 /// What a run is asked to do besides the phone it is on.
 #[derive(Clone, Debug)]
