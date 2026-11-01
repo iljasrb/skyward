@@ -716,12 +716,15 @@ mod tests {
             header.set_size(body.len() as u64);
             header.set_cksum();
             b.append_data(&mut header, "PaxHeaders/bad", io::Cursor::new(body)).unwrap();
+            // The owner the restore will give it is the one running the test,
+            // which is the only one a user without root may name.
+            let me = fs::metadata(&at).unwrap();
             let mut plain = Header::new_ustar();
             plain.set_entry_type(EntryType::Regular);
             plain.set_size(3);
             plain.set_mode(0o644);
-            plain.set_uid(1000);
-            plain.set_gid(1000);
+            plain.set_uid(u64::from(me.uid()));
+            plain.set_gid(u64::from(me.gid()));
             plain.set_mtime(1_700_000_000);
             b.append_data(&mut plain, "kept", io::Cursor::new(b"abc".to_vec())).unwrap();
             b.finish().unwrap();
