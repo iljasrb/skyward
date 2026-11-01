@@ -32,9 +32,9 @@ fastboot flash recovery_b out/skyward-bronco.img
 ```
 
 Pushing a `bronco-*` tag builds and publishes the image with
-`.github/workflows/release.yml`: it takes `recovery.img` from
-[rom.flac.moe](https://rom.flac.moe/bronco/latest/), checked against the sums
-published beside it, builds the image on it, and publishes the image and its
+`.github/workflows/release.yml`: it takes the recovery partition out of the
+`additional_images` package the ROM publishes, checked against the sums
+beside it, builds the image on it, and publishes the image and its
 `SHA256SUMS`, which is what the update page reads.
 
 The update page offers the newest `bronco-*` release.

@@ -34,8 +34,14 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           curl -fsSL --retry 3 -o SHA256SUMS "$ROM/SHA256SUMS"
-          curl -fsSL --retry 3 -o stock-recovery.img "$ROM/recovery.img"
-          grep -E '  recovery\.img$' SHA256SUMS | sed 's/  recovery\.img$/  stock-recovery.img/' | sha256sum -c -
+          # The separate recovery.img is not the file the sums name on every
+          # mirror update; the full partition inside additional_images is.
+          zip=$(grep -oE 'additional_images-[^ ]+\.zip' SHA256SUMS | head -n 1)
+          curl -fsSL --retry 3 -o "$zip" "$ROM/$zip"
+          grep -F "  $zip" SHA256SUMS | sha256sum -c -
+          unzip -q -o "$zip" recovery.img -d .
+          grep -E '  recovery\.img$' SHA256SUMS | sha256sum -c -
+          mv recovery.img stock-recovery.img
 
       - name: Build
         # Stamped with the tag it is built from, which is what the update page
