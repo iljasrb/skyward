@@ -8,6 +8,12 @@ license.workspace = true
 name = "skyward"
 path = "src/main.rs"
 
+[features]
+default = []
+# FolkPatch's root installer: the Root page, the pinned tools and manager it
+# carries, and the worker that writes the patched boot.
+folkpatch = ["dep:skyward-folkpatch", "skyward-ui/folkpatch"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4.5.51", features = ["derive"] }
@@ -26,6 +32,7 @@ skyward-backup = { path = "../skyward-backup" }
 skyward-binder = { path = "../skyward-binder" }
 skyward-crypto = { path = "../skyward-crypto" }
 skyward-files = { path = "../skyward-files" }
+skyward-folkpatch = { path = "../skyward-folkpatch", optional = true }
 zip = { version = "8.6.0", default-features = false }
 libc = { workspace = true }
 procfs = { version = "0.18.0", default-features = false }
