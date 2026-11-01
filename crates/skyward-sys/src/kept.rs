@@ -14,6 +14,9 @@
 //! last write could not reach is brought up to date by the next instead of
 //! keeping a copy that disagrees for good.
 //!
+//! The WLAN's networks are kept on the encrypted data partition only, because
+//! they hold a password and persist is not encrypted.
+//!
 //! A write is never half done: what is written goes to a temporary file
 //! beside the real one, is flushed to the flash, and then takes its place in
 //! one step, so a phone switched off mid-write keeps the copy from before.
@@ -26,9 +29,18 @@ use std::time::SystemTime;
 /// Where a folder may be made, best first.
 const PLACES: [&str; 3] = ["/mnt/vendor/persist/skyward", "/data/skyward", "/sdcard/Skyward"];
 
+/// The data partition, which is encrypted and opens once the user answers
+/// the decrypt page.
+pub const DATA: &str = "/data";
+
 /// The places, in the order they are tried.
 pub fn places() -> impl Iterator<Item = &'static str> {
     PLACES.into_iter()
+}
+
+/// Whether `root` is a mount point rather than a folder on the ramdisk.
+pub fn mounted(root: &str) -> bool {
+    skyward_block::mount::is_mount_point(Path::new(root)).unwrap_or(false)
 }
 
 /// The folder `name` under `root`.

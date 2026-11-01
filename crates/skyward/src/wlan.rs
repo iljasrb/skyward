@@ -714,26 +714,28 @@ fn place(file: &Firmware) -> Result<()> {
 /// `kept` for where that is.
 const KEPT: (&str, &str) = ("wlan", "wpa_supplicant.conf");
 
-/// Where the supplicant keeps its configuration: the first place the settings
-/// are kept that can hold it, and a home in memory until then, which forgets
-/// on a restart.
+/// Where the supplicant keeps its configuration: the encrypted data
+/// partition, and a home in memory until it is open, which forgets on a
+/// restart. It is never kept on persist, which is not encrypted, or on the
+/// owner's storage, which apps can read: the file holds the passphrase.
 fn settings_dir() -> (PathBuf, bool) {
-    for root in skyward_sys::kept::places() {
-        let kept = skyward_sys::kept::folder(root, KEPT.0);
-        // The supplicant runs as the wifi user, so it has to be able to write
-        // its configuration back here; this phone's own build of it dies
-        // rather than saying it cannot.
-        let ready = fs::create_dir_all(&kept)
-            .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
-            .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
-        match ready {
-            Ok(()) => return (kept, true),
-            Err(e) => {
-                let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
-            }
+    if !skyward_sys::kept::mounted(skyward_sys::kept::DATA) {
+        return (PathBuf::from(HOME), false);
+    }
+    let kept = Path::new(skyward_sys::kept::DATA).join("skyward").join(KEPT.0);
+    // The supplicant runs as the wifi user, so it has to be able to write
+    // its configuration back here; this phone's own build of it dies
+    // rather than saying it cannot.
+    let ready = fs::create_dir_all(&kept)
+        .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
+        .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
+    match ready {
+        Ok(()) => (kept, true),
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
+            (PathBuf::from(HOME), false)
         }
     }
-    (PathBuf::from(HOME), false)
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.

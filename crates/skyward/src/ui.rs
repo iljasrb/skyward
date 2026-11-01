@@ -37,11 +37,9 @@ use skyward_ui::app::{
     INSTALL_UNFINISHED, USB_DRIVE,
 };
 #[cfg(feature = "folkpatch")]
-use skyward_ui::app::Pick;
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang};
 #[cfg(feature = "folkpatch")]
-use skyward_vab::Slot as SkywardSlot;
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
@@ -2150,23 +2148,25 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         );
                         app.set_root_last_key(key);
                     }
-                    // Whether the slot the page would write carries the patch
+                    // Whether the slots the page would write carry the patch
                     // already, said on the page before anything is written.
                     #[cfg(feature = "folkpatch")]
                     Effect::ReadRootPatched { pick } => {
-                        let slot = match pick {
-                            Pick::Current | Pick::Both => info.slot,
-                            Pick::Other => info.slot.map(SkywardSlot::other),
-                        };
-                        let patched = slot.is_some_and(|slot| {
-                            skyward_folkpatch::patched_slot(
-                                Path::new("/dev/block/by-name"),
-                                slot,
-                                Path::new("/data/local/tmp/skyward-folkpatch"),
-                            )
-                            .unwrap_or(false)
-                        });
-                        app.set_root_patched(patched);
+                        let mut slots = [None, None];
+                        let mut any = false;
+                        if let Some(current) = info.slot {
+                            for slot in pick.slots(current) {
+                                let patched = skyward_folkpatch::patched_slot(
+                                    Path::new("/dev/block/by-name"),
+                                    slot,
+                                    Path::new("/data/local/tmp/skyward-folkpatch"),
+                                )
+                                .unwrap_or(false);
+                                slots[slot.number() as usize] = Some(patched);
+                                any |= patched;
+                            }
+                        }
+                        app.set_root_patched(any, slots);
                     }
                     // A copy beside the manager, which the user asked for and
                     // was told the cost of.

@@ -544,7 +544,7 @@ fn available(dir: &Path) -> Result<u64> {
 #[cfg(test)]
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    crate::backup::hex(&sha2::Sha256::digest(bytes))
 }
 
 #[cfg(test)]
