@@ -125,6 +125,13 @@ pub enum Screen {
     /// A network added by hand: its name, how it is protected and its
     /// password, typed on the screen's keyboard.
     WlanAdd,
+    /// FolkPatch's root: the slots to patch, the key to make it with, and
+    /// how a run of it went.
+    #[cfg(feature = "folkpatch")]
+    Root,
+    /// The SuperKey a patch is made with, typed on the screen's keyboard.
+    #[cfg(feature = "folkpatch")]
+    RootKey,
 }
 
 /// How far asking the update server for the newest system has come.
@@ -376,6 +383,56 @@ pub struct RelabelJob {
     pub outcome: Option<JobEnd>,
     /// Stopping was asked for and is under way.
     pub stopping: bool,
+}
+
+/// FolkPatch's root page: the slots it patches, the key it makes the patch
+/// with, and how a run of it goes.
+#[cfg(feature = "folkpatch")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootState {
+    pub pick: Pick,
+    pub key_mode: KeyMode,
+    /// The key typed on the key page, once it was one the manager takes.
+    pub entered: String,
+    pub job: RootJob,
+}
+
+#[cfg(feature = "folkpatch")]
+impl Default for RootState {
+    fn default() -> RootState {
+        RootState { pick: Pick::Current, key_mode: KeyMode::Generate, entered: String::new(), job: RootJob::Idle }
+    }
+}
+
+/// Where the key a patch is made with comes from.
+#[cfg(feature = "folkpatch")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyMode {
+    #[default]
+    Generate,
+    Enter,
+}
+
+/// How far a FolkPatch run has come, as its page shows it.
+#[cfg(feature = "folkpatch")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootJob {
+    /// Nothing has run: the page says what it will do.
+    Idle,
+    /// Under way, at this stage once the tools have said which.
+    Running(Option<skyward_folkpatch::Stage>),
+    /// It ended, and the page says how.
+    Finished(Box<skyward_folkpatch::Outcome>),
+}
+
+/// What the root page asks of a run.
+#[cfg(feature = "folkpatch")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootAction {
+    Pick(Pick),
+    KeyMode(KeyMode),
+    /// Type a key, on the key page.
+    EditKey,
 }
 
 /// A partition the filesystem page lists, as the runtime read it.
@@ -834,6 +891,9 @@ pub enum Confirm {
     Relabel,
     /// Do to the partition the filesystem page shows what it chose.
     Filesystem,
+    /// Patch the boot partitions FolkPatch's root page chose.
+    #[cfg(feature = "folkpatch")]
+    RootPatch,
 }
 
 /// What the wipe page erases: everything a factory reset erases, or any of
@@ -1225,6 +1285,10 @@ pub enum Action {
     StopDownload,
     /// Write the downloaded recovery image over this recovery.
     InstallRecovery,
+    /// Choose what FolkPatch's root page patches, or where its key comes
+    /// from.
+    #[cfg(feature = "folkpatch")]
+    Root(RootAction),
     /// A control whose work is not wired up yet; touching it says so.
     Unavailable(&'static str),
 }
@@ -1638,6 +1702,9 @@ pub struct State {
     /// Giving the data partition's files their SELinux labels under way, or
     /// how it last ended.
     pub relabel: Option<RelabelJob>,
+    /// FolkPatch's root page, on a build that carries it.
+    #[cfg(feature = "folkpatch")]
+    pub root: Option<RootState>,
     /// The filesystem page's partitions, as the runtime last read them, or
     /// why it could not; none until it has.
     pub filesystems: Option<Result<Vec<FsRow>, String>>,
@@ -1742,6 +1809,8 @@ impl Default for State {
             clash: None,
             job: None,
             relabel: None,
+            #[cfg(feature = "folkpatch")]
+            root: None,
             filesystems: None,
             fs_chosen: 0,
             fs_action: FsAction::Repair,
@@ -2007,6 +2076,10 @@ pub enum Effect {
     /// Merge the update that waits in the slot the phone runs from,
     /// telling how it goes with [`App::set_update`].
     Merge,
+    /// Patch the boot partitions `pick` means with FolkPatch, telling how it
+    /// goes with [`App::root_stage`] and [`App::root_finished`].
+    #[cfg(feature = "folkpatch")]
+    Root { pick: Pick, key: skyward_folkpatch::Key },
 }
 
 enum Drag {
@@ -3300,6 +3373,40 @@ impl App {
         self.refresh();
     }
 
+    /// A FolkPatch run has started: its page follows how far it comes.
+    #[cfg(feature = "folkpatch")]
+    pub fn root_started(&mut self) {
+        self.state.root.get_or_insert_with(RootState::default).job = RootJob::Running(None);
+        self.refresh();
+    }
+
+    /// How far a FolkPatch run has come, as the tools said it.
+    #[cfg(feature = "folkpatch")]
+    pub fn root_stage(&mut self, stage: skyward_folkpatch::Stage) {
+        let root = self.state.root.as_mut().expect("only a run under way moves on");
+        root.job = RootJob::Running(Some(stage));
+        if self.screen() == Screen::Root {
+            self.refresh();
+        }
+    }
+
+    /// A FolkPatch run has ended, and its page says how, lit for the user to
+    /// read.
+    #[cfg(feature = "folkpatch")]
+    pub fn root_finished(&mut self, outcome: skyward_folkpatch::Outcome, now: u64) {
+        let root = self.state.root.as_mut().expect("only a run under way ends");
+        root.job = RootJob::Finished(Box::new(outcome));
+        self.wake(now);
+        self.refresh();
+    }
+
+    /// Whether a FolkPatch run is under way, which nothing else may start
+    /// over.
+    #[cfg(feature = "folkpatch")]
+    pub fn rooting(&self) -> bool {
+        self.state.root.as_ref().is_some_and(|r| matches!(r.job, RootJob::Running(_)))
+    }
+
     /// The partitions for the filesystem page, as the runtime read them,
     /// or why it could not.
     pub fn set_filesystems(&mut self, rows: Result<Vec<FsRow>, String>) {
@@ -4497,6 +4604,12 @@ impl App {
     /// Open `screen` over the page shown, sliding in over it.
     fn open(&mut self, screen: Screen) {
         self.leave(false);
+        // The root page starts on the slot the phone runs from, with a key
+        // of its own, until the user chooses otherwise.
+        #[cfg(feature = "folkpatch")]
+        if screen == Screen::Root {
+            self.state.root.get_or_insert_with(RootState::default);
+        }
         self.push(screen);
     }
 
@@ -4638,6 +4751,16 @@ impl App {
                     return fx;
                 }
                 self.state.relabel = None;
+            }
+            // A run writes boot partitions one at a time, and nothing stops
+            // it halfway: the page cannot be left until it ends.
+            #[cfg(feature = "folkpatch")]
+            Screen::Root => {
+                if self.rooting() {
+                    self.say(l.pick(["请等待完成后再返回", "請等待完成後再返回", "Wait for it to finish before going back"]), now);
+                    return fx;
+                }
+                self.state.root = None;
             }
             // Work on a partition cannot be stopped halfway. Done, the
             // partition may hold another filesystem, and what is to be done
@@ -5073,6 +5196,16 @@ impl App {
                     return vec![Effect::StopJob];
                 }
             }
+            #[cfg(feature = "folkpatch")]
+            Action::Root(action) => {
+                let root = self.state.root.get_or_insert_with(RootState::default);
+                match action {
+                    RootAction::Pick(pick) => root.pick = pick,
+                    RootAction::KeyMode(mode) => root.key_mode = mode,
+                    RootAction::EditKey => self.open(Screen::RootKey),
+                }
+                self.refresh();
+            }
             Action::StopRelabel => {
                 let job = self.state.relabel.as_mut().expect("only work under way is stopped");
                 if job.outcome.is_none() && !job.stopping {
@@ -5392,6 +5525,8 @@ impl App {
             Screen::Search => &mut self.state.search,
             Screen::Decrypt => &mut self.state.code,
             Screen::Rename => &mut self.state.new_name,
+            #[cfg(feature = "folkpatch")]
+            Screen::RootKey => &mut self.state.root.as_mut().expect("the key page types a key").entered,
             Screen::WlanPassword => &mut self.state.password,
             Screen::WlanAdd => {
                 let a = self.state.adding.as_mut().expect("the page adds a network");
@@ -5579,6 +5714,22 @@ impl App {
                 Screen::Search => {
                     if let Some(first) = search::find_on(&self.state.search, l, self.state.wlan.is_some()).first() {
                         return self.act(Action::Open(first.screen), now);
+                    }
+                }
+                // A key the manager would not take stays here, said why; one
+                // it takes goes back to the root page with it.
+                #[cfg(feature = "folkpatch")]
+                Screen::RootKey => {
+                    let typed = self.state.root.as_ref().expect("the key page types a key").entered.clone();
+                    match skyward_folkpatch::SuperKey::validate(&typed) {
+                        Ok(_) => {
+                            if let Some(root) = self.state.root.as_mut() {
+                                root.entered = typed;
+                                root.key_mode = KeyMode::Enter;
+                            }
+                            return self.back(now);
+                        }
+                        Err(fault) => self.say(fault.why(), now),
                     }
                 }
                 Screen::Decrypt if self.state.code.is_empty() => self.say(l.pick(["请输入锁屏密码", "請輸入螢幕鎖定密碼", "Enter the screen lock"]), now),
@@ -6203,6 +6354,24 @@ impl App {
                     self.refresh();
                     fx.push(Effect::Merge);
                 }
+            }
+            // The key is the user's to choose; one the manager would not
+            // take is turned down before anything is written.
+            #[cfg(feature = "folkpatch")]
+            Confirm::RootPatch => {
+                let root = self.state.root.clone().expect("the root page shows it");
+                let key = match root.key_mode {
+                    KeyMode::Generate => skyward_folkpatch::Key::Generate,
+                    KeyMode::Enter => match skyward_folkpatch::SuperKey::validate(&root.entered) {
+                        Ok(key) => skyward_folkpatch::Key::Enter(key),
+                        Err(fault) => {
+                            self.say(fault.why(), now);
+                            return fx;
+                        }
+                    },
+                };
+                self.root_started();
+                fx.push(Effect::Root { pick: root.pick, key });
             }
             Confirm::DeleteEntry => fx.push(Effect::Delete(self.entry_path())),
             // The partition has to be open; whether its users have unlocked
@@ -7009,32 +7178,38 @@ mod tests {
         assert_eq!((none.slot, none.temp), (None, None), "a phone without slots or a fuel gauge");
     }
 
-    /// A screen the home page's rows fit on with a little room to spare.
-    const SNUG: u32 = 3000;
+    /// A screen the home page's rows fit on with a little room to spare: as
+    /// tall as the page is plain, and a row's worth more.
+    fn snug(f: &Fonts, i: &DeviceInfo) -> u32 {
+        let mut app = App::new(Screen::Home, W, 4000, PPD);
+        let last = app.frame(f, i).hits.iter().find(|h| h.action == Action::Open(Screen::Reboot)).expect("a reboot row").rect;
+        (last.y + last.h + 24.0) as u32
+    }
 
     #[test]
     fn a_home_page_grown_by_an_update_notice_scrolls_down_to_its_last_row() {
         let f = fonts();
         let plain = info();
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
+        let snug = snug(&f, &plain);
+        let mut app = App::new(Screen::Home, W, snug, PPD);
         let fr = app.frame(&f, &plain);
         let reboot = fr.hits.iter().find(|h| h.action == Action::Open(Screen::Reboot)).expect("a reboot row").rect;
-        assert!(reboot.y + reboot.h <= SNUG as f32, "without the notice the rows fit the screen");
+        assert!(reboot.y + reboot.h <= snug as f32, "without the notice the rows fit the screen");
         let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
+        let mut app = App::new(Screen::Home, W, snug, PPD);
         let fr = app.frame(&f, &i);
         let reboot = fr.hits.iter().find(|h| h.action == Action::Open(Screen::Reboot)).expect("a reboot row").rect;
-        assert!(reboot.y + reboot.h > SNUG as f32, "the notice pushes the last row below the screen");
+        assert!(reboot.y + reboot.h > snug as f32, "the notice pushes the last row below the screen");
         assert!(reboot.y + reboot.h <= fr.canvas.h as f32, "the page is drawn down to it");
-        app.touch(Touch::Down(700.0, 2800.0), &f, 0);
-        app.touch(Touch::Move(700.0, 2000.0), &f, 0);
-        app.touch(Touch::Move(700.0, 1200.0), &f, 0);
+        app.touch(Touch::Down(700.0, snug as f32 - 200.0), &f, 0);
+        app.touch(Touch::Move(700.0, snug as f32 - 1000.0), &f, 0);
+        app.touch(Touch::Move(700.0, snug as f32 - 1800.0), &f, 0);
         app.touch(Touch::Up, &f, 0);
         for ms in (0..3000).step_by(8) {
             app.tick(ms);
         }
         let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y < SNUG as f32, "scrolled up into view");
+        assert!(y < snug as f32, "scrolled up into view");
         tap_at(&mut app, &f, &i, Action::Open(Screen::Reboot), 3000);
         assert_eq!(app.screen(), Screen::Reboot);
     }
@@ -8324,16 +8499,18 @@ mod tests {
     #[test]
     fn the_keys_reach_the_last_row_of_a_home_page_grown_by_an_update_notice() {
         let f = fonts();
-        let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
+        let plain = info();
+        let snug = snug(&f, &plain);
+        let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..plain };
+        let mut app = App::new(Screen::Home, W, snug, PPD);
         let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y > SNUG as f32, "below the screen to start with");
+        assert!(y > snug as f32, "below the screen to start with");
         light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::Reboot)));
         for ms in (0..3000).step_by(8) {
             app.tick(ms);
         }
         let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y < SNUG as f32, "the page scrolled the lit row into view");
+        assert!(y < snug as f32, "the page scrolled the lit row into view");
         press(&mut app, Key::Power, 3000);
         assert_eq!(app.screen(), Screen::Reboot);
     }
@@ -10966,5 +11143,136 @@ mod tests {
         assert_eq!(app.deadline(1000), Some(12_000));
         app.tick(15_000);
         assert!(!app.display_on());
+    }
+
+    /// A phone of the pages' own size, running from slot A, with its data
+    /// partition open.
+    #[cfg(feature = "folkpatch")]
+    fn rooted(slot: Option<Slot>) -> (App, DeviceInfo) {
+        let mut i = info();
+        i.slot = slot;
+        // Tall enough for the whole page, so a test touches what a user
+        // scrolls down to on a phone.
+        let mut app = App::new(Screen::Home, W, 3000, PPD);
+        app.state.data = Data::Open;
+        (app, i)
+    }
+
+    #[cfg(feature = "folkpatch")]
+    fn root_hits(app: &mut App, f: &Fonts, i: &DeviceInfo) -> Vec<Action> {
+        app.open(Screen::Root);
+        app.frame(f, i).hits.iter().map(|h| h.action).collect()
+    }
+
+    #[cfg(feature = "folkpatch")]
+    fn typed(app: &mut App, f: &Fonts, i: &DeviceInfo, text: &str) {
+        for c in text.chars() {
+            tap(app, f, i, Action::Type(Cap::Char(c)));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn the_home_page_opens_the_root_page_on_the_current_slot() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        assert!(app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::Root)), "the home page offers it");
+        let hits = root_hits(&mut app, &f, &i);
+        assert_eq!(app.screen(), Screen::Root);
+        for pick in Pick::ALL {
+            assert!(hits.contains(&Action::Root(RootAction::Pick(pick))), "each slot is offered");
+        }
+        assert_eq!(app.state.root.as_ref().unwrap().pick, Pick::Current, "starting on the current slot");
+        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Generate, "and with a key made here");
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_root_run_is_offered_only_with_the_storage_and_a_slot_to_write() {
+        let (f, _) = (fonts(), ());
+        let want = Confirm::RootPatch;
+        let (mut app, i) = rooted(Some(Slot::A));
+        assert!(root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "everything in place");
+        // A slot missing.
+        let (mut app, i) = rooted(None);
+        assert!(!root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no slot to write");
+        // The data partition closed.
+        let (mut app, i) = rooted(Some(Slot::B));
+        app.state.data = Data::Closed;
+        assert!(!root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no storage for the manager");
+        // An update in flight warns without refusing.
+        let (mut app, mut i) = rooted(Some(Slot::A));
+        i.snapshot = SnapshotState::Snapshotted;
+        assert!(root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "a warning keeps the swipe");
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_key_the_manager_would_not_take_stays_on_the_key_page() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        root_hits(&mut app, &f, &i);
+        tap(&mut app, &f, &i, Action::Root(RootAction::KeyMode(KeyMode::Enter)));
+        tap(&mut app, &f, &i, Action::Root(RootAction::EditKey));
+        assert_eq!(app.screen(), Screen::RootKey);
+        typed(&mut app, &f, &i, "abcdefgh");
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.screen(), Screen::RootKey, "no digit is turned down here");
+        assert!(toast(&app).is_some_and(|t| t.contains("数字") || t.contains("digit")), "{:?}", toast(&app));
+        tap(&mut app, &f, &i, Action::Type(Cap::Show(Layer::Digits)));
+        tap(&mut app, &f, &i, Action::Type(Cap::Char('1')));
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.screen(), Screen::Root, "taken, it goes back with the key");
+        let root = app.state.root.as_ref().unwrap();
+        assert_eq!((root.key_mode, root.entered.as_str()), (KeyMode::Enter, "abcdefgh1"));
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_root_run_says_how_far_it_has_come_and_cannot_be_left_before_it_ends() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        root_hits(&mut app, &f, &i);
+        assert_eq!(
+            swipe(&mut app, &f, &i, Confirm::RootPatch),
+            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Generate }],
+            "the current slot, with a key made here"
+        );
+        app.root_started();
+        app.root_stage(skyward_folkpatch::Stage::Patching { slot: Slot::A });
+        assert!(matches!(app.state.root.as_ref().unwrap().job, RootJob::Running(Some(_))));
+        // The bar carries no back while it runs; a gesture that goes back
+        // anyway is turned down, and the page says why.
+        assert!(!app.frame(&f, &i).back, "no back button while it runs");
+        assert!(app.act(Action::Back, 1000).is_empty());
+        assert_eq!(app.screen(), Screen::Root, "a run writes boot partitions and is not left halfway");
+        assert!(toast(&app).is_some(), "and the page says why not");
+        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
+        app.root_finished(
+            skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+                slots: vec![Slot::A],
+                key,
+                key_path: "/data/local/tmp/skyward-folkpatch/x/superkey.txt".into(),
+                apk_path: "/sdcard/Download/Skyward/FolkPatch/x/manager.apk".into(),
+                backup_dir: "/sdcard/Download/Skyward/FolkPatch/x/backup".into(),
+                kallsyms_all: true,
+            }),
+            2000,
+        );
+        let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(hits.contains(&Action::Back), "the page is done");
+        tap_back(&mut app, &f, &i, 3000);
+        assert_eq!(app.screen(), Screen::Home, "and can be left");
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_refused_root_run_says_nothing_was_written() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        root_hits(&mut app, &f, &i);
+        app.root_started();
+        app.root_finished(skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
+        assert!(matches!(app.state.root.as_ref().unwrap().job, RootJob::Finished(_)));
     }
 }

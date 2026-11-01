@@ -1171,6 +1171,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let readings = Readings::start(cfg)?;
     let mut read_at = Instant::now();
     let mut installer: Option<Installer> = None;
+    // FolkPatch's root, whose run writes boot partitions of its own.
+    #[cfg(feature = "folkpatch")]
+    let mut root_worker: Option<crate::root::Worker> = None;
     // Whether the panel's frame memory has been blacked out for an off
     // panel; cleared once a real frame is shown again.
     let mut blanked = false;
@@ -1470,7 +1473,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let floor = if shown { 0 } else { 1 };
         let until_due = app.deadline(now).map(|d| d.saturating_sub(now) as i32);
         // Coming up, the page is stepped rather than waited on.
-        let wait_cap = if appear < 1.0 { 16 } else { 1000 };
+        #[cfg(feature = "folkpatch")]
+        let rooting = app.rooting();
+        #[cfg(not(feature = "folkpatch"))]
+        let rooting = false;
+        // A run says how far it has come without a pipe of its own, so the
+        // page is drawn again often enough for its card to move.
+        let wait_cap = if appear < 1.0 { 16 } else if rooting { 100 } else { 1000 };
         let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
@@ -1684,6 +1693,29 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if relabeled {
             relabeler = None;
+        }
+        #[cfg(feature = "folkpatch")]
+        {
+            let mut ended = false;
+            if let Some(worker) = &root_worker {
+                for told in worker.events() {
+                    match told {
+                        crate::root::Told::Stage(stage) => app.root_stage(stage),
+                        crate::root::Told::Ended(outcome) => {
+                            let _ = skyward_sys::kmsg(match &outcome {
+                                skyward_folkpatch::Outcome::Installed(_) => "folkpatch: the boot partitions are patched",
+                                skyward_folkpatch::Outcome::Refused(_) => "folkpatch: nothing was written",
+                                skyward_folkpatch::Outcome::Failed(_) => "folkpatch: the run did not finish",
+                            });
+                            app.root_finished(outcome, now);
+                            ended = true;
+                        }
+                    }
+                }
+            }
+            if ended {
+                root_worker = None;
+            }
         }
         let mut parted = false;
         if let Some(p) = &part_worker {
@@ -2105,6 +2137,53 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::Flash { partition, pick } => {
                         let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
                         installer.as_ref().context("no installer holds an image")?.flash(partition, pick.slots(slot));
+                    }
+                    // The run carries its own key, and writes nothing but
+                    // boot; the phone's partitions it reads and writes are
+                    // not the ones this recovery runs from. Whatever stops
+                    // it from starting is said on the page, which would
+                    // otherwise wait on a run that never began.
+                    #[cfg(feature = "folkpatch")]
+                    Effect::Root { pick, key } => {
+                        ensure!(installer.is_none() && root_worker.is_none(), "a run is under way already");
+                        let refused = |app: &mut App, why: String| {
+                            app.root_finished(
+                                skyward_folkpatch::Outcome::Failed(skyward_folkpatch::Failure {
+                                    stage: skyward_folkpatch::Stage::Checking,
+                                    slot: None,
+                                    why,
+                                    backups: Vec::new(),
+                                    written: Vec::new(),
+                                    key_path: None,
+                                }),
+                                now,
+                            );
+                        };
+                        if !withhold(&mut transfer, &mut app, now)? {
+                            refused(&mut app, "file transfer kept internal storage".into());
+                            continue;
+                        }
+                        let started = (|| -> Result<crate::root::Worker> {
+                            let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                            let battery = info.battery.clone().context("the battery was not read")?;
+                            let options = skyward_folkpatch::Options {
+                                device: cfg.device.codename.clone(),
+                                current,
+                                slots: pick.slots(current),
+                                battery,
+                                key,
+                                partition_dir: PathBuf::from("/dev/block/by-name"),
+                                storage: PathBuf::from(skyward_crypto::data::SDCARD),
+                                private: PathBuf::from("/data/local/tmp/skyward-folkpatch"),
+                                stamp: skyward_ui::fmt::stamp(unix_now()?, app.state.time_zone),
+                            };
+                            skyward_sys::kmsg(&format!("folkpatch: patching {} slot(s)", options.slots.len()))?;
+                            crate::root::Worker::start(options)
+                        })();
+                        match started {
+                            Ok(worker) => root_worker = Some(worker),
+                            Err(e) => refused(&mut app, format!("{e:#}")),
+                        }
                     }
                     Effect::Cancel => match &installer {
                         Some(i) => i.cancel()?,

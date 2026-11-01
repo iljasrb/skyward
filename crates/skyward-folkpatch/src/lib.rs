@@ -61,7 +61,7 @@ pub struct Options {
 }
 
 /// Where the key a patch is made with comes from.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Key {
     /// Made here, from `/dev/urandom`.
     Generate,
@@ -97,7 +97,7 @@ pub enum Stage {
 }
 
 /// How a run ended.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Installed(Installed),
     /// Nothing was written to a boot partition, for this reason.
@@ -106,7 +106,7 @@ pub enum Outcome {
 }
 
 /// A run that patched every slot it was asked to.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     /// The slots patched, each once.
     pub slots: Vec<Slot>,
@@ -124,7 +124,7 @@ pub struct Installed {
 }
 
 /// A run that stopped with something to say, and what it had already written.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     /// The stage the run was in.
     pub stage: Stage,

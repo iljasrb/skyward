@@ -97,11 +97,22 @@ pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage))
     drop(written);
     let sha256 = hex(&digest.finalize());
 
-    // Read the copy back: what is kept is what is read, not what was meant
-    // to be written.
-    let kept = fs::read(&part).with_context(|| format!("read {} back", part.display()))?;
-    ensure!(kept.len() as u64 == total, "{} is {} bytes, not the {total} it should hold", part.display(), kept.len());
-    ensure!(hex(&Sha256::digest(&kept)) == sha256, "{} is not what {} holds", part.display(), source.display());
+    // Read the copy back in the same chunks it was written in, so that a
+    // partition's whole size is never held in memory at once: what is kept
+    // is what is read, not what was meant to be written.
+    let mut kept = File::open(&part).with_context(|| format!("read {} back", part.display()))?;
+    let mut again = Sha256::new();
+    let mut size = 0;
+    loop {
+        let read = kept.read(&mut buffer).with_context(|| format!("read {} back", part.display()))?;
+        if read == 0 {
+            break;
+        }
+        again.update(&buffer[..read]);
+        size += read as u64;
+    }
+    ensure!(size == total, "{} is {size} bytes, not the {total} it should hold", part.display());
+    ensure!(hex(&again.finalize()) == sha256, "{} is not what {} holds", part.display(), source.display());
     fs::rename(&part, &path).with_context(|| format!("put {} in place of {}", part.display(), path.display()))?;
     if let Some(dir) = path.parent() {
         let _ = File::open(dir).and_then(|d| d.sync_all());

@@ -105,6 +105,10 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::WlanPassword => wlan_password(cx),
         Screen::WlanNetwork => wlan_network(cx),
         Screen::WlanAdd => wlan_add(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::Root => root(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::RootKey => root_key(cx),
     }
 }
 
@@ -130,6 +134,8 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::RunScript => (INSTALL, true),
         Confirm::Merge => (["滑动以合并", "滑動以合併", "Slide to merge"], true),
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
+        #[cfg(feature = "folkpatch")]
+        Confirm::RootPatch => (["滑动以安装 Root", "滑動以安裝 Root", "Slide to install root"], true),
     };
     (s.lang.pick(label), danger)
 }
@@ -271,6 +277,12 @@ pub fn home(cx: &Ctx) -> Frame {
         Action::Open(Screen::Decrypt),
     ]));
     y = tools.bottom + t.m.card_gap;
+    #[cfg(feature = "folkpatch")]
+    {
+        let root = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(ROOT)).icon(GREEN, Icon::Shield).subtitle(l.pick(ROOT_SUBTITLE))]);
+        out.extend(hits(&root.rows, &[Action::Open(Screen::Root)]));
+        y = root.bottom + t.m.card_gap;
+    }
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["清除数据", "清除資料", "Wipe data"])).icon(RED, Icon::Wipe),
@@ -3611,6 +3623,335 @@ pub fn unhandled(cx: &Ctx) -> Frame {
     Frame { back: false, ..Frame::new(t, c, out, l.pick(["无法处理该请求", "無法處理這項要求", "Can't handle the request"]), top) }
 }
 
+
+#[cfg(feature = "folkpatch")]
+const ROOT: Text = ["Root", "Root", "Root"];
+#[cfg(feature = "folkpatch")]
+const ROOT_SUBTITLE: Text = ["FolkPatch 内核补丁与超级密钥", "FolkPatch 核心修補與超級金鑰", "FolkPatch kernel patch and SuperKey"];
+#[cfg(feature = "folkpatch")]
+const ROOT_KEY_TITLE: Text = ["超级密钥", "超級金鑰", "SuperKey"];
+#[cfg(feature = "folkpatch")]
+const ROOT_SLOTS: Text = ["分区", "分割區", "Partitions"];
+#[cfg(feature = "folkpatch")]
+const ROOT_KEY: Text = ["密钥", "金鑰", "Key"];
+#[cfg(feature = "folkpatch")]
+const ROOT_TYPED: Text = ["已输入", "已輸入", "Set"];
+#[cfg(feature = "folkpatch")]
+const ROOT_NOT_TYPED: Text = ["未输入", "未輸入", "Not set"];
+
+/// FolkPatch's root: what it writes and where, the slots and the key to
+/// write with, a swipe to start, and then how the run went.
+#[cfg(feature = "folkpatch")]
+pub fn root(cx: &Ctx) -> Frame {
+    use crate::app::{KeyMode, RootAction, RootJob};
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let title = l.pick(ROOT);
+    let root = s.root.clone().unwrap_or_default();
+    let bottom = match &root.job {
+        RootJob::Idle => {
+            let what = l.pick([
+                "把 FolkPatch 的内核补丁写入选中的 boot 分区，并把 FolkPatch 管理器与超级密钥保存到内部存储。写入后需在系统中打开管理器、安装其中的 APK，再输入密钥。",
+                "把 FolkPatch 的核心修補寫入所選的 boot 分割區，並把 FolkPatch 管理器與超級金鑰儲存到內部儲存空間。寫入後需在系統中開啟管理器、安裝其中的 APK，再輸入金鑰。",
+                "Writes FolkPatch's kernel patch into the boot partitions chosen, and saves the manager and the SuperKey to internal storage. Afterwards open the manager in Android, install the APK in it, and enter the key.",
+            ]);
+            let warning = l.pick([
+                "补丁绕过系统自身的校验：写入失败可能让当前槽位无法启动，密钥只在这次恢复中显示。",
+                "修補繞過系統自身的檢查：寫入失敗可能讓目前槽位無法啟動，金鑰只在這次復原中顯示。",
+                "The patch bypasses the system's own checks: a failed write can leave the current slot unable to start, and the key is shown only for this recovery session.",
+            ]);
+            let mut y = widgets::paragraph(&mut c, t, f, top, what);
+            y = widgets::footnote(&mut c, t, f, y, warning);
+            y = widgets::section(&mut c, t, f, y + t.m.card_gap, l.pick(ROOT_SLOTS));
+            let titles = Pick::ALL.map(|pick| pick_title(l, pick, cx.info.slot));
+            let picks: Vec<Row> = Pick::ALL
+                .iter()
+                .zip(&titles)
+                .map(|(pick, title)| Row::new(title).trail(Trail::Check(*pick == root.pick)))
+                .collect();
+            let slots = widgets::list(&mut c, t, f, y, &picks);
+            out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Root(RootAction::Pick(pick)))));
+            let modes = widgets::list(&mut c, t, f, slots.bottom + t.m.card_gap, &[
+                Row::new(l.pick(["生成密钥", "產生金鑰", "Generate a key"]))
+                    .subtitle(l.pick(["24 位字母与数字，随机生成", "24 位字母與數字，隨機產生", "24 letters and digits, drawn at random"]))
+                    .trail(Trail::Check(root.key_mode == KeyMode::Generate)),
+                Row::new(l.pick(["输入密钥", "輸入金鑰", "Enter a key"]))
+                    .subtitle(l.pick(["8 至 63 位字母与数字", "8 至 63 位字母與數字", "8 to 63 letters and digits"]))
+                    .trail(Trail::Check(root.key_mode == KeyMode::Enter)),
+            ]);
+            out.extend(hits(&modes.rows, &[
+                Action::Root(RootAction::KeyMode(KeyMode::Generate)),
+                Action::Root(RootAction::KeyMode(KeyMode::Enter)),
+            ]));
+            y = modes.bottom;
+            if root.key_mode == KeyMode::Enter {
+                let shown = l.pick(if root.entered.is_empty() { ROOT_NOT_TYPED } else { ROOT_TYPED });
+                let typed = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(ROOT_KEY)).trail(Trail::Value(shown))]);
+                out.extend(hits(&typed.rows, &[Action::Root(RootAction::EditKey)]));
+                y = typed.bottom;
+            }
+            // What would stop a run; the swipe shows only once nothing does.
+            let closed = !s.data.storage_open();
+            let low = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal);
+            let mut ready = true;
+            if cx.info.slot.is_none() {
+                ready = false;
+                y = widgets::footnote(&mut c, t, f, y, l.pick([
+                    "这台手机只有一个槽位，没有可写入的 boot 分区。",
+                    "這台手機只有一個槽位，沒有可寫入的 boot 分割區。",
+                    "This phone has one slot, so there are no boot partitions to write.",
+                ]));
+            }
+            if closed {
+                ready = false;
+                y = widgets::footnote(&mut c, t, f, y, l.pick([
+                    "需先在「解密」中打开 data 分区：管理器与密钥要保存到内部存储。",
+                    "需先在「解密」中開啟 data 分割區：管理器與金鑰要儲存到內部儲存空間。",
+                    "Open the data partition in Decrypt first: the manager and the key are saved to internal storage.",
+                ]));
+            }
+            if let Some(skyward_install::Refusal::Battery { level, .. }) = low {
+                ready = false;
+                y = widgets::footnote(&mut c, t, f, y, &tr!(l, "电量仅剩 {level}%：充电后再试。", "電量僅剩 {level}%：充電後再試。", "Only {level}% charge: charge the phone first."));
+            }
+            if cx.info.snapshot != skyward_vab::SnapshotState::None {
+                y = widgets::footnote(&mut c, t, f, y, l.pick([
+                    "有更新尚未合并：补丁可能在更新完成前被覆盖。",
+                    "有更新尚未合併：修補可能在更新完成前被覆寫。",
+                    "An update is still in flight: the patch may be overwritten before it finishes.",
+                ]));
+            }
+            if ready {
+                let (label, danger) = confirm_label(Confirm::RootPatch, cx.state);
+                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootPatch) });
+                y = track.y + track.h;
+            }
+            y
+        }
+        RootJob::Running(stage) => {
+            let (heading, detail) = root_stage(l, stage.as_ref());
+            widgets::progress_card(&mut c, t, f, top, &heading, &detail, None)
+        }
+        RootJob::Finished(outcome) => {
+            let (heading, lines) = root_result(l, outcome);
+            let mut y = widgets::progress_card(&mut c, t, f, top, l.pick(heading), "", None);
+            for line in &lines {
+                y = widgets::footnote(&mut c, t, f, y, line);
+            }
+            let done = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(DONE)).trail(Trail::None)]);
+            out.extend(hits(&done.rows, &[Action::Back]));
+            done.bottom
+        }
+    };
+    Frame { back: matches!(root.job, RootJob::Finished(_)), ..Frame::new(t, fit(c, t, bottom), out, title, top) }
+}
+
+/// The key page: the SuperKey typed on the screen's keyboard, and the rule
+/// the manager holds it to said under it.
+#[cfg(feature = "folkpatch")]
+pub fn root_key(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let typed = s.root.as_ref().map_or("", |root| root.entered.as_str());
+    let (y, caret) = widgets::text_field(&mut c, t, f, top, typed);
+    widgets::footnote(&mut c, t, f, y, l.pick([
+        "8 至 63 位字母与数字，至少各含一个。点「完成」保存。",
+        "8 至 63 位字母與數字，至少各含一個。點「完成」儲存。",
+        "8 to 63 letters and digits, at least one of each. Tap Done to keep it.",
+    ]));
+    keyboard_hits(&mut c, t, f, s, l.pick(DONE), &mut out);
+    Frame { caret: Some(caret), ..Frame::new(t, c, out, l.pick(ROOT_KEY_TITLE), top) }
+}
+
+/// The heading and the line under it a run's stage says, on its card.
+#[cfg(feature = "folkpatch")]
+fn root_stage(l: Lang, stage: Option<&skyward_folkpatch::Stage>) -> (String, String) {
+    use skyward_folkpatch::Stage;
+    let bytes = |done: u64, total: u64| tr!(l, "{done} / {total} 字节", "{done} / {total} 位元組", "{done} of {total} bytes");
+    match stage {
+        None => (l.pick(["正在准备", "正在準備", "Getting ready"]).into(), String::new()),
+        Some(Stage::Checking) => (l.pick(["正在检查", "正在檢查", "Checking"]).into(), String::new()),
+        Some(Stage::Copying { done, total }) => (
+            l.pick(["正在保存管理器", "正在儲存管理器", "Saving the manager"]).into(),
+            bytes(*done, *total),
+        ),
+        Some(Stage::BackingUp { slot, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(
+                    l,
+                    "正在备份槽位 {slot} 的 boot 分区",
+                    "正在備份槽位 {slot} 的 boot 分割區",
+                    "Saving slot {slot}'s boot partition"
+                ),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::Patching { slot }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在为槽位 {slot} 打补丁", "正在為槽位 {slot} 打修補", "Patching slot {slot}"), String::new())
+        }
+        Some(Stage::Verifying { slot }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在校验槽位 {slot} 的补丁", "正在校驗槽位 {slot} 的修補", "Checking slot {slot}'s patch"), String::new())
+        }
+        Some(Stage::Flashing { slot, done, total }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在写入槽位 {slot}", "正在寫入槽位 {slot}", "Writing slot {slot}"), bytes(*done, *total))
+        }
+    }
+}
+
+/// How a run ended: the heading over the page and what it has to say.
+#[cfg(feature = "folkpatch")]
+fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Vec<String>) {
+    const INSTALLED: Text = ["Root 已安装", "Root 已安裝", "Root installed"];
+    const NOT_INSTALLED: Text = ["未安装", "未安裝", "Not installed"];
+    const FAILED: Text = ["Root 未安装", "Root 未安裝", "Root not installed"];
+    match outcome {
+        skyward_folkpatch::Outcome::Installed(installed) => {
+            let slots: Vec<&str> = installed.slots.iter().map(|s| s.letter()).collect();
+            let slots = slots.join(", ");
+            let key = installed.key.expose();
+            let manager = installed.apk_path.display().to_string();
+            let key_file = installed.key_path.display().to_string();
+            let backups = installed.backup_dir.display().to_string();
+            let mut lines = vec![
+                tr!(l, "已为槽位 {slots} 写入补丁。", "已為槽位 {slots} 寫入修補。", "Slot {slots} is patched."),
+                tr!(l, "超级密钥：{key}", "超級金鑰：{key}", "SuperKey: {key}"),
+                tr!(l, "管理器：{manager}", "管理器：{manager}", "Manager: {manager}"),
+                tr!(l, "密钥文件：{key_file}", "金鑰檔案：{key_file}", "Key file: {key_file}"),
+                tr!(l, "备份：{backups}", "備份：{backups}", "Backups: {backups}"),
+                l.pick([
+                    "在系统中打开管理器，安装其中的 APK，再输入上面的密钥。密钥只在这里显示一次。",
+                    "在系統中開啟管理器，安裝其中的 APK，再輸入上面的金鑰。金鑰只在這裡顯示一次。",
+                    "Open the manager in Android, install the APK in it, and enter the key above. The key is shown here only once.",
+                ])
+                .to_string(),
+            ];
+            if !installed.kallsyms_all {
+                lines.push(
+                    l.pick([
+                        "内核未启用 CONFIG_KALLSYMS_ALL：部分功能可能不可用，无法启动时用备份恢复。",
+                        "核心未啟用 CONFIG_KALLSYMS_ALL：部分功能可能無法使用，無法啟動時用備份還原。",
+                        "The kernel has no CONFIG_KALLSYMS_ALL: some of what root runs may not work. Restore the backup if it does not start.",
+                    ])
+                    .to_string(),
+                );
+            }
+            (INSTALLED, lines)
+        }
+        skyward_folkpatch::Outcome::Refused(refusal) => (
+            NOT_INSTALLED,
+            vec![
+                root_refusal(l, refusal),
+                l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string(),
+            ],
+        ),
+        skyward_folkpatch::Outcome::Failed(failure) => {
+            let (heading, _) = root_stage(l, Some(&failure.stage));
+            let why = &failure.why;
+            let mut lines = vec![tr!(l, "在「{heading}」时失败：{why}", "在「{heading}」時失敗：{why}", "Failed while {heading}: {why}")];
+            if !failure.written.is_empty() {
+                let slots: Vec<&str> = failure.written.iter().map(|s| s.letter()).collect();
+                let slots = slots.join(", ");
+                lines.push(tr!(
+                    l,
+                    "槽位 {slots} 可能已部分写入，请勿重启到该槽位。",
+                    "槽位 {slots} 可能已部分寫入，請勿重新啟動到該槽位。",
+                    "Slot {slots} may be partly written: don't start it."
+                ));
+            }
+            for copy in &failure.backups {
+                let path = copy.path.display().to_string();
+                let boot = format!("boot{}", copy.slot.suffix());
+                lines.push(tr!(
+                    l,
+                    "在电脑上：fastboot flash {boot} {path}",
+                    "在電腦上：fastboot flash {boot} {path}",
+                    "From a computer: fastboot flash {boot} {path}"
+                ));
+            }
+            (FAILED, lines)
+        }
+    }
+}
+
+/// Why a run did not start, or stopped before writing, in the user's words.
+#[cfg(feature = "folkpatch")]
+fn root_refusal(l: Lang, refusal: &skyward_folkpatch::Refusal) -> String {
+    use skyward_folkpatch::Refusal;
+    match refusal {
+        Refusal::NoSlot => l
+            .pick(["这台手机没有可写入的 A/B 槽位。", "這台手機沒有可寫入的 A/B 槽位。", "This phone has no A/B slot to write."])
+            .into(),
+        Refusal::Missing(s) => {
+            let slot = s.letter();
+            tr!(l, "找不到槽位 {slot} 的 boot 分区。", "找不到槽位 {slot} 的 boot 分割區。", "Slot {slot} has no boot partition.")
+        }
+        Refusal::NotAarch64 => l
+            .pick(["这台手机的架构不受支持。", "這台手機的架構不受支援。", "This phone's architecture isn't supported."])
+            .into(),
+        Refusal::Battery { level, .. } => tr!(l, "电量仅剩 {level}%。", "電量僅剩 {level}%。", "Only {level}% charge."),
+        Refusal::NotBootImage(s) => {
+            let slot = s.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 boot 分区不是可打补丁的启动镜像。",
+                "槽位 {slot} 的 boot 分割區不是可打修補的啟動映像。",
+                "Slot {slot}'s boot partition isn't a boot image that can be patched."
+            )
+        }
+        Refusal::RecoveryRamdisk(s) => {
+            let slot = s.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 boot 分区里是恢复模式的 ramdisk。",
+                "槽位 {slot} 的 boot 分割區裡是復原模式的 ramdisk。",
+                "Slot {slot}'s boot partition holds a recovery's ramdisk."
+            )
+        }
+        Refusal::AlreadyPatched(s) => {
+            let slot = s.letter();
+            tr!(l, "槽位 {slot} 的镜像已打过补丁。", "槽位 {slot} 的映像已打過修補。", "Slot {slot}'s image is patched already.")
+        }
+        Refusal::NoKallsyms => l
+            .pick([
+                "内核未启用 CONFIG_KALLSYMS，FolkPatch 无法工作。",
+                "核心未啟用 CONFIG_KALLSYMS，FolkPatch 無法運作。",
+                "The kernel has no CONFIG_KALLSYMS, which FolkPatch needs.",
+            ])
+            .into(),
+        Refusal::NoTools(what) => {
+            let what = what.clone();
+            tr!(l, "恢复模式缺少{what}。", "復原模式缺少{what}。", "The recovery has no {what}.")
+        }
+        Refusal::StorageClosed => l
+            .pick([
+                "内部存储未打开，管理器与密钥无处保存。",
+                "內部儲存空間未開啟，管理器與金鑰無處儲存。",
+                "Internal storage is closed, so the manager and the key have nowhere to go.",
+            ])
+            .into(),
+        Refusal::NoRoom { need, have } => {
+            let need = fmt::bytes(*need);
+            let have = fmt::bytes(*have);
+            tr!(
+                l,
+                "空间不足：需要 {need}，可用 {have}。",
+                "空間不足：需要 {need}，可用 {have}。",
+                "Not enough room: it needs {need} and has {have}."
+            )
+        }
+        Refusal::Key(fault) => fault.why().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3687,5 +4028,50 @@ mod tests {
     fn a_phrase_that_opens_a_line_starts_with_a_capital_in_english() {
         assert_eq!(capitalized(Lang::En, "empties the data partition"), "Empties the data partition");
         assert_eq!(capitalized(Lang::Hans, "清空 data 分区"), "清空 data 分区");
+    }
+
+    #[cfg(feature = "folkpatch")]
+    #[test]
+    fn a_root_run_that_installed_says_the_key_and_where_everything_went() {
+        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
+        let outcome = skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+            slots: vec![skyward_vab::Slot::A],
+            key: key.clone(),
+            key_path: "/data/local/tmp/skyward-folkpatch/1120/superkey.txt".into(),
+            apk_path: "/sdcard/Download/Skyward/FolkPatch/1120/manager.apk".into(),
+            backup_dir: "/sdcard/Download/Skyward/FolkPatch/1120/backup".into(),
+            kallsyms_all: true,
+        });
+        let (heading, lines) = root_result(Lang::En, &outcome);
+        let text = lines.join("\n");
+        assert_eq!(Lang::Hans.pick(heading), "Root 已安装");
+        assert!(text.contains(key.expose()), "the key is shown: {text}");
+        assert!(text.contains("/sdcard/Download/Skyward/FolkPatch/1120/manager.apk"), "{text}");
+        assert!(text.contains("/data/local/tmp/skyward-folkpatch/1120/superkey.txt"), "{text}");
+        assert!(!text.contains("KALLSYMS_ALL"), "a kernel with every symbol has nothing to warn of");
+    }
+
+    #[cfg(feature = "folkpatch")]
+    #[test]
+    fn a_root_run_that_stopped_says_what_may_be_written_and_how_to_put_it_back() {
+        let outcome = skyward_folkpatch::Outcome::Failed(skyward_folkpatch::Failure {
+            stage: skyward_folkpatch::Stage::Flashing { slot: skyward_vab::Slot::A, done: 0, total: 0 },
+            slot: Some(skyward_vab::Slot::A),
+            why: "no space left on device".into(),
+            backups: vec![skyward_folkpatch::backup::Backup {
+                slot: skyward_vab::Slot::A,
+                path: "/sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img".into(),
+                size: 96 << 20,
+                sha256: "00".into(),
+            }],
+            written: vec![skyward_vab::Slot::A],
+            key_path: None,
+        });
+        let (heading, lines) = root_result(Lang::En, &outcome);
+        let text = lines.join("\n");
+        assert_eq!(Lang::Hans.pick(heading), "Root 未安装");
+        assert!(text.contains("no space left on device"), "{text}");
+        assert!(text.contains("don't start it"), "{text}");
+        assert!(text.contains("fastboot flash boot_a /sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img"), "{text}");
     }
 }

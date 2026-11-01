@@ -84,7 +84,11 @@ struct Run<'a> {
     tell: &'a mut dyn FnMut(Stage),
     stage: Stage,
     slot: Option<Slot>,
-    layout: Option<Layout>,
+    /// The slots to patch, as the preflight found them.
+    slots: Vec<Slot>,
+    /// Where the run's own folder is, and the private one named after it.
+    layout: Layout,
+    private: PathBuf,
     /// The pinned tools, unpacked for this run and removed after it.
     tools: PathBuf,
     backups: Vec<Backup>,
@@ -96,31 +100,47 @@ struct Run<'a> {
 
 impl<'a> Run<'a> {
     fn new(options: &'a Options, tell: &'a mut dyn FnMut(Stage)) -> Result<Run<'a>, Stopped> {
-        let dir = options.private.join(&options.stamp);
-        let tools = dir.join("tools");
+        let failed = |e: anyhow::Error| {
+            Stopped::Failed(Box::new(Failure {
+                stage: Stage::Checking,
+                slot: None,
+                why: format!("{e:#}"),
+                backups: Vec::new(),
+                written: Vec::new(),
+                key_path: None,
+            }))
+        };
+        let layout = Layout::make(&options.storage, &options.stamp).map_err(failed)?;
+        // The private folder is named after the run's own, so that two runs
+        // in the same second cannot find each other's key.
+        let private = options.private.join(layout.dir.file_name().unwrap_or_default());
+        let tools = private.join("tools");
         let made = (|| -> Result<()> {
             fs::create_dir_all(&tools).with_context(|| format!("make {}", tools.display()))?;
-            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).with_context(|| format!("keep {} to root", dir.display()))?;
+            fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).with_context(|| format!("keep {} to root", private.display()))?;
             fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).with_context(|| format!("keep {} to root", tools.display()))?;
             Ok(())
         })();
-        let run = Run {
+        if let Err(e) = made {
+            let _ = fs::remove_dir_all(&layout.dir);
+            let _ = fs::remove_dir_all(&private);
+            return Err(failed(e));
+        }
+        Ok(Run {
             options,
             tell,
             stage: Stage::Checking,
             slot: None,
-            layout: None,
-            tools: tools.clone(),
+            slots: Vec::new(),
+            layout,
+            private,
+            tools,
             backups: Vec::new(),
             written: Vec::new(),
             key: None,
             key_path: None,
             kallsyms_all: true,
-        };
-        if let Err(e) = made {
-            return Err(Stopped::Failed(Box::new(run.failure(e))));
-        }
-        Ok(run)
+        })
     }
 
     fn go(&mut self) -> Result<Installed, Stopped> {
@@ -128,8 +148,7 @@ impl<'a> Run<'a> {
         self.unpack().map_err(|stop| self.stopped(stop))?;
         self.preflight().map_err(|stop| self.stopped(stop))?;
         self.saved().map_err(|stop| self.stopped(stop))?;
-        let slots = crate::slots(&self.options.slots).expect("the preflight found a slot");
-        for slot in &slots {
+        for slot in &self.slots.clone() {
             self.told(Stage::Patching { slot: *slot });
             self.slot = Some(*slot);
             let patched = self.patch(*slot).map_err(|stop| self.stopped(stop))?;
@@ -145,8 +164,8 @@ impl<'a> Run<'a> {
             slots: self.written.clone(),
             key,
             key_path: self.key_path.clone().expect("the key was saved before any write"),
-            apk_path: self.layout.as_ref().expect("the run folder was made").dir.join(MANAGER_FILE),
-            backup_dir: self.layout.as_ref().expect("the run folder was made").backups.clone(),
+            apk_path: self.layout.dir.join(MANAGER_FILE),
+            backup_dir: self.layout.backups.clone(),
             kallsyms_all: self.kallsyms_all,
         })
     }
@@ -175,8 +194,8 @@ impl<'a> Run<'a> {
                 return Err(Stop::Refused(Refusal::NoTools(format!("{name}, as {path}"))));
             }
         }
-        let slots = crate::slots(&self.options.slots).map_err(|_| Stop::Refused(Refusal::NoSlot))?;
-        for slot in &slots {
+        self.slots = crate::slots(&self.options.slots).map_err(|_| Stop::Refused(Refusal::NoSlot))?;
+        for slot in &self.slots.clone() {
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
             if !device.exists() {
                 return Err(Stop::Refused(Refusal::Missing(*slot)));
@@ -213,7 +232,7 @@ impl<'a> Run<'a> {
             return Err(Stop::Refused(Refusal::StorageClosed));
         }
         let mut need = MANAGER.len() as u64 + MARGIN;
-        for slot in &slots {
+        for slot in &self.slots.clone() {
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
             need += fs::metadata(&device).map(|m| m.len()).unwrap_or(0);
         }
@@ -228,13 +247,11 @@ impl<'a> Run<'a> {
     /// storage before a boot partition is touched: the manager, the key, and
     /// the manifest that says where everything is.
     fn saved(&mut self) -> Result<(), Stop> {
-        let layout = Layout::make(&self.options.storage, &self.options.stamp).map_err(Stop::Why)?;
-        let slots = crate::slots(&self.options.slots).expect("the preflight found a slot");
-        for slot in &slots {
+        for slot in &self.slots.clone() {
             self.told(Stage::BackingUp { slot: *slot, done: 0, total: 0 });
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
             let mut tell = |stage: Stage| (self.tell)(stage);
-            let copy = backup::save(&device, &layout.backups, *slot, &mut tell).map_err(Stop::Why)?;
+            let copy = backup::save(&device, &self.layout.backups, *slot, &mut tell).map_err(Stop::Why)?;
             self.backups.push(copy);
         }
         let key = match &self.options.key {
@@ -243,7 +260,6 @@ impl<'a> Run<'a> {
         }
         .map_err(Stop::Why)?;
         self.key = Some(key.clone());
-        self.layout = Some(layout);
         let key_path = self.save_key(&key).map_err(Stop::Why)?;
         self.key_path = Some(key_path.clone());
         let apk = self.copy_manager().map_err(Stop::Why)?;
@@ -252,7 +268,7 @@ impl<'a> Run<'a> {
     }
 
     fn save_key(&mut self, key: &SuperKey) -> Result<PathBuf> {
-        let path = self.tools.parent().context("the run's private folder")?.join("superkey.txt");
+        let path = self.private.join("superkey.txt");
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -267,8 +283,7 @@ impl<'a> Run<'a> {
     }
 
     fn copy_manager(&mut self) -> Result<PathBuf> {
-        let layout = self.layout.as_ref().context("the run folder")?;
-        let path = layout.dir.join(MANAGER_FILE);
+        let path = self.layout.dir.join(MANAGER_FILE);
         let part = path.with_extension("apk.part");
         let mut file = File::create(&part).with_context(|| format!("make {}", part.display()))?;
         let total = MANAGER.len() as u64;
@@ -284,7 +299,7 @@ impl<'a> Run<'a> {
     }
 
     fn write_manifest(&self, apk: &Path, key_path: &Path) -> Result<()> {
-        let layout = self.layout.as_ref().context("the run folder")?;
+        let layout = &self.layout;
         let facts = backup::Facts {
             device: &self.options.device,
             current: self.options.current,
@@ -414,9 +429,22 @@ impl<'a> Run<'a> {
 
     fn stopped(&self, stop: Stop) -> Stopped {
         match stop {
-            Stop::Refused(refusal) => Stopped::Refused(refusal),
+            Stop::Refused(refusal) => {
+                self.discard();
+                Stopped::Refused(refusal)
+            }
             Stop::Why(e) => Stopped::Failed(Box::new(self.failure(e))),
         }
+    }
+
+    /// A run that stopped before copying anything gives its folders back, so
+    /// a refusal leaves nothing behind and the next try gets the same stamp.
+    fn discard(&self) {
+        if !self.backups.is_empty() {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.layout.dir);
+        let _ = fs::remove_dir_all(&self.private);
     }
 
     fn failure(&self, e: anyhow::Error) -> Failure {
