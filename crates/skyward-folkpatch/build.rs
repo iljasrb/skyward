@@ -40,12 +40,17 @@ fn main() {
     let mut assets = String::from("// Written by build.rs: the files this crate carries, fetched and checked.\n\n");
     assets.push_str(&format!("/// The manager's package, by the name its release gives it.\npub const MANAGER_FILE: &str = {:?};\n", MANAGER.0));
     assets.push_str(&format!("/// The manager's package, as its release ships it.\npub const MANAGER: &[u8] = include_bytes!({:?});\n", manager.display().to_string()));
+    assets.push_str(&format!("/// The SHA-256 of the manager's package.\npub const MANAGER_SHA256: &str = {:?};\n", MANAGER.2));
     for (name, inside, wanted) in TOOLS {
         let path = unpack(&manager, name, inside, wanted, &cache);
         assets.push_str(&format!(
             "/// `{name}`, as the manager's package ships it.\npub const {}: &[u8] = include_bytes!({:?});\n",
             name.to_uppercase(),
             path.display().to_string()
+        ));
+        assets.push_str(&format!(
+            "/// The SHA-256 of `{name}`.\npub const {}_SHA256: &str = {wanted:?};\n",
+            name.to_uppercase()
         ));
     }
     fs::write(out.join("assets.rs"), assets).unwrap_or_else(|e| panic!("write assets.rs: {e}"));

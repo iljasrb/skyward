@@ -154,8 +154,11 @@ pub const KPIMG_VERSION: &str = "0.13.9";
 pub const MANAGER_FILE: &str = "FolkPatch_115404_0f3f42ba_on_main-release.apk";
 
 pub struct Options {
+    pub device: String,            // the phone's own name
+    pub current: Slot,             // the slot the phone started from
     pub slots: Vec<Slot>,          // one or both, deduplicated
-    pub key: Key,                  // Generate or Enter(String)
+    pub battery: Battery,          // the charge the recovery read
+    pub key: Key,                  // Generate, or Enter(SuperKey) already validated
     pub partition_dir: PathBuf,    // /dev/block/by-name
     pub storage: PathBuf,          // /sdcard
     pub private: PathBuf,          // /data/local/tmp/skyward-folkpatch
@@ -164,7 +167,7 @@ pub struct Options {
 
 pub enum Key {
     Generate,
-    Enter(String),
+    Enter(SuperKey),
 }
 
 pub fn install(options: Options, tell: &mut dyn FnMut(Stage)) -> Outcome;
@@ -206,7 +209,9 @@ All checks run before any boot write. Refuse when:
   `skyward_install::battery_refusal`;
 - a selected partition is not an Android boot image with a kernel, or its
   ramdisk is a recovery's;
-- KernelPatch reports the image already patched;
+- KernelPatch reports the image already patched. `kptools -l` reads a **kernel**,
+  not a boot image, so the kernel is taken out of the image first (version 3 and
+  4 headers: 4096-byte page, `kernel_size` at offset 8) and listed from there;
 - `kptools -f` does not report `CONFIG_KALLSYMS=y`;
 - the recovery lacks `/system/bin/linker64` or the libraries `kptools` needs
   (`libc`, `libm`, `libdl`, `libz`);
@@ -303,7 +308,8 @@ After `kptools` exits successfully:
 
 - require a non-empty output no larger than the partition;
 - require `ANDROID!` and a kernel in the output;
-- run `kptools -l -i <patched>` and require `patched=true`;
+- run `kptools -l` on the kernel taken out of the patched image and require
+  `patched=true` (same extraction as the preflight);
 - require the output's last 64 bytes to be `AVBf` when the source ended that
   way, so the bootloader still finds a footer where it expects one;
 - then flash.
@@ -515,6 +521,25 @@ folkpatch` (`~/.cache/...` without it), so a later build reads and re-checks the
 instead of pulling 17 MiB again, and `cargo clean` does not throw them away. The
 tree carries no assets besides the license texts: the cost is about 17.2 MiB in
 the recovery binary only, and a first build on a machine needs the network.
+
+### Verified against the pinned binary, on a ThinkPhone in recovery
+
+- `kptools --root-skey-fd N` takes the key down an inherited pipe; the key never
+  appears in `/proc/<pid>/cmdline`. Checked by patching the real `boot_a` into a
+  file in `/tmp` and listing the result.
+- `kptools -l` fails on a boot image (`kernel image magic error`) and works on the
+  kernel taken out of it: `patched=false` before, `patched=true` after.
+- `kptools -p` does **not** refuse an already patched image; it patches again and
+  the image grows. The already-patched refusal is therefore this recovery's own
+  job.
+- `kptools -f` reads the boot image directly and prints `CONFIG_KALLSYMS=y` /
+  `CONFIG_KALLSYMS_ALL=y`; bronco has both.
+- The output of `-p` is exactly the partition's size, with the AVB footer moved to
+  its end, so the size and footer checks above hold.
+
+Note that this was a recovery other than Skyward's; the same probes must be
+repeated under a Skyward build before a release, since the tools' libraries and
+`/tmp` are the recovery's.
 
 `kptools` is an aarch64 PIE built for Android 33, with `BIND_NOW`. It uses
 `__fread_chk`/`__fwrite_chk` from the `LIBC_N` version set, so the recovery's libc

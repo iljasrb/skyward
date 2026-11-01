@@ -8,8 +8,10 @@
 //! out of command lines and logs, and saved only where root can read it.
 
 pub mod backup;
+pub mod install;
 pub mod key;
 
+pub use install::install;
 pub use key::{KeyFault, SuperKey};
 
 use skyward_vab::Slot;
@@ -37,8 +39,14 @@ include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 /// What a run is asked to do besides the phone it is on.
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// The phone's own name, as its configuration names it.
+    pub device: String,
+    /// The slot the phone started from.
+    pub current: Slot,
     /// The slots to patch, each once.
     pub slots: Vec<Slot>,
+    /// The charge the recovery read, which a run will not write below.
+    pub battery: skyward_info::Battery,
     /// The key to make the patch with.
     pub key: Key,
     /// Where the phone's partitions are linked, as `/dev/block/by-name`.

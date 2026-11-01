@@ -6,7 +6,10 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+libc = { workspace = true }
 sha2 = "0.10.9"
+skyward-info = { path = "../skyward-info" }
+skyward-install = { path = "../skyward-install" }
 skyward-vab = { path = "../skyward-vab" }
 
 [build-dependencies]
