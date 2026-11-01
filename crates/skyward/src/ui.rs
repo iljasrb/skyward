@@ -39,7 +39,7 @@ use skyward_ui::app::{
 #[cfg(feature = "folkpatch")]
 use skyward_ui::app::Pick;
 use skyward_ui::surface::kms::KmsSurface;
-use skyward_ui::{Canvas, Fonts, Lang, Surface};
+use skyward_ui::{Canvas, Fonts, Lang};
 #[cfg(feature = "folkpatch")]
 use skyward_vab::Slot as SkywardSlot;
 use skyward_vab::{Merge, Standing};
@@ -2150,8 +2150,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         );
                         app.set_root_last_key(key);
                     }
-                    // A copy beside the manager, which the user asked for and
-                    // was told the cost of.
                     // Whether the slot the page would write carries the patch
                     // already, said on the page before anything is written.
                     #[cfg(feature = "folkpatch")]
@@ -2170,6 +2168,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         });
                         app.set_root_patched(patched);
                     }
+                    // A copy beside the manager, which the user asked for and
+                    // was told the cost of.
                     #[cfg(feature = "folkpatch")]
                     Effect::ShareRootKey { run, key } => {
                         let kept = skyward_folkpatch::share_key(&run, &key)

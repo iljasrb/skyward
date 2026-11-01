@@ -59,22 +59,26 @@ pub fn read_in(roots: &[&Path], folder: &str, name: &str) -> Option<(PathBuf, St
 }
 
 /// Write `text` as `folder/name` in every place that takes it, the one `was`
-/// is in first; the first place it went to is returned.
+/// is in first; the best place it went to is returned.
 pub fn write(folder: &str, name: &str, text: &str, was: Option<&Path>) -> Result<PathBuf> {
     write_in(&PLACES.map(Path::new), folder, name, text, was)
 }
 
 /// As [`write`], among `roots` given in the order they are tried.
 pub fn write_in(roots: &[&Path], folder: &str, name: &str, text: &str, was: Option<&Path>) -> Result<PathBuf> {
-    let mut places: Vec<PathBuf> = was.map(Path::to_path_buf).into_iter().collect();
-    places.extend(roots.iter().map(|root| root.join(folder).join(name)));
+    // The better place is written last, so that of two written one after the
+    // other the read, which trusts the newest, trusts the better one. A place
+    // the last write could not reach is written first of the roots and the
+    // next one takes the write instead.
+    let mut places: Vec<PathBuf> = roots.iter().rev().map(|root| root.join(folder).join(name)).collect();
+    if let Some(was) = was {
+        if !places.iter().any(|path| path == was) {
+            places.insert(0, was.to_path_buf());
+        }
+    }
     let mut written: Option<PathBuf> = None;
     let mut last: Option<anyhow::Error> = None;
     for path in places {
-        // The place the file came from is one of the places named already.
-        if written.as_ref().is_some_and(|w| *w == path) {
-            continue;
-        }
         let Some(dir) = path.parent() else { continue };
         if fs::create_dir_all(dir).is_err() {
             continue;
@@ -91,7 +95,7 @@ pub fn write_in(roots: &[&Path], folder: &str, name: &str, text: &str, was: Opti
         // another takes it.
         match swap(&path, text) {
             Ok(()) => {
-                written.get_or_insert(path);
+                written = Some(path);
             }
             Err(e) => last = Some(e.context(format!("write {}", path.display()))),
         }
@@ -146,9 +150,8 @@ mod tests {
         let roots = as_refs(&places);
         assert_eq!(read_in(&roots, "settings", "values"), None, "nothing written yet");
         write_in(&roots[1..], "settings", "values", "wlan = false\n", None).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        // Both are written in the same moment, and of two written then the
-        // better place is the one read.
+        // The better place is the first of them, and the write reaches the
+        // worse one first, so the better one is the newest the read sees.
         write_in(&roots, "settings", "values", "wlan = true\n", None).unwrap();
         let (path, text) = read_in(&roots, "settings", "values").expect("a file");
         assert_eq!(path, places[0].join("settings/values"));
