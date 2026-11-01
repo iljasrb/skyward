@@ -32,7 +32,8 @@ use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
     FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS, INSTALL_UNFINISHED, USB_DRIVE,
+    RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
+    INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang, Surface};
@@ -61,6 +62,78 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 /// storage the others do.
 const TMP_LOGS: &str = "/tmp/skyward-logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
+
+/// The folder the settings are kept in, and the file in it; see `kept` for
+/// where that is.
+const SETTINGS: (&str, &str) = ("settings", "values");
+
+/// Read the settings the boots before kept, and where they were found, so
+/// that they go back there; a key the file does not name stays at the value
+/// it starts at.
+fn saved_settings() -> (SavedSettings, Option<PathBuf>) {
+    let mut saved = SavedSettings::default();
+    let Some((path, text)) = skyward_sys::kept::read(SETTINGS.0, SETTINGS.1) else { return (saved, None) };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let value = value.trim();
+        let on = |at: &mut bool| {
+            if let Some(v) = parse_flag(value) {
+                *at = v;
+            }
+        };
+        match key.trim() {
+            "language" => {
+                saved.lang = match value {
+                    "hant" => Lang::Hant,
+                    "en" => Lang::En,
+                    _ => Lang::Hans,
+                }
+            }
+            "dark" => on(&mut saved.dark),
+            "vibrate" => on(&mut saved.vibrate),
+            "file_transfer" => on(&mut saved.file_transfer),
+            "wlan" => on(&mut saved.wlan),
+            "brightness" => saved.brightness = value.parse().unwrap_or(saved.brightness),
+            "vibration" => saved.vibration = value.parse().unwrap_or(saved.vibration),
+            "screen_off" => saved.screen_off = value.parse().unwrap_or(saved.screen_off),
+            "time_zone" => saved.time_zone = value.parse().unwrap_or(saved.time_zone),
+            _ => {}
+        }
+    }
+    (saved, Some(path))
+}
+
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "true" | "on" => Some(true),
+        "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Write the settings as they stand, for the boots to come; a storage that
+/// cannot be written keeps them only until it opens, and this says why
+/// rather than failing.
+fn write_settings(settings: &SavedSettings, was: Option<&Path>) {
+    let language = match settings.lang {
+        Lang::Hans => "hans",
+        Lang::Hant => "hant",
+        Lang::En => "en",
+    };
+    let text = format!(
+        "language = {language}\ndark = {}\nbrightness = {:.3}\nscreen_off = {}\ntime_zone = {}\nvibrate = {}\nvibration = {:.3}\nfile_transfer = {}\nwlan = {}\n",
+        settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
+        settings.file_transfer, settings.wlan
+    );
+    match skyward_sys::kept::write(SETTINGS.0, SETTINGS.1, &text, was) {
+        Ok(path) => {
+            let _ = skyward_sys::kmsg(&format!("the settings are kept in {}", path.display()));
+        }
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("the settings are not kept: {e:#}"));
+        }
+    }
+}
 
 /// The folder of internal storage the system saves its own screenshots in,
 /// which the gallery shows as its screenshots, and where a screenshot waits
@@ -1040,6 +1113,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     if let Some(locale) = request.locale.as_deref().or(info.locale.as_deref()) {
         app.state.lang = Lang::for_locale(locale)?;
         skyward_sys::kmsg(&format!("the pages speak {:?}, for the locale {locale}", app.state.lang))?;
+    } else {
+        // A boot that names no locale, whose installed system cannot be read
+        // yet -- into fastbootd, whose command carries none and whose
+        // partitions are not mounted -- speaks English, the language most of
+        // the people who flash a recovery read; the pages' own default is
+        // Chinese, and it used to stay that way for the whole session.
+        app.state.lang = Lang::En;
+        skyward_sys::kmsg(&format!("the pages speak {:?}: no locale was named and the installed system's could not be read", app.state.lang))?;
     }
     // The home page tells of a restart into the slot the system does not
     // run from now: an update or a switch left for the next boot.
@@ -1236,6 +1317,20 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         None => None,
     };
+    // What the boots before kept: brightness, the theme, the language and
+    // the rest are back before the first frame is drawn, and a WLAN that was
+    // on is brought back up by itself.
+    let (saved, settings_where) = saved_settings();
+    let wlan_was_on = saved.wlan;
+    app.set_saved_settings(saved);
+    if wlan_was_on {
+        match &wlan {
+            Some(w) => w.send(wlan::Command::On),
+            None => {
+                let _ = skyward_sys::kmsg("the WLAN was on, and this phone's recovery brings none up");
+            }
+        }
+    }
     let mut scanned_at = Instant::now();
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
@@ -1655,6 +1750,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if app.screen() == Screen::Wlan && wlan_on && scanned_at.elapsed() >= SCAN_EVERY {
             scanned_at = Instant::now();
             wlan_worker(&wlan)?.send(wlan::Command::Scan);
+        }
+        // What the user changed goes to the partition the phone keeps it on
+        // a moment after the last change.
+        if let Some(settings) = app.settings_due(now) {
+            write_settings(&settings, settings_where.as_deref());
         }
         let mut checked = false;
         if let Some(c) = &checker {

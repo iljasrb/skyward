@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 pub mod bcb;
 pub mod clock;
+pub mod kept;
 pub mod control;
 pub mod ueventd;
 pub mod usb;

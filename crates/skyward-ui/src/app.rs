@@ -22,7 +22,7 @@ use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
 use skyward_net::release::{Release, Unanswered};
 use skyward_net::supplicant::Security;
-use skyward_net::wlan::{Joined, Network, Power, Stage as Joining, Traffic, Wlan};
+use skyward_net::wlan::{Joined, Network, Power, Power as WlanPower, Stage as Joining, Traffic, Wlan};
 use skyward_vab::{BootSlots, Hold, Slot, SnapshotState, Standing};
 
 /// The pages of the recovery.
@@ -774,6 +774,13 @@ pub enum Data {
 impl Data {
     /// Whether the owner's internal storage can be read: the partition is
     /// open, and so are the owner's own files, which open first.
+    /// Whether the data partition is mounted at all, which the settings are
+    /// kept on: the user's own files in it may still wait on their screen
+    /// lock, and the settings do not.
+    pub fn data_open(&self) -> bool {
+        matches!(self, Data::Open | Data::Locked { .. })
+    }
+
     pub fn storage_open(&self) -> bool {
         match self {
             Data::Open => true,
@@ -1458,6 +1465,39 @@ impl Frame {
     }
 }
 
+/// The settings the owner's storage keeps, read back as last written; a
+/// value the file does not name comes as the one it starts at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SavedSettings {
+    pub lang: Lang,
+    pub dark: bool,
+    pub brightness: f32,
+    pub screen_off: usize,
+    pub time_zone: usize,
+    pub vibrate: bool,
+    pub vibration: f32,
+    pub file_transfer: bool,
+    /// Whether the WLAN was on, so that a recovery that had it on brings it
+    /// back up by itself.
+    pub wlan: bool,
+}
+
+impl Default for SavedSettings {
+    fn default() -> Self {
+        SavedSettings {
+            lang: Lang::Hans,
+            dark: false,
+            brightness: SLIDER_START,
+            screen_off: 3,
+            time_zone: 0,
+            vibrate: true,
+            vibration: SLIDER_START,
+            file_transfer: true,
+            wlan: false,
+        }
+    }
+}
+
 /// Choices the pages show and the user changes, and where installing
 /// stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -2095,6 +2135,19 @@ const MIN_BRIGHTNESS: f32 = 0.02;
 const SLIDER_STEP: f32 = 0.1;
 /// Where both sliders start: one step of the keys from their left end.
 pub const SLIDER_START: f32 = SLIDER_STEP;
+/// `value` as a share the sliders can hold: one written outside them, or
+/// not written at all, comes as `fallback`.
+fn clamp_share(value: f32, fallback: f32) -> f32 {
+    match value.is_finite() {
+        true => value.clamp(0.0, 1.0),
+        false => fallback,
+    }
+}
+
+/// How long changed settings wait after the last change before they are
+/// written to the owner's storage, so a slider dragged across the page is
+/// written once.
+const SETTINGS_SAVE_DELAY: u64 = 2000;
 /// While the backlight eases, it steps once a frame of a 120 Hz panel.
 const BACKLIGHT_STEP_MS: u64 = 8;
 /// Just after the panel lights, a touch or key only keeps it awake: the
@@ -2381,6 +2434,11 @@ fn keyboard_strip(t: &Theme, frame: &Frame) -> (Canvas, i32) {
 
 pub struct App {
     pub state: State,
+    /// Settings as the owner's storage last had them: what differs from
+    /// these is written back a moment after the last change.
+    settings_kept: SavedSettings,
+    /// When a pending settings write matures.
+    settings_due_at: Option<u64>,
     /// The pages open, the one shown last: each with how far it is
     /// scrolled and where the keys are on it.
     stack: Vec<(Screen, f32, Focus)>,
@@ -2516,6 +2574,8 @@ impl App {
     pub fn new(start: Screen, w: u32, h: u32, px_per_dp: f32) -> Self {
         App {
             state: State::default(),
+            settings_kept: SavedSettings::default(),
+            settings_due_at: None,
             stack: vec![(start, 0.0, Focus::Unset)],
             frame: None,
             spots: None,
@@ -2679,6 +2739,83 @@ impl App {
     /// enough, a gliding page moves on, a page past its end springs back,
     /// the bar and its title follow the scroll, and a message past its
     /// deadline goes away.
+    /// The settings as they stand, for the owner's storage to keep.
+    pub fn settings(&self) -> SavedSettings {
+        SavedSettings {
+            lang: self.state.lang,
+            dark: self.state.dark,
+            brightness: self.state.brightness,
+            screen_off: self.state.screen_off,
+            time_zone: self.state.time_zone,
+            vibrate: self.state.vibrate,
+            vibration: self.state.vibration,
+            file_transfer: self.state.file_transfer,
+            wlan: self.state.wlan.as_ref().is_some_and(|w| w.power == WlanPower::On),
+        }
+    }
+
+    /// Whether the settings differ from what the owner's storage has, and
+    /// have been left alone long enough to be written back: once.
+    pub fn settings_due(&mut self, now: u64) -> Option<SavedSettings> {
+        if self.settings() == self.settings_kept {
+            self.settings_due_at = None;
+            return None;
+        }
+        let due = *self.settings_due_at.get_or_insert(now + SETTINGS_SAVE_DELAY);
+        if now < due {
+            return None;
+        }
+        let settings = self.settings();
+        self.settings_kept = settings;
+        self.settings_due_at = None;
+        Some(settings)
+    }
+
+    /// Take the settings the owner's storage kept, where the user has left
+    /// each at the value it starts at this boot: a choice of their own made
+    /// before the storage opened is never overruled.
+    pub fn set_saved_settings(&mut self, saved: SavedSettings) {
+        let start = SavedSettings::default();
+        // A file that was cut short, or edited by hand, must not take the
+        // pages down with it: every value is brought into the range the pages
+        // can show before it is used, and one that cannot be is left out.
+        let saved = SavedSettings {
+            brightness: clamp_share(saved.brightness, start.brightness),
+            vibration: clamp_share(saved.vibration, start.vibration),
+            screen_off: if saved.screen_off < SCREEN_OFF.len() { saved.screen_off } else { start.screen_off },
+            time_zone: if saved.time_zone < TIME_ZONES.len() { saved.time_zone } else { start.time_zone },
+            ..saved
+        };
+        if self.state.lang == start.lang {
+            self.state.lang = saved.lang;
+        }
+        if self.state.dark == start.dark {
+            self.state.dark = saved.dark;
+        }
+        if (self.state.brightness - start.brightness).abs() < f32::EPSILON {
+            self.state.brightness = saved.brightness;
+        }
+        if self.state.screen_off == start.screen_off {
+            self.state.screen_off = saved.screen_off;
+        }
+        if self.state.time_zone == start.time_zone {
+            self.state.time_zone = saved.time_zone;
+        }
+        if self.state.vibrate == start.vibrate {
+            self.state.vibrate = saved.vibrate;
+        }
+        if (self.state.vibration - start.vibration).abs() < f32::EPSILON {
+            self.state.vibration = saved.vibration;
+        }
+        if self.state.file_transfer == start.file_transfer {
+            self.state.file_transfer = saved.file_transfer;
+        }
+        // What is kept now is what the storage holds; a WLAN brought up to
+        // match it is the runtime's to do.
+        self.settings_kept = self.settings();
+        self.refresh();
+    }
+
     pub fn tick(&mut self, now: u64) -> Vec<Effect> {
         let mut fx = Vec::new();
         // The key waiting for its partner in a screenshot, left alone long
@@ -7247,6 +7384,61 @@ mod tests {
         app.touch(Touch::Down(x, y), &f, 1000);
         app.touch(Touch::Move(x, y + t.m.dp(30.0)), &f, 1050);
         assert!(app.row_press.is_none());
+    }
+
+    #[test]
+    fn settings_out_of_range_are_brought_back_into_it_instead_of_taking_the_pages_down() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.frame(&f, &i);
+        let nonsense = SavedSettings {
+            lang: Lang::En,
+            dark: true,
+            brightness: 17.5,
+            screen_off: 99,
+            time_zone: 42,
+            vibrate: false,
+            vibration: f32::NAN,
+            file_transfer: true,
+            wlan: true,
+        };
+        app.set_saved_settings(nonsense);
+        assert_eq!(app.state.screen_off, SavedSettings::default().screen_off, "a screen-off time that is not one");
+        assert_eq!(app.state.time_zone, SavedSettings::default().time_zone, "a time zone that is not one");
+        assert_eq!(app.state.brightness, 1.0, "a brightness over the slider's end");
+        assert_eq!(app.state.vibration, SavedSettings::default().vibration, "a vibration that is not a number");
+        // The pages still draw, which is what a panic here would have stopped.
+        app.frame(&f, &i);
+        assert_eq!(app.state.lang, Lang::En, "and what was sound is still taken");
+    }
+
+    #[test]
+    fn settings_are_written_a_moment_after_the_last_change_and_read_back() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.frame(&f, &i);
+        assert_eq!(app.settings_due(0), None, "nothing changed, nothing to write");
+        tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
+        assert_eq!(app.settings_due(1_500), None, "the write waits for the last change");
+        assert_eq!(app.settings_due(2_000), None, "and matures after it");
+        let kept = app.settings_due(5_000).expect("the settings are written");
+        assert!(!kept.vibrate, "as they stand");
+        assert_eq!(app.settings_due(9_000), None, "and once, not at every tick");
+
+        // The boots to come take them back, except where the user has
+        // already chosen otherwise this boot.
+        let mut fresh = App::new(Screen::Settings, W, H, PPD);
+        fresh.frame(&f, &i);
+        fresh.set_saved_settings(kept);
+        assert!(!fresh.state.vibrate, "kept from the boot before");
+        assert_eq!(fresh.settings_due(9_000), None, "what was just read is not written again");
+
+        let mut chosen = App::new(Screen::Settings, W, H, PPD);
+        chosen.frame(&f, &i);
+        tap_at(&mut chosen, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
+        assert!(!chosen.state.vibrate, "turned off this boot");
+        chosen.set_saved_settings(SavedSettings { vibrate: true, ..kept });
+        assert!(!chosen.state.vibrate, "the user's choice this boot is not overruled");
     }
 
     #[test]

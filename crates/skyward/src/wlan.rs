@@ -402,7 +402,10 @@ impl Station {
         for c in supplicant::network_commands(id, &joined.ssid, joined.security, password, hidden)? {
             r.control.order(&c)?;
         }
-        r.control.order(&format!("SELECT_NETWORK {id}"))
+        r.control.order(&format!("SELECT_NETWORK {id}"))?;
+        // What was joined is kept for the boots to come, where the
+        // configuration can be written back.
+        r.control.order("SAVE_CONFIG")
     }
 
     /// Read what the supplicant has told.
@@ -706,6 +709,33 @@ fn place(file: &Firmware) -> Result<()> {
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
 }
 
+/// The folder the supplicant's configuration is kept in, and the file
+/// itself: the network joined last comes back with the next boot. See
+/// `kept` for where that is.
+const KEPT: (&str, &str) = ("wlan", "wpa_supplicant.conf");
+
+/// Where the supplicant keeps its configuration: the first place the settings
+/// are kept that can hold it, and a home in memory until then, which forgets
+/// on a restart.
+fn settings_dir() -> (PathBuf, bool) {
+    for root in skyward_sys::kept::places() {
+        let kept = skyward_sys::kept::folder(root, KEPT.0);
+        // The supplicant runs as the wifi user, so it has to be able to write
+        // its configuration back here; this phone's own build of it dies
+        // rather than saying it cannot.
+        let ready = fs::create_dir_all(&kept)
+            .and_then(|()| std::os::unix::fs::chown(&kept, Some(WIFI), Some(WIFI)))
+            .and_then(|()| fs::set_permissions(&kept, fs::Permissions::from_mode(0o770)));
+        match ready {
+            Ok(()) => return (kept, true),
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("{} cannot hold the WLAN's networks: {e}", kept.display()));
+            }
+        }
+    }
+    (PathBuf::from(HOME), false)
+}
+
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     let home = Path::new(HOME);
@@ -714,10 +744,19 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
-    let settings = home.join("wpa_supplicant.conf");
-    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
-        .with_context(|| format!("write {}", settings.display()))?;
-    fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
+    // The configuration is written only when there is none, so the network
+    // kept from the last session is still in it.
+    let (dir, kept) = settings_dir();
+    let _ = skyward_sys::kmsg(&format!("the WLAN's networks are kept in {} ({kept})", dir.display()));
+    let settings = dir.join(KEPT.1);
+    if !settings.exists() {
+        fs::write(&settings, format!("ctrl_interface={}\nupdate_config=1\nap_scan=1\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
+            .with_context(|| format!("write {}", settings.display()))?;
+    }
+    // The supplicant writes the file back when the user joins a network, as
+    // it runs as the wifi user.
+    let _ = std::os::unix::fs::chown(&settings, Some(WIFI), Some(WIFI));
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
     let socket = sockets.join(&cfg.interface);
     // One an earlier run left would answer nothing.
     if socket.exists() {
