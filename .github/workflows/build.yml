@@ -71,11 +71,16 @@ jobs:
         env:
           DEVICE: ${{ inputs.device }}
         run: |
+          # A device joins the matrix when its configuration names the stock
+          # build its recovery is taken out of. One whose base is published as
+          # an image rather than a package has nothing here to take, and is
+          # built where that image is (see release.yml).
           if [ -n "$DEVICE" ]; then
             test -f "devices/$DEVICE.toml"
+            grep -q '^\[stock\]' "devices/$DEVICE.toml" || { echo "devices/$DEVICE.toml names no stock build, so there is nothing to pack here" >&2; exit 1; }
             echo "devices=$(jq -nc --arg device "$DEVICE" '[$device]')" >> "$GITHUB_OUTPUT"
           else
-            echo "devices=$(basename -s .toml devices/*.toml | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+            echo "devices=$(grep -l '^\[stock\]' devices/*.toml | xargs -r basename -s .toml | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
           fi
 
   recovery:

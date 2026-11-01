@@ -52,5 +52,8 @@ jobs:
         run: |
           cp out/skyward-bronco.img.sha256 SHA256SUMS
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" \
-            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}."
+            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}. The image carries the Root page (beta)."
+          # A release left as a draft is published here, so the phone's update
+          # page, which reads published releases, sees the image.
+          gh release edit "$TAG" --draft=false
           gh release upload "$TAG" out/skyward-bronco.img SHA256SUMS --clobber
