@@ -152,8 +152,8 @@ pub struct Firmware {
     pub partition: Option<String>,
 }
 
-/// The phone maker's update server, which the stock updater asks about the
-/// installed system.
+/// Where this phone's recovery images are published, which the update page
+/// asks for a newer one than the build it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Update {
     /// The fork whose releases carry this phone's recovery images, as
@@ -212,6 +212,11 @@ pub struct Haptics {
     /// from samples.
     #[serde(default)]
     pub resonance: Option<String>,
+    /// How long a click plays, in milliseconds, on phones whose driver plays
+    /// a constant force for as long as it lasts: the motor runs while it
+    /// plays, at the strength asked for, which is how this one does.
+    #[serde(default)]
+    pub length: Option<u16>,
     pub strength: Strength,
 }
 
@@ -526,10 +531,14 @@ impl DeviceConfig {
             ensure!(plain && !folder.is_empty(), "[backup] data_skipped: {folder} is not a path from the top of {DATA}");
         }
         if let Some(haptics) = &cfg.haptics {
+            let named = [haptics.click.is_some(), haptics.resonance.is_some(), haptics.length.is_some()];
             ensure!(
-                haptics.click.is_some() != haptics.resonance.is_some(),
-                "[haptics] names either a waveform the driver keeps or the file it says the motor's resonant frequency in"
+                named.iter().filter(|named| **named).count() == 1,
+                "[haptics] names one of: a waveform the driver keeps, the file it says the motor's resonant frequency in, or how long a constant click plays"
             );
+            if let Some(length) = haptics.length {
+                ensure!(length > 0, "[haptics] length: a click of {length} ms is no click");
+            }
             if let Some(file) = &haptics.resonance {
                 ensure!(Path::new(file).is_absolute(), "[haptics] resonance: {file} is not an absolute path");
             }
@@ -612,12 +621,15 @@ mod tests {
         assert_eq!(cfg.logd, None, "a recovery's own logd usually has all it needs");
     }
     #[test]
-    fn a_click_is_kept_or_made_and_its_strengths_rise() {
+    fn a_click_is_kept_made_or_held_and_its_strengths_rise() {
         let with = |body: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[haptics]\n{body}\n"));
         let strength = "strength = { lightest = 0.25, strongest = 1.0 }";
         assert!(with(&format!("click = 0\n{strength}")).is_ok());
         assert!(with(&format!("resonance = \"/sys/class/qcom-haptics/lra_frequency_hz\"\n{strength}")).is_ok());
-        assert!(with(strength).is_err(), "a click of neither kind");
+        assert!(with(&format!("length = 40\n{strength}")).is_ok(), "a constant click");
+        assert!(with(strength).is_err(), "a click of no kind");
+        assert!(with(&format!("length = 0\n{strength}")).is_err(), "a click that lasts no time");
+        assert!(with(&format!("length = 40\nclick = 0\n{strength}")).is_err(), "a click of two kinds");
         assert!(with(&format!("click = 0\nresonance = \"/sys/f\"\n{strength}")).is_err(), "a click of both kinds");
         assert!(with(&format!("resonance = \"sys/f\"\n{strength}")).is_err(), "a file named from nowhere");
         assert!(with("click = 0").is_err(), "a click without its strengths");

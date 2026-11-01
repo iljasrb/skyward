@@ -1320,7 +1320,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // What the boots before kept: brightness, the theme, the language and
     // the rest are back before the first frame is drawn, and a WLAN that was
     // on is brought back up by itself.
-    let (saved, settings_where) = saved_settings();
+    let (saved, mut settings_where) = saved_settings();
     let wlan_was_on = saved.wlan;
     app.set_saved_settings(saved);
     if wlan_was_on {
@@ -2328,6 +2328,23 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         read_at = Instant::now();
                         info = skyward_info::collect(cfg)?;
                         fastboot = false;
+                        // The settings are read at boot, before this phone has
+                        // the storage they are kept on: fastboot runs without
+                        // it, so what it read was nothing and the pages showed
+                        // their own defaults. They are read again now that the
+                        // storage is there.
+                        let (saved, kept_at) = saved_settings();
+                        let wlan_was_on = saved.wlan;
+                        app.set_saved_settings(saved);
+                        settings_where = kept_at;
+                        if wlan_was_on {
+                            match &wlan {
+                                Some(w) => w.send(wlan::Command::On),
+                                None => {
+                                    let _ = skyward_sys::kmsg("the WLAN was on, and this phone's recovery brings none up");
+                                }
+                            }
+                        }
                         app.enter_recovery();
                     }
                     // A port that something else has takes file transfer

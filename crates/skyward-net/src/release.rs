@@ -136,13 +136,6 @@ pub fn releases(body: &str, asset: &str) -> Result<Option<Release>> {
     Ok(None)
 }
 
-/// How many bytes the file at `url` is, as its server says.
-pub fn length(agent: &ureq::Agent, url: &str) -> Result<u64> {
-    let head = agent.head(url).call().context("ask the server about the file")?;
-    ensure!(head.status().is_success(), "the server answered {}", head.status());
-    crate::download::content_length(head.headers()).context("the server does not say how long the file is")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

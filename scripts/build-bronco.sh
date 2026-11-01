@@ -54,6 +54,6 @@ target/release/skyward-pack recovery \
     --mono-license "$root/resources/fonts/KirkMono-OFL.txt" \
     --out "$out"
 
-( cd "$(dirname "$out")" && md5sum "$(basename "$out")" >"$(basename "$out").md5" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256" )
+( cd "$(dirname "$out")" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256" )
 echo "built $out for build $SKYWARD_BUILD"
 echo "flash it with: fastboot flash recovery_<slot> $out"

@@ -244,29 +244,9 @@ impl Canvas {
     }
 
     /// Paint rows `y0..y1` with a colour computed per pixel centre.
-    pub fn shade_rows(&mut self, y0: u32, y1: u32, paint: impl Fn(f32, f32) -> Rgba) {
-        let (y0, y1) = self.rows(y0 as i32, y1 as i32);
-        let (x0, x1) = self.columns(0, self.w as i32);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let c = paint(x as f32 + 0.5, y as f32 + 0.5);
-                self.blend(x, y, c, 1.0);
-            }
-        }
-    }
-
-    /// Overwrite row `y`, which the canvas holds, with `paint(x)` for every
+        /// Overwrite row `y`, which the canvas holds, with `paint(x)` for every
     /// column `x` it holds.
-    pub fn paint_row(&mut self, y: u32, paint: impl Fn(usize) -> Rgba) {
-        let start = self.at(self.left as i32, y as i32);
-        let row = &mut self.data[start..start + (self.span * 4) as usize];
-        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let c = paint(self.left as usize + x);
-            *p = [c.r, c.g, c.b, c.a];
-        }
-    }
-
-    /// Lay `layer`, whose top-left corner goes at (`x`, `y`), over this
+        /// Lay `layer`, whose top-left corner goes at (`x`, `y`), over this
     /// opaque canvas at `alpha` of its strength.
     pub fn lay(&mut self, layer: &Canvas, x: i32, y: i32, alpha: f32) {
         assert!(layer.whole(), "a layer laid holds all of itself");
@@ -813,25 +793,7 @@ impl Canvas {
 
     /// Ellipse outline using a first-order distance estimate, which is accurate
     /// for the thin strokes icons use.
-    pub fn stroke_ellipse(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, t: f32, color: Rgba) {
-        let (x0, x1) = self.columns((cx - rx - t).floor() as i32, (cx + rx + t).ceil() as i32);
-        let (y0, y1) = self.rows((cy - ry - t).floor() as i32, (cy + ry + t).ceil() as i32);
-        for py in y0..y1 {
-            for px in x0..x1 {
-                let (x, y) = (px as f32 + 0.5 - cx, py as f32 + 0.5 - cy);
-                let f = (x / rx).powi(2) + (y / ry).powi(2) - 1.0;
-                let gx = 2.0 * x / (rx * rx);
-                let gy = 2.0 * y / (ry * ry);
-                let d = f.abs() / (gx * gx + gy * gy).sqrt().max(1e-6);
-                let cov = (0.5 - (d - t / 2.0)).clamp(0.0, 1.0);
-                if cov > 0.0 {
-                    self.blend(px, py, color, cov);
-                }
-            }
-        }
-    }
-
-    /// A line `t` wide with round ends. Each row looks only at the pixels
+        /// A line `t` wide with round ends. Each row looks only at the pixels
     /// whose centres lie near enough the line for it to cover them, and
     /// writes straight those it covers wholly.
     pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, t: f32, color: Rgba) {
@@ -940,25 +902,12 @@ impl Canvas {
         color: Rgba,
         max_w: Option<f32>,
     ) -> f32 {
-        self.text_with(face, text, x, baseline, px, Ink::Solid(color), max_w)
+        self.text_with(face, text, x, baseline, px, color, max_w)
     }
 
     /// [`Canvas::text`] with the ink colour chosen per pixel, for gradient
     /// lettering.
-    pub fn text_paint(
-        &mut self,
-        face: &Face,
-        text: &str,
-        x: f32,
-        baseline: f32,
-        px: f32,
-        paint: &dyn Fn(f32, f32) -> Rgba,
-        max_w: Option<f32>,
-    ) -> f32 {
-        self.text_with(face, text, x, baseline, px, Ink::Paint(paint), max_w)
-    }
-
-    fn text_with(&mut self, face: &Face, text: &str, x: f32, baseline: f32, px: f32, ink: Ink, max_w: Option<f32>) -> f32 {
+        fn text_with(&mut self, face: &Face, text: &str, x: f32, baseline: f32, px: f32, color: Rgba, max_w: Option<f32>) -> f32 {
         let scale = face.scale(px);
         let sf = face.font.as_scaled(scale);
         let (ell, ell_w) = face.glyph('…', scale);
@@ -974,12 +923,12 @@ impl Canvas {
             if let Some(lim) = limit {
                 let more = i + 1 < chars.len();
                 if pen + aw + if more { ell_w } else { 0.0 } > lim {
-                    self.glyph(face, ell, scale, pen, baseline, ink);
+                    self.glyph(face, ell, scale, pen, baseline, color);
                     pen += ell_w;
                     break;
                 }
             }
-            self.glyph(face, id, scale, pen, baseline, ink);
+            self.glyph(face, id, scale, pen, baseline, color);
             pen += aw;
             prev = Some(id);
         }
@@ -1006,7 +955,7 @@ impl Canvas {
 
     /// Glyph `id` with its pen position at (`x`, `baseline`), from its ink
     /// drawn for the nearest quarter of a pixel.
-    fn glyph(&mut self, face: &Face, id: GlyphId, scale: PxScale, x: f32, baseline: f32, ink: Ink) {
+    fn glyph(&mut self, face: &Face, id: GlyphId, scale: PxScale, x: f32, baseline: f32, color: Rgba) {
         let quarter = |v: f32| {
             let q = (v * SUBPIXELS).round();
             ((q / SUBPIXELS).floor() as i32, q.rem_euclid(SUBPIXELS) as u8)
@@ -1025,25 +974,14 @@ impl Canvas {
             let covs = &art.cov[(gy * art.w as i32 + x0) as usize..(gy * art.w as i32 + x1) as usize];
             let start = self.at(ox + x0, py);
             let row = self.data[start..start + covs.len() * 4].as_chunks_mut::<4>().0;
-            for (k, (&c, p)) in covs.iter().zip(row).enumerate() {
+            for (&c, p) in covs.iter().zip(row) {
                 if c == 0 {
                     continue;
                 }
-                let color = match ink {
-                    Ink::Solid(color) => color,
-                    Ink::Paint(paint) => paint((ox + x0 + k as i32) as f32 + 0.5, py as f32 + 0.5),
-                };
                 blend_px(p, color, (color.a as u32 * c as u32 + 127) / 255);
             }
         }
     }
-}
-
-/// How text is inked: one colour, or one chosen per pixel.
-#[derive(Clone, Copy)]
-enum Ink<'a> {
-    Solid(Rgba),
-    Paint(&'a dyn Fn(f32, f32) -> Rgba),
 }
 
 impl Drop for Canvas {

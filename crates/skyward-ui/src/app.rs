@@ -777,10 +777,6 @@ impl Data {
     /// Whether the data partition is mounted at all, which the settings are
     /// kept on: the user's own files in it may still wait on their screen
     /// lock, and the settings do not.
-    pub fn data_open(&self) -> bool {
-        matches!(self, Data::Open | Data::Locked { .. })
-    }
-
     pub fn storage_open(&self) -> bool {
         match self {
             Data::Open => true,
