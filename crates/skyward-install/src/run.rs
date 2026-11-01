@@ -17,19 +17,19 @@ use crate::script::{self, Bar, Request};
 use crate::signature::{self, Verdict};
 use crate::{Command, Event, Failure, Options, Outcome, Reflash, Refusal, Stage, ENGINE_LOG, SCRIPT_LOG};
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
-use skyward_sys::{kmsg, prop};
+use skyward_sys::{kmsg, prop, worker};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// What runs right before update_engine or an install script starts
@@ -60,12 +60,9 @@ const LINGER: Duration = Duration::from_secs(1);
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Installer {
-    events: Receiver<Event>,
+    pub worker: worker::Worker<Event>,
     commands: Sender<Command>,
-    /// Readable while events wait.
-    wake: OwnedFd,
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl Installer {
@@ -109,32 +106,17 @@ impl Installer {
         options: Options,
         work: impl FnOnce(&mut Context) -> Outcome + Send + 'static,
     ) -> Result<Installer> {
-        let (wake, signal) = pipe(libc::O_NONBLOCK)?;
-        let (event_tx, events) = mpsc::channel();
         let (commands, command_rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
-        let mut ctx =
-            Context { events: event_tx, signal, commands: command_rx, shared: shared.clone(), detach: Some(detach), options, origin };
-        let thread = thread::Builder::new()
-            .name("installer".into())
-            .spawn(move || {
-                let outcome = work(&mut ctx);
-                let _ = kmsg(&format!("install: {outcome:?}"));
-                ctx.send(Event::Finished(outcome));
-            })
-            .context("start the installer")?;
-        Ok(Installer { events, commands, wake, shared, thread: Some(thread) })
-    }
-
-    pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
-    }
-
-    /// The events since the last call.
-    pub fn events(&self) -> Vec<Event> {
-        let mut drain = [0u8; 64];
-        while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
-        self.events.try_iter().collect()
+        let ctx_shared = shared.clone();
+        let worker = worker::Worker::start("installer", "the installer", move |tell| {
+            let mut ctx =
+                Context { events: tell, commands: command_rx, shared: ctx_shared, detach: Some(detach), options, origin };
+            let outcome = work(&mut ctx);
+            let _ = kmsg(&format!("install: {outcome:?}"));
+            ctx.send(Event::Finished(outcome));
+        })?;
+        Ok(Installer { worker, commands, shared })
     }
 
     /// Write the image the installer holds to `partition` in `slots`.
@@ -168,15 +150,6 @@ impl Installer {
     }
 }
 
-impl Drop for Installer {
-    /// The screen lets the installer go once it has finished.
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the installer does not panic");
-        }
-    }
-}
-
 /// Where the package comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
@@ -191,9 +164,7 @@ enum Origin {
 }
 
 struct Context {
-    events: Sender<Event>,
-    /// The write end of the wake pipe.
-    signal: OwnedFd,
+    events: worker::Tell<Event>,
     commands: Receiver<Command>,
     shared: Arc<Shared>,
     detach: Option<Detach>,
@@ -203,10 +174,7 @@ struct Context {
 
 impl Context {
     fn send(&self, event: Event) {
-        if self.events.send(event).is_ok() {
-            // A full pipe already wakes the screen.
-            unsafe { libc::write(self.signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-        }
+        self.events.send(event);
     }
 }
 

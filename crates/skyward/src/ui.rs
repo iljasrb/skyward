@@ -1,3 +1,4 @@
+use crate::adbwifi;
 use crate::backup;
 use crate::decrypt::{self, Decryptor};
 use crate::filework;
@@ -30,8 +31,8 @@ use skyward_net::http::Servers;
 use skyward_net::release::Release;
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
-    App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
-    FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
+    App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind,
+    FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
     RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
@@ -1044,13 +1045,19 @@ fn install_options(app: &App) -> Options {
 /// How often the WLAN page scans while it shows.
 const SCAN_EVERY: Duration = Duration::from_secs(10);
 
+/// How long adbd is given to hold the port after init is asked to restart it.
+const ADB_WAIT: Duration = Duration::from_secs(3);
+
 fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
 
-/// Where `release`'s image is downloaded to.
+/// Where `release`'s image is downloaded to, named for the release as well as
+/// the file: every release publishes the same file name, and what an older
+/// one left in the folder was taken for the newest one's, downloaded already,
+/// and written over this recovery in its place.
 fn downloaded(release: &Release) -> PathBuf {
-    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(&release.image.name)
+    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(format!("{}-{}", release.tag, release.image.name))
 }
 
 /// What internal storage holds of `release`'s image; nothing while it cannot
@@ -1353,6 +1360,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
     }
     let mut scanned_at = Instant::now();
+    // When adbd was asked for the network's port, until the kernel is read as showing it holds it.
+    let mut adb_until: Option<Instant> = None;
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1465,43 +1474,43 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
-            fds.push(i.fd());
+            fds.push(i.worker.fd());
         }
         if let Some(c) = &control {
             fds.push(c.fd());
         }
         if let Some(e) = &eraser {
-            fds.push(e.fd());
+            fds.push(e.worker.fd());
         }
         if let Some(sh) = &shell {
             fds.extend(sh.fds());
         }
         if let Some(w) = &worker {
-            fds.push(w.fd());
+            fds.push(w.worker.fd());
         }
         if let Some(r) = &relabeler {
-            fds.push(r.fd());
+            fds.push(r.worker.fd());
         }
         if let Some(b) = &backuper {
-            fds.push(b.fd());
+            fds.push(b.worker.fd());
         }
         if let Some(m) = &merger {
-            fds.push(m.fd());
+            fds.push(m.worker.fd());
         }
         if let Some(d) = &decryptor {
-            fds.push(d.fd());
+            fds.push(d.worker.fd());
         }
         if let Some(p) = &part_worker {
-            fds.push(p.fd());
+            fds.push(p.worker.fd());
         }
         if let Some(w) = &wlan {
             fds.push(w.fd());
         }
         if let Some(c) = &checker {
-            fds.push(c.fd());
+            fds.push(c.worker.fd());
         }
         if let Some(d) = &downloader {
-            fds.push(d.fd());
+            fds.push(d.worker.fd());
         }
         fds.push(readings.fd());
         wait(&fds, timeout)?;
@@ -1514,7 +1523,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // What the installer and the eraser told comes first, so a touch
         // acts on the page as it now stands.
         {
-            let told = installer.as_ref().map(Installer::events).unwrap_or_default();
+            let told = installer.as_ref().map(|i| i.worker.events()).unwrap_or_default();
             for ev in told {
                 use skyward_install::{Event as Told, Outcome};
                 let finished = matches!(ev, Told::Finished(_));
@@ -1584,7 +1593,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut erased = false;
         if let Some(e) = &eraser {
-            for ev in e.events() {
+            for ev in e.worker.events() {
                 match ev {
                     // Rescue's page says only that erasing is under way.
                     wipe::Event::At(_) | wipe::Event::Progress(..) if rescue_erasing => {}
@@ -1649,7 +1658,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         };
         let mut worked = false;
         if let Some(w) = &worker {
-            for ev in w.events() {
+            for ev in w.worker.events() {
                 match ev {
                     filework::Event::Progress(p) => app.file_progress((p.bytes, p.total_bytes), (p.entries, p.total_entries)),
                     filework::Event::Relabeling(_) => unreachable!("work on files gives no labels"),
@@ -1662,7 +1671,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut relabeled = false;
         if let Some(r) = &relabeler {
-            for ev in r.events() {
+            for ev in r.worker.events() {
                 match ev {
                     filework::Event::Relabeling(p) => app.relabel_progress(p.checked, p.total, p.changed),
                     filework::Event::Progress(_) => unreachable!("relabeling moves no bytes"),
@@ -1678,7 +1687,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut parted = false;
         if let Some(p) = &part_worker {
-            for ev in p.events() {
+            for ev in p.worker.events() {
                 match ev {
                     partwork::Event::Listed(names) => app.part_listed(names),
                     partwork::Event::At(index) => app.part_at(index),
@@ -1724,7 +1733,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut backed = false;
         if let Some(b) = &backuper {
-            for ev in b.events() {
+            for ev in b.worker.events() {
                 match ev {
                     backup::Event::Plan(plan) => app.backup_plan(plan),
                     backup::Event::At { item, done, of, checking } => app.backup_at(BackupAt { item, done, of, checking }),
@@ -1740,7 +1749,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(m) = &merger {
             let slot = info.slot.context("only an A/B phone merges an update")?;
-            for ev in m.events() {
+            for ev in m.worker.events() {
                 match ev {
                     merge::Event::Looked(look) => {
                         eprintln!("merge {look:?}");
@@ -1760,7 +1769,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             }
             // Merged or not, the phone's readings say where the update
             // stands now.
-            if m.ended() {
+            if m.worker.finished() {
                 merger = None;
                 read_at = Instant::now();
                 info = skyward_info::collect(cfg)?;
@@ -1773,6 +1782,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             }
             if let Some(t) = traffic {
                 app.set_traffic(t);
+            }
+        }
+        if let Some(until) = adb_until {
+            if adbwifi::listening() {
+                adb_until = None;
+                app.set_adb_wifi(AdbWifi::On);
+            } else if Instant::now() >= until {
+                adb_until = None;
+                let why = format!("adbd did not take port {}", skyward_ui::app::ADB_WIFI_PORT);
+                skyward_sys::kmsg(&why)?;
+                app.set_adb_wifi(AdbWifi::Failed(why));
             }
         }
         // The WLAN page scans again now and then while it shows, as the
@@ -1789,7 +1809,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut checked = false;
         if let Some(c) = &checker {
-            for ev in c.events() {
+            for ev in c.worker.events() {
                 let updates::Event::Checked(answer) = ev else { unreachable!("asking the server downloads nothing") };
                 let have = match &answer {
                     Ok(Some(release)) => have(&app, release),
@@ -1804,7 +1824,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut fetched = false;
         if let Some(d) = &downloader {
-            for ev in d.events() {
+            for ev in d.worker.events() {
                 match ev {
                     updates::Event::Progress(progress, rate) => app.download_progress(progress, rate),
                     updates::Event::Ended(end) => {
@@ -1829,7 +1849,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         let mut wrote = false;
         if let Some(w) = &writer {
-            for ev in w.events() {
+            for ev in w.worker.events() {
                 match ev {
                     updates::Event::Writing(done, total) => app.install_progress(if total == 0 { 0.0 } else { done as f32 / total as f32 }),
                     updates::Event::Installed(outcome) => {
@@ -1845,7 +1865,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if wrote {
             writer = None;
         }
-        if let Some(ended) = decryptor.as_ref().and_then(Decryptor::ended) {
+        if let Some(ended) = decryptor.as_ref().and_then(|d| d.worker.recv()) {
             decryptor = None;
             match ended {
                 decrypt::Ended::Opened(Ok(opening)) => {
@@ -2207,7 +2227,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     // An install still stopping may yet write; a backup or
                     // restore waits for it.
-                    Effect::Backup { parts, place, compress, verify } => {
+                    Effect::Backup { parts, place, compress, verify, sparse } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
                         if installer.is_some() {
                             app.report(app.state.lang.pick(INSTALL_UNFINISHED), now);
@@ -2230,6 +2250,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             ownership,
                             compress,
                             verify,
+                            sparse,
                             remount: (place == Place::UsbDrive).then(|| PathBuf::from(USB_DRIVE)),
                             made,
                             device: cfg.device.codename.clone(),
@@ -2287,6 +2308,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         wlan_touched = true;
                         wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off })
                     }
+                    // adbd takes the port a moment after init is asked to restart it; the row tells what came
+                    // of it.
+                    Effect::AdbWifi(on) => match if on { adbwifi::listen() } else { adbwifi::stop() } {
+                        Ok(()) if on => adb_until = Some(Instant::now() + ADB_WAIT),
+                        Ok(()) => app.set_adb_wifi(AdbWifi::Off),
+                        Err(e) => {
+                            skyward_sys::kmsg(&format!("adbd was not asked for the network's port: {e:#}"))?;
+                            app.set_adb_wifi(AdbWifi::Failed(format!("{e:#}")))
+                        }
+                    },
                     Effect::ScanWlan => {
                         scanned_at = Instant::now();
                         wlan_worker(&wlan)?.send(wlan::Command::Scan);

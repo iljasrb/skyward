@@ -9,13 +9,12 @@ use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
 use skyward_net::release::{self, Release, Unanswered};
+use skyward_sys::worker;
 use skyward_vab::Slot;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// The most often how far a download has come is told.
@@ -62,97 +61,69 @@ pub enum End {
 }
 
 pub struct Worker {
-    events: Receiver<Event>,
-    /// Readable while events wait.
-    wake: OwnedFd,
+    pub worker: worker::Worker<Event>,
     stop: Arc<AtomicBool>,
     /// The connection in use, which stopping cuts at once.
     agent: Arc<Mutex<Option<ureq::Agent>>>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     pub fn start(task: Task, servers: Servers) -> Result<Worker> {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("make the update worker's wake pipe");
-        }
-        let (wake, signal) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        let (tx, events) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let agent: Arc<Mutex<Option<ureq::Agent>>> = Arc::new(Mutex::new(None));
         let (stopping, using) = (stop.clone(), agent.clone());
-        let thread = thread::Builder::new()
-            .name("updates".into())
-            .spawn(move || {
-                let tell = |event: Event| {
-                    // The screen only stops listening once it has let the
-                    // worker go.
-                    let _ = tx.send(event);
-                    unsafe { libc::write(signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-                };
-                match task {
-                    Task::Check { repo, asset, build, probe } => {
-                        let a = http::agent(servers.clone());
-                        *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let answer = release::newest(&a, &repo, &asset)
-                            .map_err(|e| unanswered(&e, &repo, &probe, &servers))
-                            .and_then(|found| match found {
-                                // A release nothing can be checked against is
-                                // no release to offer.
-                                Some(r) if r.is_newer_than(&build) && (r.image.digest.is_some() || r.sums.is_some()) => Ok(Some(r)),
-                                Some(r) if r.is_newer_than(&build) => Err(Unanswered::Failed(format!(
-                                    "the release {} of {repo} publishes no SHA-256 to check its image against",
-                                    r.tag
-                                ))),
-                                _ => Ok(None),
-                            });
-                        match &answer {
-                            Ok(Some(r)) => {
-                                let _ = skyward_sys::kmsg(&format!("a newer recovery is published: {} ({})", r.tag, r.published));
-                            }
-                            Ok(None) => {
-                                let _ = skyward_sys::kmsg(&format!("no recovery is published after this build, {build}"));
-                            }
-                            Err(why) => {
-                                let _ = skyward_sys::kmsg(&format!("the releases of {repo} were not read: {why:?}"));
-                            }
-                        }
-                        tell(Event::Checked(answer));
-                    }
-                    Task::Download { release, sha256, path } => {
-                        let end = fetch(&servers, release, sha256, &path, &stopping, &using, &tell);
-                        tell(Event::Ended(end));
-                    }
-                    Task::Install { path, active } => {
-                        let mut told = Instant::now() - PROGRESS_EVERY;
-                        let written = recovery::slots(active).and_then(|slots| {
-                            recovery::install(&path, &slots, &mut |done, total| {
-                                if done == total || told.elapsed() >= PROGRESS_EVERY * 5 {
-                                    told = Instant::now();
-                                    tell(Event::Writing(done, total));
-                                }
-                            })
-                            .map(|()| slots)
+        let worker = worker::Worker::start("updates", "the update worker", move |tell| {
+            let say = |event: Event| tell.send(event);
+            match task {
+                Task::Check { repo, asset, build, probe } => {
+                    let a = http::agent(servers.clone());
+                    *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
+                    let answer = release::newest(&a, &repo, &asset)
+                        .map_err(|e| unanswered(&e, &repo, &probe, &servers))
+                        .and_then(|found| match found {
+                            // A release nothing can be checked against is
+                            // no release to offer.
+                            Some(r) if r.is_newer_than(&build) && (r.image.digest.is_some() || r.sums.is_some()) => Ok(Some(r)),
+                            Some(r) if r.is_newer_than(&build) => Err(Unanswered::Failed(format!(
+                                "the release {} of {repo} publishes no SHA-256 to check its image against",
+                                r.tag
+                            ))),
+                            _ => Ok(None),
                         });
-                        let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
-                        tell(Event::Installed(written.map_err(|e| format!("{e:#}"))));
+                    match &answer {
+                        Ok(Some(r)) => {
+                            let _ = skyward_sys::kmsg(&format!("a newer recovery is published: {} ({})", r.tag, r.published));
+                        }
+                        Ok(None) => {
+                            let _ = skyward_sys::kmsg(&format!("no recovery is published after this build, {build}"));
+                        }
+                        Err(why) => {
+                            let _ = skyward_sys::kmsg(&format!("the releases of {repo} were not read: {why:?}"));
+                        }
                     }
+                    say(Event::Checked(answer));
                 }
-            })
-            .context("start the update worker")?;
-        Ok(Worker { events, wake, stop, agent, thread: Some(thread) })
-    }
-
-    pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
-    }
-
-    /// The events since the last call.
-    pub fn events(&self) -> Vec<Event> {
-        let mut drain = [0u8; 64];
-        while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
-        self.events.try_iter().collect()
+                Task::Download { release, sha256, path } => {
+                    let end = fetch(&servers, release, sha256, &path, &stopping, &using, &say);
+                    say(Event::Ended(end));
+                }
+                Task::Install { path, active } => {
+                    let mut told = Instant::now() - PROGRESS_EVERY;
+                    let written = recovery::slots(active).and_then(|slots| {
+                        recovery::install(&path, &slots, &mut |done, total| {
+                            if done == total || told.elapsed() >= PROGRESS_EVERY * 5 {
+                                told = Instant::now();
+                                say(Event::Writing(done, total));
+                            }
+                        })
+                        .map(|()| slots)
+                    });
+                    let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
+                    say(Event::Installed(written.map_err(|e| format!("{e:#}"))));
+                }
+            }
+        })?;
+        Ok(Worker { worker, stop, agent })
     }
 
     /// Stop at once, cutting the connection in use.
@@ -160,16 +131,6 @@ impl Worker {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(a) = self.agent.lock().expect("the agent is not held by a thread that panicked").take() {
             a.shutdown();
-        }
-    }
-}
-
-impl Drop for Worker {
-    /// The screen lets the worker go once its work has ended, or once it
-    /// has been told to stop.
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the update worker does not panic");
         }
     }
 }

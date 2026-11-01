@@ -7,17 +7,16 @@ use skyward_backup::store::{self, Reader, Stored, Writer};
 use skyward_backup::{Item, Manifest, Part, FORMAT};
 use skyward_block::{mount, BY_NAME};
 use skyward_files::{Cancelled, Ownership};
+use skyward_sys::worker;
 use skyward_vab::{Slot, SnapshotState};
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// The most often how far the work has come is told.
@@ -90,6 +89,8 @@ pub struct BackupTask {
     pub ownership: Ownership,
     pub compress: bool,
     pub verify: bool,
+    /// Whether the zeros a part holds are left as holes in its files.
+    pub sparse: bool,
     /// The mount the place is, when it is shown read-only and so is made
     /// writable for the backup, and read-only again after: a USB drive.
     pub remount: Option<PathBuf>,
@@ -123,8 +124,8 @@ pub enum Task {
 /// Why backing up or restoring does not start.
 #[derive(Debug)]
 pub enum Refusal {
-    /// Too little room where the backup goes: the bytes it takes, and the
-    /// bytes free.
+    /// Too little room where the backup goes: what is still to be written,
+    /// and the bytes free.
     Room { needed: u64, free: u64 },
     /// An update is in flight, and the slot's partitions in super are its
     /// to change.
@@ -140,7 +141,7 @@ pub enum Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refusal::Room { needed, free } => write!(f, "the backup takes {needed} bytes, and {free} are free"),
+            Refusal::Room { needed, free } => write!(f, "the backup still needs {needed} bytes, and {free} are free"),
             Refusal::Update(state) => write!(f, "an update is in flight ({state:?})"),
             Refusal::OtherPhone(device) => write!(f, "the backup was made on {device}"),
             Refusal::Resized(name) => write!(f, "{name} is not the size it was backed up at"),
@@ -178,82 +179,45 @@ pub enum End {
 }
 
 pub struct Worker {
-    events: Receiver<Event>,
-    /// Readable while events wait.
-    wake: OwnedFd,
+    pub worker: worker::Worker<Event>,
     cancel: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(io::Error::last_os_error()).context("make the backup worker's wake pipe");
-        }
-        let (wake, signal) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        let (tx, events) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let thread = thread::Builder::new()
-            .name("backup".into())
-            .spawn(move || {
-                let tell = |event: Event| {
-                    // The screen only stops listening once it has let the
-                    // worker go.
-                    let _ = tx.send(event);
-                    unsafe { libc::write(signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-                };
-                let ended = match task {
-                    Task::Backup(t) => backup(t, &tell, &stop).map(End::Saved),
-                    Task::Restore(t) => restore(t, &tell, &stop).map(|unmade| End::Restored { unmade }),
-                };
-                let end = match ended {
-                    Ok(end) => end,
-                    Err(e) if e.is::<Cancelled>() => End::Stopped,
-                    Err(e) => match e.downcast::<Refusal>() {
-                        Ok(refusal) => End::Refused(refusal),
-                        Err(e) => End::Failed(format!("{e:#}")),
-                    },
-                };
-                let said = match &end {
-                    End::Saved(folder) => format!("backup saved in {}", folder.display()),
-                    End::Restored { unmade } => format!("backup restored, all but {unmade:?}"),
-                    End::Stopped => "backup stopped".into(),
-                    End::Refused(why) => format!("backup refused: {why}"),
-                    End::Failed(why) => format!("backup failed: {why}"),
-                };
-                skyward_sys::kmsg(&said).expect("the kernel log takes a line");
-                tell(Event::Ended(end));
-            })
-            .context("start the backup worker")?;
-        Ok(Worker { events, wake, cancel, thread: Some(thread) })
-    }
-
-    pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
-    }
-
-    /// The events since the last call.
-    pub fn events(&self) -> Vec<Event> {
-        let mut drain = [0u8; 64];
-        while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
-        self.events.try_iter().collect()
+        let worker = worker::Worker::start("backup", "the backup worker", move |tell| {
+            let say = |event: Event| tell.send(event);
+            let ended = match task {
+                Task::Backup(t) => backup(t, &say, &stop).map(End::Saved),
+                Task::Restore(t) => restore(t, &say, &stop).map(|unmade| End::Restored { unmade }),
+            };
+            let end = match ended {
+                Ok(end) => end,
+                Err(e) if e.is::<Cancelled>() => End::Stopped,
+                Err(e) => match e.downcast::<Refusal>() {
+                    Ok(refusal) => End::Refused(refusal),
+                    Err(e) => End::Failed(format!("{e:#}")),
+                },
+            };
+            let said = match &end {
+                End::Saved(folder) => format!("backup saved in {}", folder.display()),
+                End::Restored { unmade } => format!("backup restored, all but {unmade:?}"),
+                End::Stopped => "backup stopped".into(),
+                End::Refused(why) => format!("backup refused: {why}"),
+                End::Failed(why) => format!("backup failed: {why}"),
+            };
+            skyward_sys::kmsg(&said).expect("the kernel log takes a line");
+            say(Event::Ended(end));
+        })?;
+        Ok(Worker { worker, cancel })
     }
 
     /// Ask the work to stop; it does between two chunks, and a restore
     /// only while nothing is written yet.
     pub fn stop(&self) {
         self.cancel.store(true, Ordering::Relaxed);
-    }
-}
-
-impl Drop for Worker {
-    /// The screen lets the worker go once its work has ended.
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the backup worker does not panic");
-        }
     }
 }
 
@@ -330,7 +294,7 @@ fn copy(from: &mut impl Read, to: &mut impl Write, len: u64, cancel: &AtomicBool
 /// with, in hex.
 fn data_key() -> Result<String> {
     let bytes = fs::read(DATA_KEY).with_context(|| format!("read {DATA_KEY}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(skyward_files::hex(&bytes))
 }
 
 /// The bytes free where `path` is, or would be made.
@@ -342,6 +306,65 @@ fn free_bytes(path: &Path) -> Result<u64> {
         return Err(io::Error::last_os_error()).with_context(|| format!("look at the room on {}", there.display()));
     }
     Ok(st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+/// How little room is left where the backup goes before it is stopped: a
+/// filesystem needs some to write the rest of what a part asks of it.
+const ROOM_MARGIN: u64 = 4 << 20;
+
+/// How much a part writes before the room it has left is looked at again.
+const ROOM_LOOK: u64 = 64 << 20;
+
+/// A part written with an eye on the room where the backup goes. The zeros a
+/// part holds take no room, so the bytes it says it holds say nothing of what
+/// it takes; what is left is read from the storage as the writes go, and the
+/// backup stops there rather than filling the disk it is kept on.
+struct Room<'a> {
+    writer: Writer,
+    into: &'a Path,
+    /// What the part says it holds, and how much of that is written.
+    of: u64,
+    written: u64,
+    /// The bytes to the next look at the storage.
+    left: u64,
+}
+
+impl<'a> Room<'a> {
+    fn new(writer: Writer, into: &'a Path, of: u64) -> Room<'a> {
+        Room { writer, into, of, written: 0, left: 0 }
+    }
+
+    fn finish(self) -> Result<Stored> {
+        self.writer.finish()
+    }
+
+    /// Look at the room the storage has left, and stop the backup when it has
+    /// none: what a part holds by then is what it says it holds, minus what is
+    /// still to be written of it.
+    fn look(&mut self) -> io::Result<()> {
+        let free = free_bytes(self.into).map_err(io::Error::other)?;
+        if free < ROOM_MARGIN {
+            return Err(io::Error::other(Refusal::Room { needed: self.of.saturating_sub(self.written), free }));
+        }
+        self.left = ROOM_LOOK;
+        Ok(())
+    }
+}
+
+impl Write for Room<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.writer.write(buf)?;
+        self.written += n as u64;
+        self.left = self.left.saturating_sub(n as u64);
+        if self.left == 0 {
+            self.look()?;
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 /// The slot's partitions in super are read or written whole only while no
@@ -362,9 +385,6 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
     }
     let skipped = Skipped::new(&t.skipped);
     let mut plan: Vec<(Part, String, Source, u64)> = Vec::new();
-    // What the parts' files take uncompressed: the bytes each holds, and
-    // the data partition's archive headers.
-    let mut needed = 0;
     if boot {
         for name in BOOT {
             let device = partition(&format!("{name}{}", slot.suffix()));
@@ -382,8 +402,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
     }
     if data {
         let (bytes, entries) = archive::measure(Path::new(DATA), &skipped, cancel).context("measure the data partition's files")?;
-        plan.push((Part::Data, "data".into(), Source::Data, bytes));
-        needed += entries * ENTRY_BYTES;
+        plan.push((Part::Data, "data".into(), Source::Data, bytes + entries * ENTRY_BYTES));
     }
     if efs {
         // The baseband's partitions are the phone's own, not the build's: one
@@ -406,12 +425,6 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
         }
         ensure!(plan.iter().any(|(part, ..)| *part == Part::Efs), "this phone has none of the baseband partitions the configuration names: {}", t.efs.join(", "));
     }
-    // Compressed, what the files take is not known until they are written.
-    needed += plan.iter().map(|p| p.3).sum::<u64>();
-    let free = free_bytes(&t.into)?;
-    if !t.compress && needed > free {
-        return Err(Refusal::Room { needed, free }.into());
-    }
     tell(Event::Plan(plan.iter().map(|(_, name, _, size)| (name.clone(), *size)).collect()));
     if let Some(at) = &t.remount {
         mount::remount_writable(at, true)?;
@@ -427,7 +440,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
                 (_, false) => format!("{name}.img"),
                 (_, true) => format!("{name}.img.lz4"),
             };
-            let mut writer = Writer::create(&folder, &file, t.compress, t.ownership);
+            let mut writer = Room::new(Writer::create(&folder, &file, t.compress, t.sparse, t.ownership), &t.into, *size);
             let mut telling = Telling::new(tell, k, *size, false);
             match source {
                 Source::Block(device) => {
