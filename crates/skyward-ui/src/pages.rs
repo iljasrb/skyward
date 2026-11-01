@@ -136,6 +136,8 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
         #[cfg(feature = "folkpatch")]
         Confirm::RootPatch => (["滑动以安装 Root", "滑動以安裝 Root", "Slide to install root"], true),
+        #[cfg(feature = "folkpatch")]
+        Confirm::RootShareKey => (["滑动以保存副本", "滑動以儲存副本", "Slide to keep a copy"], true),
     };
     (s.lang.pick(label), danger)
 }
@@ -3638,6 +3640,10 @@ const ROOT_KEY: Text = ["密钥", "金鑰", "Key"];
 const ROOT_TYPED: Text = ["已输入", "已輸入", "Set"];
 #[cfg(feature = "folkpatch")]
 const ROOT_NOT_TYPED: Text = ["未输入", "未輸入", "Not set"];
+#[cfg(feature = "folkpatch")]
+const ROOT_SHOW_LAST: Text = ["显示上次的密钥", "顯示上次的金鑰", "Show the last key"];
+#[cfg(feature = "folkpatch")]
+const ROOT_HIDE_LAST: Text = ["隐藏上次的密钥", "隱藏上次的金鑰", "Hide the last key"];
 
 /// FolkPatch's root: what it writes and where, the slots and the key to
 /// write with, a swipe to start, and then how the run went.
@@ -3673,24 +3679,45 @@ pub fn root(cx: &Ctx) -> Frame {
                 .collect();
             let slots = widgets::list(&mut c, t, f, y, &picks);
             out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Root(RootAction::Pick(pick)))));
-            let modes = widgets::list(&mut c, t, f, slots.bottom + t.m.card_gap, &[
+            let mut modes = vec![
                 Row::new(l.pick(["生成密钥", "產生金鑰", "Generate a key"]))
                     .subtitle(l.pick(["24 位字母与数字，随机生成", "24 位字母與數字，隨機產生", "24 letters and digits, drawn at random"]))
                     .trail(Trail::Check(root.key_mode == KeyMode::Generate)),
                 Row::new(l.pick(["输入密钥", "輸入金鑰", "Enter a key"]))
                     .subtitle(l.pick(["8 至 63 位字母与数字", "8 至 63 位字母與數字", "8 to 63 letters and digits"]))
                     .trail(Trail::Check(root.key_mode == KeyMode::Enter)),
-            ]);
-            out.extend(hits(&modes.rows, &[
+            ];
+            let mut acts = vec![
                 Action::Root(RootAction::KeyMode(KeyMode::Generate)),
                 Action::Root(RootAction::KeyMode(KeyMode::Enter)),
-            ]));
+            ];
+            // Patching again after an update can keep the key this phone had.
+            if root.last.is_some() {
+                modes.push(
+                    Row::new(l.pick(["沿用上次的密钥", "沿用上次的金鑰", "Use the last key"]))
+                        .subtitle(l.pick(["上次的补丁所用的密钥", "上次的修補所用的金鑰", "The key the last run patched with"]))
+                        .trail(Trail::Check(root.key_mode == KeyMode::Last)),
+                );
+                acts.push(Action::Root(RootAction::KeyMode(KeyMode::Last)));
+            }
+            let modes = widgets::list(&mut c, t, f, slots.bottom + t.m.card_gap, &modes);
+            out.extend(hits(&modes.rows, &acts));
             y = modes.bottom;
             if root.key_mode == KeyMode::Enter {
                 let shown = l.pick(if root.entered.is_empty() { ROOT_NOT_TYPED } else { ROOT_TYPED });
                 let typed = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(ROOT_KEY)).trail(Trail::Value(shown))]);
                 out.extend(hits(&typed.rows, &[Action::Root(RootAction::EditKey)]));
                 y = typed.bottom;
+            }
+            // The key kept from an earlier run, shown only when asked for.
+            if let Some(last) = &root.last {
+                let shown = l.pick(if root.showing { ROOT_HIDE_LAST } else { ROOT_SHOW_LAST });
+                let peek = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(shown).trail(Trail::None)]);
+                out.extend(hits(&peek.rows, &[Action::Root(RootAction::ShowLast)]));
+                y = peek.bottom;
+                if root.showing {
+                    y = key_line(&mut c, t, f, y, last.expose());
+                }
             }
             // What would stop a run; the swipe shows only once nothing does.
             let closed = !s.data.storage_open();
@@ -3736,10 +3763,32 @@ pub fn root(cx: &Ctx) -> Frame {
             widgets::progress_card(&mut c, t, f, top, &heading, &detail, None)
         }
         RootJob::Finished(outcome) => {
-            let (heading, lines) = root_result(l, outcome);
+            let (heading, key, lines) = root_result(l, outcome);
             let mut y = widgets::progress_card(&mut c, t, f, top, l.pick(heading), "", None);
+            if let Some(key) = &key {
+                y = key_line(&mut c, t, f, y, key);
+            }
             for line in &lines {
                 y = widgets::footnote(&mut c, t, f, y, line);
+            }
+            match (&key, &root.copied) {
+                (Some(_), None) => {
+                    let warning = l.pick([
+                        "把密钥副本保存到内部存储后，任何拥有存储权限的应用都能读取它，它等同于 root 权限。",
+                        "把金鑰副本儲存到內部儲存空間後，任何擁有儲存空間權限的應用程式都能讀取它，它等同於 root 權限。",
+                        "A copy in internal storage can be read by any app with storage permission, and this key is root-equivalent.",
+                    ]);
+                    y = widgets::footnote(&mut c, t, f, y, warning);
+                    let (label, danger) = confirm_label(Confirm::RootShareKey, cx.state);
+                    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+                    out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootShareKey) });
+                    y = track.y + track.h;
+                }
+                (Some(_), Some(copied)) => {
+                    let copied = copied.clone();
+                    y = widgets::footnote(&mut c, t, f, y, &tr!(l, "密钥副本：{copied}", "金鑰副本：{copied}", "A copy of the key: {copied}"));
+                }
+                (None, _) => {}
             }
             let done = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(DONE)).trail(Trail::None)]);
             out.extend(hits(&done.rows, &[Action::Back]));
@@ -3807,9 +3856,20 @@ fn root_stage(l: Lang, stage: Option<&skyward_folkpatch::Stage>) -> (String, Str
     }
 }
 
-/// How a run ended: the heading over the page and what it has to say.
+/// A key on a line of its own, in the face whose characters are all the same
+/// width, so that it can be read off the screen and typed back exactly.
 #[cfg(feature = "folkpatch")]
-fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Vec<String>) {
+fn key_line(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
+    let m = &t.m;
+    let ink_top = y + m.dp(10.0);
+    c.text_top(&f.mono, key, m.title_x + m.dp(0.9), ink_top, m.sub_px + m.dp(2.0), t.pal.text, None);
+    ink_top + m.dp(28.0)
+}
+
+/// How a run ended: the heading over the page, the key it made where it made
+/// one, and what else it has to say.
+#[cfg(feature = "folkpatch")]
+fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Option<String>, Vec<String>) {
     const INSTALLED: Text = ["Root 已安装", "Root 已安裝", "Root installed"];
     const NOT_INSTALLED: Text = ["未安装", "未安裝", "Not installed"];
     const FAILED: Text = ["Root 未安装", "Root 未安裝", "Root not installed"];
@@ -3817,13 +3877,11 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Vec<Stri
         skyward_folkpatch::Outcome::Installed(installed) => {
             let slots: Vec<&str> = installed.slots.iter().map(|s| s.letter()).collect();
             let slots = slots.join(", ");
-            let key = installed.key.expose();
             let manager = installed.apk_path.display().to_string();
             let key_file = installed.key_path.display().to_string();
             let backups = installed.backup_dir.display().to_string();
             let mut lines = vec![
                 tr!(l, "已为槽位 {slots} 写入补丁。", "已為槽位 {slots} 寫入修補。", "Slot {slots} is patched."),
-                tr!(l, "超级密钥：{key}", "超級金鑰：{key}", "SuperKey: {key}"),
                 tr!(l, "管理器：{manager}", "管理器：{manager}", "Manager: {manager}"),
                 tr!(l, "密钥文件：{key_file}", "金鑰檔案：{key_file}", "Key file: {key_file}"),
                 tr!(l, "备份：{backups}", "備份：{backups}", "Backups: {backups}"),
@@ -3844,10 +3902,11 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Vec<Stri
                     .to_string(),
                 );
             }
-            (INSTALLED, lines)
+            (INSTALLED, Some(installed.key.expose().to_string()), lines)
         }
         skyward_folkpatch::Outcome::Refused(refusal) => (
             NOT_INSTALLED,
+            None,
             vec![
                 root_refusal(l, refusal),
                 l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string(),
@@ -3877,7 +3936,7 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (Text, Vec<Stri
                     "From a computer: fastboot flash {boot} {path}"
                 ));
             }
-            (FAILED, lines)
+            (FAILED, None, lines)
         }
     }
 }
@@ -4042,10 +4101,10 @@ mod tests {
             backup_dir: "/sdcard/Download/Skyward/FolkPatch/1120/backup".into(),
             kallsyms_all: true,
         });
-        let (heading, lines) = root_result(Lang::En, &outcome);
+        let (heading, shown, lines) = root_result(Lang::En, &outcome);
         let text = lines.join("\n");
         assert_eq!(Lang::Hans.pick(heading), "Root 已安装");
-        assert!(text.contains(key.expose()), "the key is shown: {text}");
+        assert_eq!(shown.as_deref(), Some(key.expose()), "the key has a line of its own");
         assert!(text.contains("/sdcard/Download/Skyward/FolkPatch/1120/manager.apk"), "{text}");
         assert!(text.contains("/data/local/tmp/skyward-folkpatch/1120/superkey.txt"), "{text}");
         assert!(!text.contains("KALLSYMS_ALL"), "a kernel with every symbol has nothing to warn of");
@@ -4067,9 +4126,10 @@ mod tests {
             written: vec![skyward_vab::Slot::A],
             key_path: None,
         });
-        let (heading, lines) = root_result(Lang::En, &outcome);
+        let (heading, shown, lines) = root_result(Lang::En, &outcome);
         let text = lines.join("\n");
         assert_eq!(Lang::Hans.pick(heading), "Root 未安装");
+        assert!(shown.is_none(), "a run that stopped made no key to show");
         assert!(text.contains("no space left on device"), "{text}");
         assert!(text.contains("don't start it"), "{text}");
         assert!(text.contains("fastboot flash boot_a /sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img"), "{text}");

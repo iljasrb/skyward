@@ -394,13 +394,28 @@ pub struct RootState {
     pub key_mode: KeyMode,
     /// The key typed on the key page, once it was one the manager takes.
     pub entered: String,
+    /// The key the newest earlier run left on this phone, where one did.
+    pub last: Option<skyward_folkpatch::SuperKey>,
+    /// The last key is shown on the page.
+    pub showing: bool,
+    /// Where a copy of a run's key was kept beside the manager, once the user
+    /// asked for one.
+    pub copied: Option<String>,
     pub job: RootJob,
 }
 
 #[cfg(feature = "folkpatch")]
 impl Default for RootState {
     fn default() -> RootState {
-        RootState { pick: Pick::Current, key_mode: KeyMode::Generate, entered: String::new(), job: RootJob::Idle }
+        RootState {
+            pick: Pick::Current,
+            key_mode: KeyMode::Generate,
+            entered: String::new(),
+            last: None,
+            showing: false,
+            copied: None,
+            job: RootJob::Idle,
+        }
     }
 }
 
@@ -411,6 +426,8 @@ pub enum KeyMode {
     #[default]
     Generate,
     Enter,
+    /// The key the newest earlier run made, kept on this phone.
+    Last,
 }
 
 /// How far a FolkPatch run has come, as its page shows it.
@@ -433,6 +450,8 @@ pub enum RootAction {
     KeyMode(KeyMode),
     /// Type a key, on the key page.
     EditKey,
+    /// Show the key the newest earlier run made, or hide it again.
+    ShowLast,
 }
 
 /// A partition the filesystem page lists, as the runtime read it.
@@ -894,6 +913,9 @@ pub enum Confirm {
     /// Patch the boot partitions FolkPatch's root page chose.
     #[cfg(feature = "folkpatch")]
     RootPatch,
+    /// Keep a copy of the key beside the manager, where Android can read it.
+    #[cfg(feature = "folkpatch")]
+    RootShareKey,
 }
 
 /// What the wipe page erases: everything a factory reset erases, or any of
@@ -2080,6 +2102,13 @@ pub enum Effect {
     /// goes with [`App::root_stage`] and [`App::root_finished`].
     #[cfg(feature = "folkpatch")]
     Root { pick: Pick, key: skyward_folkpatch::Key },
+    /// Read the newest key an earlier run left on this phone, telling it with
+    /// [`App::set_root_last_key`].
+    #[cfg(feature = "folkpatch")]
+    ReadRootKey,
+    /// Keep a copy of `key` in `run`, beside the manager.
+    #[cfg(feature = "folkpatch")]
+    ShareRootKey { run: std::path::PathBuf, key: skyward_folkpatch::SuperKey },
 }
 
 enum Drag {
@@ -3397,6 +3426,36 @@ impl App {
         let root = self.state.root.as_mut().expect("only a run under way ends");
         root.job = RootJob::Finished(Box::new(outcome));
         self.wake(now);
+        self.refresh();
+    }
+
+    /// The newest key an earlier run left on this phone, as the runtime found
+    /// it: offered again, so that patching after an update keeps the key the
+    /// phone had.
+    #[cfg(feature = "folkpatch")]
+    pub fn set_root_last_key(&mut self, key: Option<skyward_folkpatch::SuperKey>) {
+        let root = self.state.root.get_or_insert_with(RootState::default);
+        if root.key_mode == KeyMode::Last && key.is_none() {
+            root.key_mode = KeyMode::Generate;
+        }
+        root.last = key;
+        if self.screen() == Screen::Root {
+            self.refresh();
+        }
+    }
+
+    /// A copy of the run's key was kept beside the manager, or could not be.
+    #[cfg(feature = "folkpatch")]
+    pub fn root_key_shared(&mut self, outcome: Result<std::path::PathBuf, String>, now: u64) {
+        let root = self.state.root.as_mut().expect("only a run that ended has a key to keep");
+        match outcome {
+            Ok(path) => {
+                let shown = path.display().to_string();
+                root.copied = Some(shown.clone());
+                self.say(&tr!(self.state.lang, "密钥副本已保存到 {shown}", "金鑰副本已儲存到 {shown}", "A copy of the key is in {shown}"), now);
+            }
+            Err(why) => self.say(&tr!(self.state.lang, "密钥副本未能保存：{why}", "金鑰副本未能儲存：{why}", "The copy of the key was not kept: {why}"), now),
+        }
         self.refresh();
     }
 
@@ -4940,6 +4999,8 @@ impl App {
             Screen::Mount => vec![Effect::ReadMounts],
             Screen::Filesystems => vec![Effect::ReadFilesystems],
             Screen::Slot | Screen::Reboot => vec![Effect::ReadSlots],
+            #[cfg(feature = "folkpatch")]
+            Screen::Root => vec![Effect::ReadRootKey],
             Screen::Restore => vec![self.find_backups()],
             Screen::Files => vec![Effect::ReadDir(self.state.files.path.clone())],
             Screen::Choose(place) if self.state.place_open(place) => vec![Effect::ReadPlace(place, self.state.folder(s).path.clone())],
@@ -5203,6 +5264,7 @@ impl App {
                     RootAction::Pick(pick) => root.pick = pick,
                     RootAction::KeyMode(mode) => root.key_mode = mode,
                     RootAction::EditKey => self.open(Screen::RootKey),
+                    RootAction::ShowLast => root.showing = !root.showing,
                 }
                 self.refresh();
             }
@@ -6369,9 +6431,27 @@ impl App {
                             return fx;
                         }
                     },
+                    KeyMode::Last => match root.last.clone() {
+                        Some(key) => skyward_folkpatch::Key::Enter(key),
+                        None => {
+                            self.say(l.pick(["上次的密钥已不在手机上", "上次的金鑰已不在手機上", "The last key is no longer on this phone"]), now);
+                            return fx;
+                        }
+                    },
                 };
                 self.root_started();
                 fx.push(Effect::Root { pick: root.pick, key });
+            }
+            // The copy goes beside the manager, where the user reads it in
+            // Android, and where anything else with storage can read it too.
+            #[cfg(feature = "folkpatch")]
+            Confirm::RootShareKey => {
+                if let Some(RootJob::Finished(outcome)) = self.state.root.as_ref().map(|r| r.job.clone()) {
+                    if let skyward_folkpatch::Outcome::Installed(installed) = *outcome {
+                        let run = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.clone(), std::path::Path::to_path_buf);
+                        fx.push(Effect::ShareRootKey { run, key: installed.key });
+                    }
+                }
             }
             Confirm::DeleteEntry => fx.push(Effect::Delete(self.entry_path())),
             // The partition has to be open; whether its users have unlocked
@@ -11263,6 +11343,56 @@ mod tests {
         assert!(hits.contains(&Action::Back), "the page is done");
         tap_back(&mut app, &f, &i, 3000);
         assert_eq!(app.screen(), Screen::Home, "and can be left");
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn the_key_of_the_last_run_is_offered_and_used_when_it_is_chosen() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        let last = skyward_folkpatch::SuperKey::validate("lastkey1").unwrap();
+        app.set_root_last_key(Some(last.clone()));
+        let hits = root_hits(&mut app, &f, &i);
+        assert!(hits.contains(&Action::Root(RootAction::KeyMode(KeyMode::Last))), "the last key can be kept");
+        assert!(hits.contains(&Action::Root(RootAction::ShowLast)), "and shown");
+        tap(&mut app, &f, &i, Action::Root(RootAction::KeyMode(KeyMode::Last)));
+        assert_eq!(
+            swipe(&mut app, &f, &i, Confirm::RootPatch),
+            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Enter(last) }],
+            "patching again keeps the key the phone had"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "folkpatch")]
+    fn a_run_that_installed_offers_to_keep_a_copy_of_the_key_where_android_reads_it() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        root_hits(&mut app, &f, &i);
+        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
+        app.root_started();
+        app.root_finished(
+            skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+                slots: vec![Slot::A],
+                key: key.clone(),
+                key_path: "/data/local/tmp/skyward-folkpatch/x/superkey.txt".into(),
+                apk_path: "/sdcard/Download/Skyward/FolkPatch/x/manager.apk".into(),
+                backup_dir: "/sdcard/Download/Skyward/FolkPatch/x/backup".into(),
+                kallsyms_all: true,
+            }),
+            0,
+        );
+        let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(hits.contains(&Action::Confirm(Confirm::RootShareKey)), "the copy is offered");
+        // The track is below the fold of a phone's screen, so the swipe it
+        // stands for is made here rather than by touch.
+        assert_eq!(
+            app.confirmed(Confirm::RootShareKey, 1000),
+            vec![Effect::ShareRootKey { run: "/sdcard/Download/Skyward/FolkPatch/x".into(), key }],
+            "beside the manager"
+        );
+        app.root_key_shared(Ok("/sdcard/Download/Skyward/FolkPatch/x/superkey.txt".into()), 1000);
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Confirm(Confirm::RootShareKey)), "kept once");
     }
 
     #[test]

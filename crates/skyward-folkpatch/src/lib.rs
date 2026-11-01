@@ -14,9 +14,13 @@ pub mod key;
 pub use install::install;
 pub use key::{KeyFault, SuperKey};
 
+use anyhow::{Context, Result};
 use skyward_vab::Slot;
 use std::fmt;
-use std::path::PathBuf;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The partition patched, and the only one written. `init_boot`,
 /// `vendor_boot`, `recovery`, the boot-control partitions and super are left
@@ -169,6 +173,43 @@ pub enum Refusal {
     Key(KeyFault),
 }
 
+/// The key of the most recent run whose key is still on this phone, from the
+/// folders only root reads and from copies the user chose to keep beside the
+/// manager.
+///
+/// A stock update replaces the boot image, and with it the hash of the key, so
+/// this is what lets a phone patched again after one keep the key it had.
+pub fn last_key(private: &Path, storage: &Path) -> Option<SuperKey> {
+    let runs = [private.to_path_buf(), storage.join("Download").join("Skyward").join("FolkPatch")];
+    let mut newest: Option<(SystemTime, SuperKey)> = None;
+    for root in runs {
+        let Ok(entries) = fs::read_dir(&root) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path().join("superkey.txt");
+            let Some(written) = fs::metadata(&path).and_then(|m| m.modified()).ok() else { continue };
+            let Ok(text) = fs::read_to_string(&path) else { continue };
+            let Ok(key) = SuperKey::validate(text.trim()) else { continue };
+            // Of two written in the same second the copy beside the manager is
+            // the last of them, the folders being scanned in that order.
+            if newest.as_ref().is_none_or(|(at, _)| written >= *at) {
+                newest = Some((written, key));
+            }
+        }
+    }
+    newest.map(|(_, key)| key)
+}
+
+/// Keep `key` beside the manager in the folder of the run that made it, where
+/// the user can read it in Android — and where any app that can read internal
+/// storage can read it too, which is the whole reason it is not kept there by
+/// itself.
+pub fn share_key(run: &Path, key: &SuperKey) -> Result<PathBuf> {
+    let path = run.join("superkey.txt");
+    fs::write(&path, key.expose()).with_context(|| format!("write {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to reading", path.display()))?;
+    Ok(path)
+}
+
 /// The slots `slots` names, each once, in the order they were named.
 pub fn slots(slots: &[Slot]) -> anyhow::Result<Vec<Slot>> {
     let mut kept: Vec<Slot> = Vec::with_capacity(slots.len());
@@ -203,6 +244,42 @@ mod tests {
         assert_eq!(MANAGER.len(), 17_378_611);
         assert!(MANAGER.starts_with(b"PK"), "the manager is its package");
         assert!(MANAGER_FILE.ends_with(".apk"));
+    }
+
+    #[test]
+    fn the_key_of_the_newest_run_is_the_one_offered_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, storage) = (dir.path().join("private"), dir.path().join("storage"));
+        let run = |root: &Path, stamp: &str, key: &str| {
+            let at = root.join(stamp);
+            fs::create_dir_all(&at).unwrap();
+            fs::write(at.join("superkey.txt"), key).unwrap();
+            at
+        };
+        assert_eq!(last_key(&private, &storage), None, "no run yet");
+        run(&private, "20261101-120000", "older123");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newer = run(&private, "20261101-130000", "newer456");
+        assert_eq!(last_key(&private, &storage).unwrap().expose(), "newer456");
+        // A copy the user kept beside the manager comes later still.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let shared = run(&storage.join("Download/Skyward/FolkPatch"), "20261101-140000", "shared789");
+        assert_eq!(last_key(&private, &storage).unwrap().expose(), "shared789");
+        // A file that is no key at all is passed over.
+        fs::write(newer.join("superkey.txt"), "taken").unwrap();
+        assert_eq!(last_key(&private, &storage).unwrap().expose(), "shared789");
+        let _ = shared;
+    }
+
+    #[test]
+    fn a_key_the_user_keeps_beside_the_manager_can_be_read_by_android() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = SuperKey::validate("abcd1234").unwrap();
+        let path = share_key(dir.path(), &key).unwrap();
+        assert_eq!(path, dir.path().join("superkey.txt"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "abcd1234");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[test]

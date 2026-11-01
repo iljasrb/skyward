@@ -2185,6 +2185,27 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             Err(e) => refused(&mut app, format!("{e:#}")),
                         }
                     }
+                    // The key of the newest run still on this phone, so that
+                    // patching after an update can keep it.
+                    #[cfg(feature = "folkpatch")]
+                    Effect::ReadRootKey => {
+                        let key = skyward_folkpatch::last_key(
+                            Path::new("/data/local/tmp/skyward-folkpatch"),
+                            Path::new(skyward_crypto::data::SDCARD),
+                        );
+                        app.set_root_last_key(key);
+                    }
+                    // A copy beside the manager, which the user asked for and
+                    // was told the cost of.
+                    #[cfg(feature = "folkpatch")]
+                    Effect::ShareRootKey { run, key } => {
+                        let kept = skyward_folkpatch::share_key(&run, &key)
+                            .inspect(|path| {
+                                let _ = skyward_sys::kmsg(&format!("folkpatch: the key is copied to {}", path.display()));
+                            })
+                            .map_err(|e| format!("{e:#}"));
+                        app.root_key_shared(kept, now);
+                    }
                     Effect::Cancel => match &installer {
                         Some(i) => i.cancel()?,
                         // The update the system asked for, waiting on the
