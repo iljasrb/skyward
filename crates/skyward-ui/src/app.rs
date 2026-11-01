@@ -422,6 +422,8 @@ pub enum RootAction {
     KeyMode(KeyMode),
     /// Type a key, on the key page.
     EditKey,
+    /// Keep a copy of the run's key where Android can read it.
+    KeepKey,
 }
 
 /// FolkPatch's root page: the slots it patches, the key it makes the patch
@@ -924,9 +926,9 @@ pub enum Confirm {
     /// Patch the boot partitions FolkPatch's root page chose.
     #[cfg(feature = "folkpatch")]
     RootPatch,
-    /// Keep a copy of the key where Android can read it.
+    /// Leave the run's page, the swipe having said the reading is done.
     #[cfg(feature = "folkpatch")]
-    RootShareKey,
+    RootDone,
     /// Patch an image that carries the patch already, swiped on purpose.
     #[cfg(feature = "folkpatch")]
     RootRepatch,
@@ -5325,6 +5327,16 @@ impl App {
                         root.chosen = true;
                     }
                     RootAction::EditKey => self.open(Screen::RootKey),
+                    // A copy of the key the run made, in the run's own folder.
+                    RootAction::KeepKey => {
+                        if let Some(RootJob::Finished(outcome)) = self.state.root.as_ref().map(|root| root.job.clone()) {
+                            if let skyward_folkpatch::Outcome::Installed(installed) = *outcome {
+                                let run = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.clone(), std::path::Path::to_path_buf);
+                                return vec![Effect::ShareRootKey { run, key: installed.key }];
+                            }
+                        }
+                        return Vec::new();
+                    }
                 }
                 self.refresh();
             }
@@ -6533,17 +6545,10 @@ impl App {
                 self.root_started();
                 fx.push(Effect::Root { pick: root.pick, key, repatch: true });
             }
-            // The copy goes beside the manager, where the user reads it in
-            // Android, and where anything else with storage can read it too.
+            // The run's page is left by a swipe of its own, which says the
+            // reading is done.
             #[cfg(feature = "folkpatch")]
-            Confirm::RootShareKey => {
-                if let Some(RootJob::Finished(outcome)) = self.state.root.as_ref().map(|r| r.job.clone()) {
-                    if let skyward_folkpatch::Outcome::Installed(installed) = *outcome {
-                        let run = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.clone(), std::path::Path::to_path_buf);
-                        fx.push(Effect::ShareRootKey { run, key: installed.key });
-                    }
-                }
-            }
+            Confirm::RootDone => return self.back(now),
             Confirm::DeleteEntry => fx.push(Effect::Delete(self.entry_path())),
             // The partition has to be open; whether its users have unlocked
             // their own files makes no difference.
@@ -11464,8 +11469,8 @@ mod tests {
             2000,
         );
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(hits.contains(&Action::Back), "the page is done");
-        tap_back(&mut app, &f, &i, 3000);
+        assert!(hits.contains(&Action::Confirm(Confirm::RootDone)), "the page is done, and says so with a slider");
+        app.confirmed(Confirm::RootDone, 3000);
         assert_eq!(app.screen(), Screen::Apatch, "and can be left for the page it started from");
         tap_back(&mut app, &f, &i, 3100);
         assert_eq!(app.screen(), Screen::Home, "and that page for the home page");
@@ -11570,16 +11575,17 @@ mod tests {
             0,
         );
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(hits.contains(&Action::Confirm(Confirm::RootShareKey)), "the copy is offered");
-        // The track is below the fold of a phone's screen, so the swipe it
-        // stands for is made here rather than by touch.
+        assert!(hits.contains(&Action::Root(RootAction::KeepKey)), "the copy is offered as a button");
+        assert!(hits.contains(&Action::Confirm(Confirm::RootDone)), "and the way out is the slider");
         assert_eq!(
-            app.confirmed(Confirm::RootShareKey, 1000),
+            app.act(Action::Root(RootAction::KeepKey), 1000),
             vec![Effect::ShareRootKey { run: "/sdcard/Download/Skyward/FolkPatch/x".into(), key }],
-            "beside the manager"
+            "in the run's own folder"
         );
         app.root_key_shared(Ok("/sdcard/Download/Skyward/FolkPatch/x/superkey.txt".into()), 1000);
-        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Confirm(Confirm::RootShareKey)), "kept once");
+        let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(!hits.contains(&Action::Root(RootAction::KeepKey)), "kept once");
+        assert!(app.state.root.as_ref().unwrap().log.iter().any(|line| line.contains("superkey.txt")), "and the log says where");
     }
 
     #[test]

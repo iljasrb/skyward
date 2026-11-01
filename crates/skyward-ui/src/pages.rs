@@ -146,7 +146,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         #[cfg(feature = "folkpatch")]
         Confirm::RootRepatch => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
         #[cfg(feature = "folkpatch")]
-        Confirm::RootShareKey => (["滑动以保存副本", "滑動以儲存副本", "Slide to keep a copy"], true),
+        Confirm::RootDone => (["滑动以完成", "滑動以完成", "Slide when done"], false),
     };
     (s.lang.pick(label), danger)
 }
@@ -3636,7 +3636,7 @@ pub fn unhandled(cx: &Ctx) -> Frame {
 
 
 #[cfg(feature = "folkpatch")]
-const ROOT: Text = ["Root", "Root", "Root"];
+const ROOT: Text = ["Root（beta）", "Root（beta）", "Root (beta)"];
 #[cfg(feature = "folkpatch")]
 const ROOT_SUBTITLE: Text = ["内核补丁与超级密钥", "核心修補與超級金鑰", "Kernel patch and SuperKey"];
 #[cfg(feature = "folkpatch")]
@@ -3816,8 +3816,8 @@ pub fn apatch_job(cx: &Ctx) -> Frame {
     // The foot: a swipe, then the row under it, both there whether they show
     // or not, so nothing above them moves.
     let swipe_h = m.dp(widgets::CONFIRM_H_DP);
-    let done_top = m.h as f32 - m.margin - m.row_h;
-    let swipe_top = done_top - m.card_gap - swipe_h;
+    let done_top = m.h as f32 - m.margin - swipe_h;
+    let copy_top = done_top - m.card_gap - m.row_h;
 
     // The log, under its heading, and the key the run made in a card of its
     // own, under its own heading.
@@ -3826,7 +3826,7 @@ pub fn apatch_job(cx: &Ctx) -> Frame {
         Some(_) => m.section_block + key_card_height(t, f) + m.card_gap,
         None => 0.0,
     };
-    let room = swipe_top - m.card_gap - log_top - key_room;
+    let room = copy_top - m.card_gap - log_top - key_room;
     let y = root_window(&mut c, t, f, log_top, room, &lines);
     if let Some(key) = &key {
         let y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(ROOT_KEY));
@@ -3834,22 +3834,23 @@ pub fn apatch_job(cx: &Ctx) -> Frame {
     }
 
     if let RootJob::Finished(outcome) = &root.job {
-        // An image that carries the patch already stopped the run before it
-        // wrote; swiping again writes it anyway. A run that made a key offers
-        // the copy instead, and one already kept offers neither.
+        // A run that made a key offers to keep a copy of it, once; one that
+        // stopped at an image carrying the patch already offers to write it
+        // again. Either way, the way out is the slider under them.
         let again = matches!(**outcome, skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(_)));
-        let (which, show) = match (&key, root.copied.is_none(), again) {
-            (Some(_), true, _) => (Confirm::RootShareKey, true),
-            (_, _, true) => (Confirm::RootRepatch, true),
-            _ => (Confirm::RootShareKey, false),
-        };
-        if show {
-            let (label, danger) = confirm_label(which, cx.state);
-            let track = widgets::confirm(&mut c, t, f, swipe_top, label, danger, s.confirm);
-            out.push(Hit { rect: track, action: Action::Confirm(which) });
+        if key.is_some() && root.copied.is_none() {
+            let label = l.pick(["保存密钥副本", "儲存金鑰副本", "Keep a copy of the key"]);
+            let button = widgets::button(&mut c, t, f, copy_top, label);
+            out.push(Hit { rect: button, action: Action::Root(crate::app::RootAction::KeepKey) });
+        } else if again {
+            let (label, danger) = confirm_label(Confirm::RootRepatch, cx.state);
+            let track = widgets::confirm(&mut c, t, f, copy_top, label, danger, s.confirm);
+            out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootRepatch) });
         }
-        let done = widgets::list(&mut c, t, f, done_top, &[Row::new(l.pick(DONE)).trail(Trail::None)]);
-        out.extend(hits(&done.rows, &[Action::Back]));
+        // The way out, in the accent the rest of the pages give a plain step.
+        let (label, danger) = confirm_label(Confirm::RootDone, cx.state);
+        let track = widgets::confirm(&mut c, t, f, done_top, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootDone) });
     }
     Frame { back: finished, ..Frame::new(t, c, out, l.pick(APATCH), top) }
 }
