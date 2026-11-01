@@ -70,6 +70,38 @@ falls back to the default instead of failing. `wlan/wpa_supplicant.conf` beside
 it belongs to the supplicant, which writes back the network it joined — the one
 joined last, and it joins it again on the next boot.
 
+## What a restore must not touch
+
+`persist` is left out of the baseband set the backup and restore page takes,
+even though it holds the recovery's own remembered settings: it also holds the
+secure world's non-volatile storage — the keymaster and gatekeeper state the
+screen lock is bound to. Restoring an older copy of it makes the trustlet
+derive a proof the data partition did not record, and the phone's PIN stops
+matching: `GatekeeperHalDevice: resp->status: -30`, `cmd lock_settings verify`
+says `didn't match`, and nothing but a new credential (or a reset) recovers it.
+This happened on hardware once, and once was enough.
+
+### If it has already happened
+
+The screen lock stops matching after such a restore: `GatekeeperHalDevice:
+resp->status: -30`, `cmd lock_settings verify --old …` says `didn't match`. A
+factory reset does **not** fix it, because the stale records are in `persist`,
+which a reset leaves alone. From this recovery's shell (its adbd is root; a
+wiped `/data` takes any root with it):
+
+```sh
+kill $(pidof sec_nvm) $(pidof spdaemon)
+rm -rf /mnt/vendor/persist/secnvm/* /mnt/vendor/persist/iar_db/*
+sync
+```
+
+The SPSS makes them afresh on the next start, and a new credential can be set.
+Only if that is not enough: `/mnt/vendor/persist/data/misc/keystore` (keymaster's
+own store, costs attestation identities), then `secdata` + `secdataBackup`
+(costs Widevine/attestation state). Never the whole `persist` unless you are
+willing to lose the Wi-Fi MAC and the sensors' calibration, and never
+`spss_a`/`spss_b` or `misc`.
+
 ## What this fork changes
 
 - **The ThinkPhone's own fixes**, each one written against the phone: the

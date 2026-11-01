@@ -107,8 +107,16 @@ impl Worker {
                                 ))),
                                 _ => Ok(None),
                             });
-                        if let Ok(Some(r)) = &answer {
-                            let _ = skyward_sys::kmsg(&format!("a newer recovery is published: {} ({})", r.tag, r.published));
+                        match &answer {
+                            Ok(Some(r)) => {
+                                let _ = skyward_sys::kmsg(&format!("a newer recovery is published: {} ({})", r.tag, r.published));
+                            }
+                            Ok(None) => {
+                                let _ = skyward_sys::kmsg(&format!("no recovery is published after this build, {build}"));
+                            }
+                            Err(why) => {
+                                let _ = skyward_sys::kmsg(&format!("the releases of {repo} were not read: {why:?}"));
+                            }
                         }
                         tell(Event::Checked(answer));
                     }

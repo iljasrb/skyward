@@ -447,6 +447,10 @@ pub fn mount(cx: &Ctx) -> Frame {
 /// Who made the recovery, as the About page names them under its version.
 const AUTHOR: &str = "© 2026 Kirk Lin";
 
+/// Whose fork of it this build is, said under the author: a name of its own,
+/// so it is written the same in every language.
+const FORK: &str = "Fork by @iljasrb";
+
 /// About this device, modelled on the stock「我的设备」: the wordmark, the
 /// version and its author over a moving colour field, and the summary,
 /// hardware and link cards scrolling over it. Only the cards are drawn
@@ -464,6 +468,7 @@ pub fn about(cx: &Ctx) -> Frame {
         wordmark: widgets::wordmark(t, f, "Skyward", m.dp(233.7), m.dp(37.8)),
         version: widgets::version_line(t, f, VERSION),
         author: widgets::author_line(t, f, AUTHOR),
+        fork: widgets::fork_line(t, f, FORK),
         runs: canvas.runs(),
     };
     Frame { header: false, hero: Some(art), ..Frame::new(t, canvas, out, cx.state.lang.pick(ABOUT), summary_top) }
@@ -1660,7 +1665,16 @@ pub fn backup(cx: &Ctx) -> Frame {
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
-    let y = widgets::section_first(&mut c, t, f, top, l.pick(["备份内容", "備份內容", "Contents"]));
+    // Said above the choices, not in the notes under them: a backup holds
+    // nothing of the phone's secure storage, so the time to take one is
+    // while no screen lock is set.
+    let sound = l.pick([
+        "请在没有设置锁屏密码时进行备份，这样还原时手机才不会无法解锁。",
+        "請在沒有設定螢幕鎖定密碼時進行備份，這樣還原時手機才不會無法解鎖。",
+        "Make the backup with no screen lock set, so that restoring it cannot leave the phone locked out.",
+    ]);
+    let y = widgets::warning(&mut c, t, f, top, sound) + t.m.dp(12.0);
+    let y = widgets::section_first(&mut c, t, f, y, l.pick(["备份内容", "備份內容", "Contents"]));
     let system = fmt::snapshot_backup_note(l, &i.snapshot).unwrap_or(l.pick(["当前槽位在 super 中的分区", "目前槽位在 super 中的分割區", "The current slot's partitions in super"]));
     let data = l.pick(match s.data == Data::Open {
         true => ["应用、账户和设置，不包括内部存储、锁屏密码和指纹", "應用程式、帳戶和設定，不包括內部儲存空間、螢幕鎖定密碼和指紋", "Apps, accounts and settings, without internal storage, the screen lock or fingerprints"],

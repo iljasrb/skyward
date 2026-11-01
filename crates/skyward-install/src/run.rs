@@ -277,9 +277,17 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
     };
     let mount = mounted.serve(conn);
     let done = install(ctx, &mount, offer.size).unwrap_or_else(Done::Error);
+    // A package that installs itself reads only the parts its script wants,
+    // so the computer is still sending the rest, and it gives up on a stream
+    // that stays quiet while the script works -- the end of such a transfer
+    // then waits for an answer that never comes, and the port is never handed
+    // back to adb. A computer that is gone is told nothing.
+    let script = matches!(done, Done::Script { .. });
     let (mut conn, served) = mount.unmount();
     let outcome = conclude(done, served, ctx.origin);
-    finish(&mut conn, ending(&outcome));
+    if !script {
+        finish(&mut conn, ending(&outcome));
+    }
     (outcome, conn)
 }
 
