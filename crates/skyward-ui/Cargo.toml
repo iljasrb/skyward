@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# The Root page and the FolkPatch installer it asks for.
+folkpatch = ["dep:skyward-folkpatch"]
+
 [dependencies]
 anyhow = { workspace = true }
 ab_glyph = "0.2.32"
@@ -14,6 +19,7 @@ icu_locale_core = { version = "2.4.0", features = ["alloc"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
 # Screenshots are saved as PNG.
 png = "0.17.16"
+skyward-folkpatch = { path = "../skyward-folkpatch", optional = true }
 skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-net = { path = "../skyward-net" }

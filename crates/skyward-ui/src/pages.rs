@@ -105,6 +105,14 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::WlanPassword => wlan_password(cx),
         Screen::WlanNetwork => wlan_network(cx),
         Screen::WlanAdd => wlan_add(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::Root => root(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::Apatch => apatch(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::ApatchJob => apatch_job(cx),
+        #[cfg(feature = "folkpatch")]
+        Screen::RootKey => root_key(cx),
     }
 }
 
@@ -130,6 +138,15 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::RunScript => (INSTALL, true),
         Confirm::Merge => (["滑动以合并", "滑動以合併", "Slide to merge"], true),
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
+        #[cfg(feature = "folkpatch")]
+        Confirm::RootPatch => match s.root.as_ref().is_some_and(|root| root.patched) {
+            true => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
+            false => (["滑动以安装 KernelPatch", "滑動以安裝 KernelPatch", "Slide to install KernelPatch"], true),
+        },
+        #[cfg(feature = "folkpatch")]
+        Confirm::RootRepatch => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
+        #[cfg(feature = "folkpatch")]
+        Confirm::RootDone => (["滑动以完成", "滑動以完成", "Slide when done"], false),
     };
     (s.lang.pick(label), danger)
 }
@@ -270,6 +287,12 @@ pub fn home(cx: &Ctx) -> Frame {
         Action::Open(Screen::Decrypt),
     ]));
     y = tools.bottom + t.m.card_gap;
+    #[cfg(feature = "folkpatch")]
+    {
+        let root = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(ROOT)).icon(GREEN, Icon::Shield)]);
+        out.extend(hits(&root.rows, &[Action::Open(Screen::Root)]));
+        y = root.bottom + t.m.card_gap;
+    }
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["清除数据", "清除資料", "Wipe data"])).icon(RED, Icon::Wipe),
@@ -3566,6 +3589,559 @@ pub fn unhandled(cx: &Ctx) -> Frame {
     Frame { back: false, ..Frame::new(t, c, out, l.pick(["无法处理该请求", "無法處理這項要求", "Can't handle the request"]), top) }
 }
 
+
+#[cfg(feature = "folkpatch")]
+const ROOT: Text = ["Root（beta）", "Root（beta）", "Root (beta)"];
+#[cfg(feature = "folkpatch")]
+const ROOT_SUBTITLE: Text = ["内核补丁与超级密钥", "核心修補與超級金鑰", "Kernel patch and SuperKey"];
+#[cfg(feature = "folkpatch")]
+const BUNDLED: Text = ["内置的补丁工具", "內建的修補工具", "Bundled"];
+#[cfg(feature = "folkpatch")]
+const FOLKPATCH_BUILD: Text = ["FolkPatch 构建", "FolkPatch 建置", "FolkPatch build"];
+#[cfg(feature = "folkpatch")]
+const APATCH: Text = ["KernelPatch（FolkPatch）", "KernelPatch（FolkPatch）", "KernelPatch (FolkPatch)"];
+#[cfg(feature = "folkpatch")]
+const ROOT_SLOTS: Text = ["分区", "分割區", "Partitions"];
+#[cfg(feature = "folkpatch")]
+const ROOT_KEY: Text = ["密钥", "金鑰", "Key"];
+#[cfg(feature = "folkpatch")]
+const LOG: Text = ["日志", "記錄", "Log"];
+#[cfg(feature = "folkpatch")]
+const ROOT_KEY_TITLE: Text = ["超级密钥", "超級金鑰", "SuperKey"];
+#[cfg(feature = "folkpatch")]
+const ROOT_TYPED: Text = ["已输入", "已輸入", "Set"];
+#[cfg(feature = "folkpatch")]
+const ROOT_NOT_TYPED: Text = ["未输入", "未輸入", "Not set"];
+#[cfg(feature = "folkpatch")]
+const ROOT_NEW: Text = ["运行时生成", "執行時產生", "Made when it runs"];
+#[cfg(feature = "folkpatch")]
+const ROOT_LAST: Text = ["沿用上次的", "沿用上次的", "The last run's"];
+
+/// Root: what this recovery can do to the boot image, one page to each way of
+/// doing it. APatch, patched in by FolkPatch, is the one there is.
+#[cfg(feature = "folkpatch")]
+pub fn root(cx: &Ctx) -> Frame {
+    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    // What this page holds: the root methods this build carries, not ones
+    // that have to be flashed from somewhere else.
+    let y = widgets::footnote(&mut c, t, f, top, l.pick([
+        "以下是编入这个恢复模式构建中的 root 方式。",
+        "以下是編入這個復原模式建置中的 root 方式。",
+        "These are the root methods built into this recovery.",
+    ]));
+    let ways = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(APATCH)).subtitle(l.pick(ROOT_SUBTITLE))]);
+    out.extend(hits(&ways.rows, &[Action::Open(Screen::Apatch)]));
+    Frame::new(t, c, out, l.pick(ROOT), top)
+}
+
+/// APatch's own page: the slots, the key and the superkey card, what the page
+/// found when it opened, and a swipe to start. The run itself is a page of its
+/// own, so none of this stays under it.
+#[cfg(feature = "folkpatch")]
+pub fn apatch(cx: &Ctx) -> Frame {
+    use crate::app::{KeyMode, RootAction};
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let root = s.root.clone().unwrap_or_default();
+
+    // What this recovery patches with, first: the release as FolkPatch builds
+    // it, with the hashes of both tools under it, so they can be checked.
+    let short = |hash: &str| hash.chars().take(16).collect::<String>();
+    let bundled = format!(
+        "KernelPatch {} ({})\nkptools {}\nkpimg {}",
+        skyward_folkpatch::KPIMG_VERSION,
+        l.pick(FOLKPATCH_BUILD),
+        short(skyward_folkpatch::KPTOOLS_SHA256),
+        short(skyward_folkpatch::KPIMG_SHA256)
+    );
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(BUNDLED));
+    let y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["版本", "版本", "Version"]), bundled)]);
+
+    // The slots: the one the phone starts from, the other, or both.
+    let mut y = widgets::section(&mut c, t, f, y, l.pick(ROOT_SLOTS));
+    let titles = Pick::ALL.map(|pick| pick_title(l, pick, cx.info.slot));
+    let picks: Vec<Row> = Pick::ALL
+        .iter()
+        .zip(&titles)
+        .map(|(pick, title)| Row::new(title).trail(Trail::Check(*pick == root.pick)))
+        .collect();
+    let slots = widgets::list(&mut c, t, f, y, &picks);
+    out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Root(RootAction::Pick(pick)))));
+
+    // The key: one of three ways to come by it.
+    y = widgets::section(&mut c, t, f, slots.bottom, l.pick(ROOT_KEY));
+    let last = root.last.is_some();
+    let ways: [(&'static str, bool); 3] = [
+        (l.pick(["生成密钥", "產生金鑰", "Generate a key"]), true),
+        (l.pick(["输入密钥", "輸入金鑰", "Enter a key"]), true),
+        (l.pick(["沿用上次的密钥", "沿用上次的金鑰", "Use the last key"]), last),
+    ];
+    let modes: Vec<Row> = ways
+        .iter()
+        .zip([KeyMode::Generate, KeyMode::Enter, KeyMode::Last])
+        .map(|((title, applies), mode)| {
+            let row = Row::new(title).trail(Trail::Check(root.key_mode == mode));
+            match applies {
+                true => row,
+                false => row.tint(t.pal.subtitle),
+            }
+        })
+        .collect();
+    let ways = widgets::list(&mut c, t, f, y, &modes);
+    let mut acts = vec![
+        Action::Root(RootAction::KeyMode(KeyMode::Generate)),
+        Action::Root(RootAction::KeyMode(KeyMode::Enter)),
+        Action::Root(RootAction::KeyMode(KeyMode::Last)),
+    ];
+    // A key of one's own is typed on the key page once it is chosen.
+    if root.key_mode == KeyMode::Enter {
+        acts[1] = Action::Root(RootAction::EditKey);
+    }
+    let applies = [true, true, last];
+    let rows: Vec<Rect> = ways.rows.iter().zip(applies).filter(|(_, on)| *on).map(|(r, _)| *r).collect();
+    let acts: Vec<Action> = acts.into_iter().zip(applies).filter(|(_, on)| *on).map(|(a, _)| a).collect();
+    out.extend(hits(&rows, &acts));
+
+    // The superkey card, on its own under the ways to come by one: the key as
+    // it stands, dim while it is not one being typed, and it opens the page
+    // that shows it and, with typing chosen, takes it.
+    let held = match root.key_mode {
+        KeyMode::Enter => l.pick(if root.entered.is_empty() { ROOT_NOT_TYPED } else { ROOT_TYPED }).to_string(),
+        KeyMode::Last => l.pick(ROOT_LAST).to_string(),
+        KeyMode::Generate => l.pick(ROOT_NEW).to_string(),
+    };
+    let card = Row::new(l.pick(ROOT_KEY_TITLE)).trail(Trail::Value(&held));
+    let card = match root.key_mode {
+        KeyMode::Enter => card,
+        _ => card.tint(t.pal.subtitle),
+    };
+    let key_card = widgets::list(&mut c, t, f, ways.bottom + m.card_gap, &[card]);
+    out.extend(hits(&key_card.rows, &[Action::Root(RootAction::EditKey)]));
+
+    // What the page found when it opened: what stands in the way, or that
+    // nothing does, and whether the image carries the patch already.
+    let mut y = key_card.bottom;
+    for note in root_notes(l, cx, &root) {
+        y = widgets::footnote(&mut c, t, f, y, &note);
+    }
+
+    if ready_to_root(cx) {
+        let (label, danger) = confirm_label(Confirm::RootPatch, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + m.card_gap, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootPatch) });
+        y = track.y + track.h;
+    }
+
+    Frame::new(t, fit(c, t, y), out, l.pick(APATCH), top)
+}
+
+/// The run's own page: its log, the key it made once it has ended, and the
+/// swipe that ends it. Nothing of the page it was started from, and no card
+/// over the log.
+#[cfg(feature = "folkpatch")]
+pub fn apatch_job(cx: &Ctx) -> Frame {
+    use crate::app::RootJob;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let root = s.root.clone().unwrap_or_default();
+    let finished = matches!(root.job, RootJob::Finished(_));
+
+    // The log is what the run printed; once it has ended, how it ended and
+    // what it left behind are its last lines.
+    let (lines, key) = match &root.job {
+        RootJob::Finished(outcome) => {
+            let (summary, key, notes) = root_result(l, outcome);
+            let mut lines = root.log.clone();
+            lines.push(summary);
+            lines.extend(notes);
+            (lines, key)
+        }
+        _ => (root.log.clone(), None),
+    };
+
+    // The foot: a swipe, then the row under it, both there whether they show
+    // or not, so nothing above them moves.
+    let swipe_h = m.dp(widgets::CONFIRM_H_DP);
+    let done_top = m.h as f32 - m.margin - swipe_h;
+    let copy_top = done_top - m.card_gap - m.row_h;
+
+    // The log, under its heading, and the key the run made in a card of its
+    // own, under its own heading.
+    let log_top = widgets::section_first(&mut c, t, f, top, l.pick(LOG));
+    let key_room = match &key {
+        Some(_) => m.section_block + key_card_height(t, f) + m.card_gap,
+        None => 0.0,
+    };
+    let room = copy_top - m.card_gap - log_top - key_room;
+    let y = root_window(&mut c, t, f, log_top, room, &lines);
+    if let Some(key) = &key {
+        let y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(ROOT_KEY));
+        key_card(&mut c, t, f, y, key);
+    }
+
+    if let RootJob::Finished(outcome) = &root.job {
+        // A run that made a key offers to keep a copy of it, once; one that
+        // stopped at an image carrying the patch already offers to write it
+        // again. Either way, the way out is the slider under them.
+        let again = matches!(**outcome, skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(_)));
+        if key.is_some() && root.copied.is_none() {
+            let label = l.pick(["保存密钥副本", "儲存金鑰副本", "Keep a copy of the key"]);
+            let button = widgets::button(&mut c, t, f, copy_top, label);
+            out.push(Hit { rect: button, action: Action::Root(crate::app::RootAction::KeepKey) });
+        } else if again {
+            let (label, danger) = confirm_label(Confirm::RootRepatch, cx.state);
+            let track = widgets::confirm(&mut c, t, f, copy_top, label, danger, s.confirm);
+            out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootRepatch) });
+        }
+        // The way out, in the accent the rest of the pages give a plain step.
+        let (label, danger) = confirm_label(Confirm::RootDone, cx.state);
+        let track = widgets::confirm(&mut c, t, f, done_top, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootDone) });
+    }
+    Frame { back: finished, ..Frame::new(t, c, out, l.pick(APATCH), top) }
+}
+
+/// How tall the card that holds a key is.
+#[cfg(feature = "folkpatch")]
+fn key_card_height(t: &Theme, f: &Fonts) -> f32 {
+    let (top, bottom) = f.mono.ink(t.m.dp(20.0));
+    (bottom - top) + t.m.dp(40.0)
+}
+
+/// The key a run made, in a card of its own.
+#[cfg(feature = "folkpatch")]
+fn key_card(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
+    let m = &t.m;
+    let h = key_card_height(t, f);
+    c.fill_round_rect(m.margin, y, m.w as f32 - 2.0 * m.margin, h, m.card_radius, t.pal.card);
+    key_line(c, t, f, y + m.dp(20.0), key);
+    y + h
+}
+
+/// A key on a line of its own, in the face whose characters are all one width,
+/// large enough to read off the screen and type back.
+#[cfg(feature = "folkpatch")]
+fn key_line(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
+    let m = &t.m;
+    let px = m.dp(20.0);
+    let (top, bottom) = f.mono.ink(px);
+    c.text_top(&f.mono, key, m.margin + m.inner, y, px, t.pal.text, None);
+    y + bottom - top
+}
+
+/// Whether nothing stands between the page and a run: a slot to write, the
+/// owner's storage for the backups, and charge enough to write it.
+#[cfg(feature = "folkpatch")]
+fn ready_to_root(cx: &Ctx) -> bool {
+    let enough_charge = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal).is_none();
+    cx.info.slot.is_some() && cx.state.data.storage_open() && enough_charge
+}
+
+/// What the page says in its window before a run: what stands in the way, or
+/// that nothing does.
+#[cfg(feature = "folkpatch")]
+fn root_notes(l: Lang, cx: &Ctx, root: &crate::app::RootState) -> Vec<String> {
+    let mut notes = Vec::new();
+    // An image that carries the patch already stops a run before it writes;
+    // it is said here, where the page knows it, not asked about.
+    if root.patched {
+        let slot = cx.info.slot.map(|s| s.letter()).unwrap_or_default();
+        notes.push(tr!(
+            l,
+            "槽位 {slot} 的镜像已打过补丁。",
+            "槽位 {slot} 的映像已打過修補。",
+            "Slot {slot}'s image carries the patch already."
+        ));
+    }
+    if cx.info.slot.is_none() {
+        notes.push(l.pick(["这台手机只有一个槽位，没有可写入的 boot 分区。", "這台手機只有一個槽位，沒有可寫入的 boot 分割區。", "This phone has one slot, so there are no boot partitions to write."]).to_string());
+    }
+    if !cx.state.data.storage_open() {
+        notes.push(l.pick(["需先在「解密」中打开 data 分区：备份要保存到内部存储。", "需先在「解密」中開啟 data 分割區：備份要儲存到內部儲存空間。", "Open the data partition in Decrypt first: the backups are saved to internal storage."]).to_string());
+    }
+    if let Some(skyward_install::Refusal::Battery { level, .. }) = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal) {
+        notes.push(tr!(l, "电量仅剩 {level}%：充电后再试。", "電量僅剩 {level}%：充電後再試。", "Only {level}% charge: charge the phone first."));
+    } else if cx.info.slot.is_some() && cx.state.data.storage_open() {
+        let slot = cx.info.slot.map(|s| s.letter()).unwrap_or_default();
+        notes.push(tr!(l, "可以开始：写入槽位 {slot} 前，会先备份它的 boot 分区。", "可以開始：寫入槽位 {slot} 前，會先備份它的 boot 分割區。", "Ready: slot {slot}'s boot partition is backed up before it is written."));
+    }
+    if cx.info.snapshot != skyward_vab::SnapshotState::None {
+        notes.push(l.pick(["有更新尚未合并：补丁可能在更新完成前被覆盖。", "有更新尚未合併：修補可能在更新完成前被覆寫。", "An update is still in flight: the patch may be overwritten before it finishes."]).to_string());
+    }
+    notes.push(l.pick([
+        "补丁绕过系统自身的校验：写入失败可能让手机无法启动。",
+        "修補繞過系統自身的檢查：寫入失敗可能讓手機無法啟動。",
+        "The patch bypasses the system's own checks: a failed write can leave the phone unable to start.",
+    ]).to_string());
+    notes
+}
+
+/// The run's lines in a window that keeps the room it is given, so that it is
+/// the same window from the first line to the last: the newest at its foot,
+/// older ones falling off the top, wrapped rather than cut.
+#[cfg(feature = "folkpatch")]
+fn root_window(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, room: f32, lines: &[String]) -> f32 {
+    let m = &t.m;
+    let (pitch, pad) = (m.dp(widgets::OUTPUT_PITCH_DP), m.dp(widgets::OUTPUT_TOP_DP));
+    let x = m.margin;
+    let width = m.w as f32 - m.margin * 2.0;
+    let h = room.max(pad * 2.0 + pitch * 3.0);
+    c.fill_round_rect(x, top, width, h, m.card_radius, t.pal.card);
+    let text_width = width - 2.0 * m.inner;
+    let mut wrapped: Vec<String> = lines.iter().flat_map(|line| widgets::wrap(c, &f.mono, line, m.sub_px, text_width)).collect();
+    let fits = ((h - 2.0 * pad) / pitch).floor().max(1.0) as usize;
+    if wrapped.len() > fits {
+        wrapped.drain(..wrapped.len() - fits);
+    }
+    let mut foot = top + h - pad;
+    for line in wrapped.iter().rev() {
+        foot -= pitch;
+        c.text_top(&f.mono, line, x + m.inner, foot, m.sub_px, t.pal.subtitle, None);
+    }
+    top + h
+}
+
+/// The superkey page: the key typed on the screen's keyboard once that is the
+/// key chosen, and otherwise the key this run stands to use, to look at. The
+/// key an earlier run made is here in both, under the field.
+#[cfg(feature = "folkpatch")]
+pub fn root_key(cx: &Ctx) -> Frame {
+    use crate::app::KeyMode;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let root = s.root.clone().unwrap_or_default();
+    let title = l.pick(ROOT_KEY_TITLE);
+    let last = root.last.as_ref().map(|key| key.expose().to_string());
+    if root.key_mode == KeyMode::Enter {
+        let (y, caret) = widgets::text_field(&mut c, t, f, top, &root.entered);
+        let y = widgets::footnote(&mut c, t, f, y, l.pick([
+            "8 至 63 位字母与数字，至少各含一个。点「完成」保存。",
+            "8 至 63 位字母與數字，至少各含一個。點「完成」儲存。",
+            "8 to 63 letters and digits, at least one of each. Tap Done to keep it.",
+        ]));
+        if let Some(key) = &last {
+            let caption = l.pick(["上次的密钥", "上次的金鑰", "The key from the last run"]);
+            let y = widgets::footnote(&mut c, t, f, y, caption);
+            key_line(&mut c, t, f, y + t.m.dp(4.0), key);
+        }
+        keyboard_hits(&mut c, t, f, s, title_label(l), &mut out);
+        return Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) };
+    }
+    // Not the key being typed: the key the run would use is here to read.
+    // Which key that is, is chosen on the page this one comes from.
+    let y = widgets::footnote(&mut c, t, f, top, l.pick(["这次运行使用的密钥", "這次執行使用的金鑰", "The key this run would use"]));
+    match (&root.key_mode, &last) {
+        (KeyMode::Last, Some(key)) => {
+            key_line(&mut c, t, f, y + t.m.dp(4.0), key);
+        }
+        _ => {
+            widgets::footnote(&mut c, t, f, y, l.pick(["运行时生成，现在还没有。", "執行時產生，現在還沒有。", "It is made when the run starts, so there is none yet."]));
+        }
+    }
+    Frame::new(t, c, out, title, top)
+}
+
+/// What the key page's keyboard says on its last key.
+#[cfg(feature = "folkpatch")]
+fn title_label(l: Lang) -> &'static str {
+    l.pick(DONE)
+}
+
+/// The heading and the line under it a run's stage says, on its card.
+#[cfg(feature = "folkpatch")]
+pub(crate) fn root_stage(l: Lang, stage: Option<&skyward_folkpatch::Stage>) -> (String, String) {
+    use skyward_folkpatch::Stage;
+    let bytes = |done: u64, total: u64| tr!(l, "{done} / {total} 字节", "{done} / {total} 位元組", "{done} of {total} bytes");
+    match stage {
+        None => (l.pick(["正在准备", "正在準備", "Getting ready"]).into(), String::new()),
+        Some(Stage::Checking) => (l.pick(["正在检查", "正在檢查", "Checking"]).into(), String::new()),
+        Some(Stage::BackingUp { slot, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(
+                    l,
+                    "正在备份槽位 {slot} 的 boot 分区",
+                    "正在備份槽位 {slot} 的 boot 分割區",
+                    "Saving slot {slot}'s boot partition"
+                ),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::Patching { slot }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在为槽位 {slot} 打补丁", "正在為槽位 {slot} 打修補", "Patching slot {slot}"), String::new())
+        }
+        Some(Stage::Verifying { slot }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在校验槽位 {slot} 的补丁", "正在校驗槽位 {slot} 的修補", "Checking slot {slot}'s patch"), String::new())
+        }
+        Some(Stage::Flashing { slot, done, total }) => {
+            let slot = slot.letter();
+            (tr!(l, "正在写入槽位 {slot}", "正在寫入槽位 {slot}", "Writing slot {slot}"), bytes(*done, *total))
+        }
+    }
+}
+
+/// How a run ended: the line the window ends with, the key it made where it
+/// made one, and what else the page has to say.
+#[cfg(feature = "folkpatch")]
+fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (String, Option<String>, Vec<String>) {
+    match outcome {
+        skyward_folkpatch::Outcome::Installed(installed) => {
+            let slots: Vec<&str> = installed.slots.iter().map(|s| s.letter()).collect();
+            let slots = slots.join(", ");
+            let folder = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.display().to_string(), |p| p.display().to_string());
+            let mut notes = vec![tr!(
+                l,
+                "写入前的 boot 镜像在 {folder} 的 backup 文件夹。",
+                "寫入前的 boot 映像檔在 {folder} 的 backup 資料夾。",
+                "The boot image from before the write is in {folder}, in its backup folder."
+            )];
+            if !installed.kallsyms_all {
+                notes.push(
+                    l.pick([
+                        "内核未启用 CONFIG_KALLSYMS_ALL：部分功能可能不可用，无法启动时用备份恢复。",
+                        "核心未啟用 CONFIG_KALLSYMS_ALL：部分功能可能無法使用，無法啟動時用備份還原。",
+                        "The kernel has no CONFIG_KALLSYMS_ALL: some of what root runs may not work. Restore the backup if it does not start.",
+                    ])
+                    .to_string(),
+                );
+            }
+            let summary = tr!(
+                l,
+                "KernelPatch 已安装：槽位 {slots} 已写入补丁。",
+                "KernelPatch 已安裝：槽位 {slots} 已寫入修補。",
+                "KernelPatch installed: slot {slots} is patched."
+            );
+            (summary, Some(installed.key.expose().to_string()), notes)
+        }
+        skyward_folkpatch::Outcome::Refused(refusal) => {
+            let why = root_refusal(l, refusal);
+            let summary = tr!(l, "未安装：{why}", "未安裝：{why}", "Not installed: {why}");
+            let nothing = l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string();
+            (summary, None, vec![nothing])
+        }
+        skyward_folkpatch::Outcome::Failed(failure) => {
+            let (heading, _) = root_stage(l, Some(&failure.stage));
+            let why = &failure.why;
+            let mut notes = Vec::new();
+            if !failure.written.is_empty() {
+                let slots: Vec<&str> = failure.written.iter().map(|s| s.letter()).collect();
+                let slots = slots.join(", ");
+                notes.push(tr!(
+                    l,
+                    "槽位 {slots} 可能已部分写入，请勿重启到该槽位。",
+                    "槽位 {slots} 可能已部分寫入，請勿重新啟動到該槽位。",
+                    "Slot {slots} may be partly written: don't start it."
+                ));
+            }
+            for copy in &failure.backups {
+                let path = copy.path.display().to_string();
+                let boot = format!("boot{}", copy.slot.suffix());
+                notes.push(tr!(
+                    l,
+                    "在电脑上：fastboot flash {boot} {path}",
+                    "在電腦上：fastboot flash {boot} {path}",
+                    "From a computer: fastboot flash {boot} {path}"
+                ));
+            }
+            let summary = tr!(
+                l,
+                "未安装：在「{heading}」时失败：{why}",
+                "未安裝：在「{heading}」時失敗：{why}",
+                "Not installed: failed while {heading}: {why}"
+            );
+            (summary, None, notes)
+        }
+    }
+}
+
+/// Why a run did not start, or stopped before writing, in the user's words.
+#[cfg(feature = "folkpatch")]
+fn root_refusal(l: Lang, refusal: &skyward_folkpatch::Refusal) -> String {
+    use skyward_folkpatch::Refusal;
+    match refusal {
+        Refusal::NoSlot => l
+            .pick(["这台手机没有可写入的 A/B 槽位。", "這台手機沒有可寫入的 A/B 槽位。", "This phone has no A/B slot to write."])
+            .into(),
+        Refusal::Missing(s) => {
+            let slot = s.letter();
+            tr!(l, "找不到槽位 {slot} 的 boot 分区。", "找不到槽位 {slot} 的 boot 分割區。", "Slot {slot} has no boot partition.")
+        }
+        Refusal::NotAarch64 => l
+            .pick(["这台手机的架构不受支持。", "這台手機的架構不受支援。", "This phone's architecture isn't supported."])
+            .into(),
+        Refusal::Battery { level, .. } => tr!(l, "电量仅剩 {level}%。", "電量僅剩 {level}%。", "Only {level}% charge."),
+        Refusal::NotBootImage(s) => {
+            let slot = s.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 boot 分区不是可打补丁的启动镜像。",
+                "槽位 {slot} 的 boot 分割區不是可打修補的啟動映像。",
+                "Slot {slot}'s boot partition isn't a boot image that can be patched."
+            )
+        }
+        Refusal::RecoveryRamdisk(s) => {
+            let slot = s.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 boot 分区里是恢复模式的 ramdisk。",
+                "槽位 {slot} 的 boot 分割區裡是復原模式的 ramdisk。",
+                "Slot {slot}'s boot partition holds a recovery's ramdisk."
+            )
+        }
+        Refusal::AlreadyPatched(s) => {
+            let slot = s.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的镜像已打过补丁：换一个槽位，或先用备份恢复该槽位。",
+                "槽位 {slot} 的映像已打過修補：換一個槽位，或先用備份還原該槽位。",
+                "Slot {slot}'s image is patched already: choose another slot, or restore that slot from the backup first."
+            )
+        }
+        Refusal::NoKallsyms => l
+            .pick([
+                "内核未启用 CONFIG_KALLSYMS，FolkPatch 无法工作。",
+                "核心未啟用 CONFIG_KALLSYMS，FolkPatch 無法運作。",
+                "The kernel has no CONFIG_KALLSYMS, which FolkPatch needs.",
+            ])
+            .into(),
+        Refusal::NoTools(what) => {
+            let what = what.clone();
+            tr!(l, "恢复模式缺少{what}。", "復原模式缺少{what}。", "The recovery has no {what}.")
+        }
+        Refusal::StorageClosed => l
+            .pick([
+                "内部存储未打开，管理器与密钥无处保存。",
+                "內部儲存空間未開啟，管理器與金鑰無處儲存。",
+                "Internal storage is closed, so the manager and the key have nowhere to go.",
+            ])
+            .into(),
+        Refusal::NoRoom { need, have } => {
+            let need = fmt::bytes(*need);
+            let have = fmt::bytes(*have);
+            tr!(
+                l,
+                "空间不足：需要 {need}，可用 {have}。",
+                "空間不足：需要 {need}，可用 {have}。",
+                "Not enough room: it needs {need} and has {have}."
+            )
+        }
+        Refusal::Key(fault) => fault.why().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3642,5 +4218,49 @@ mod tests {
     fn a_phrase_that_opens_a_line_starts_with_a_capital_in_english() {
         assert_eq!(capitalized(Lang::En, "empties the data partition"), "Empties the data partition");
         assert_eq!(capitalized(Lang::Hans, "清空 data 分区"), "清空 data 分区");
+    }
+
+    #[cfg(feature = "folkpatch")]
+    #[test]
+    fn a_root_run_that_installed_says_the_key_and_where_the_manager_went() {
+        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
+        let outcome = skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+            slots: vec![skyward_vab::Slot::A],
+            key: key.clone(),
+            key_path: "/data/local/tmp/skyward-folkpatch/1120/superkey.txt".into(),
+            backup_dir: "/sdcard/Download/Skyward/FolkPatch/1120/backup".into(),
+            kallsyms_all: true,
+        });
+        let (summary, key_line, notes) = root_result(Lang::En, &outcome);
+        let text = notes.join("\n");
+        assert_eq!(summary, "KernelPatch installed: slot A is patched.");
+        assert_eq!(key_line.as_deref(), Some(key.expose()), "the key has a line of its own");
+        assert!(text.contains("/sdcard/Download/Skyward/FolkPatch/1120"), "{text}");
+        assert!(!text.contains("KALLSYMS_ALL"), "a kernel with every symbol has nothing to warn of");
+    }
+
+    #[cfg(feature = "folkpatch")]
+    #[test]
+    fn a_root_run_that_stopped_says_what_may_be_written_and_how_to_put_it_back() {
+        let outcome = skyward_folkpatch::Outcome::Failed(skyward_folkpatch::Failure {
+            stage: skyward_folkpatch::Stage::Flashing { slot: skyward_vab::Slot::A, done: 0, total: 0 },
+            slot: Some(skyward_vab::Slot::A),
+            why: "no space left on device".into(),
+            backups: vec![skyward_folkpatch::backup::Backup {
+                slot: skyward_vab::Slot::A,
+                path: "/sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img".into(),
+                size: 96 << 20,
+                sha256: "00".into(),
+            }],
+            written: vec![skyward_vab::Slot::A],
+            key_path: None,
+        });
+        let (summary, key_line, notes) = root_result(Lang::En, &outcome);
+        let text = notes.join("\n");
+        assert!(summary.starts_with("Not installed:"), "{summary}");
+        assert!(summary.contains("no space left on device"), "{summary}");
+        assert!(key_line.is_none(), "a run that stopped made no key to show");
+        assert!(text.contains("don't start it"), "{text}");
+        assert!(text.contains("fastboot flash boot_a /sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img"), "{text}");
     }
 }

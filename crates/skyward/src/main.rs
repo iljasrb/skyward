@@ -27,6 +27,8 @@ mod pty;
 mod readings;
 #[cfg(target_os = "android")]
 mod relabel;
+#[cfg(all(feature = "folkpatch", target_os = "android"))]
+mod root;
 #[cfg(target_os = "android")]
 mod secure;
 #[cfg(target_os = "android")]

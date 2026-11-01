@@ -8,6 +8,12 @@ license.workspace = true
 name = "skyward"
 path = "src/main.rs"
 
+[features]
+default = []
+# FolkPatch's root installer: the Root page, the pinned tools and manager it
+# carries, and the worker that writes the patched boot.
+folkpatch = ["dep:skyward-folkpatch", "skyward-ui/folkpatch"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4.5.51", features = ["derive"] }
@@ -19,6 +25,8 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
+# FolkPatch's root installer, on a build that carries it.
+skyward-folkpatch = { path = "../skyward-folkpatch", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 evdev = "0.13.2"

@@ -59,6 +59,13 @@ pub const ENTRIES: &[Entry] = &[
         Screen::Update,
         &["xitonggengxin", "xtgx", "hebing", "hb", "xiazai", "xz", "wanzhenggengxinbao", "wzgxb", "update", "ota", "merge", "snapshot", "download"],
     ),
+    #[cfg(feature = "folkpatch")]
+    entry(
+        ["KernelPatch（FolkPatch）", "KernelPatch（FolkPatch）", "KernelPatch (FolkPatch)"],
+        HOME,
+        Screen::Apatch,
+        &["root", "folkpatch", "apatch", "kpatch", "kernelpatch", "tiquan", "superkey"],
+    ),
     entry(SETTINGS, HOME, Screen::Settings, &["shezhi", "sz", "settings"]),
     entry(["深色模式", "深色模式", "Dark mode"], SETTINGS, Screen::Settings, &["shensemoshi", "ssms", "dark", "theme"]),
     entry(["屏幕亮度", "螢幕亮度", "Screen brightness"], SETTINGS, Screen::Settings, &["pingmuliangdu", "pmld", "liangdu", "ld", "brightness"]),

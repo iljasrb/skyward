@@ -2251,6 +2251,7 @@ dependencies = [
  "skyward-config",
  "skyward-crypto",
  "skyward-files",
+ "skyward-folkpatch",
  "skyward-info",
  "skyward-install",
  "skyward-lp",
@@ -2327,6 +2328,20 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "libc",
+]
+
+[[package]]
+name = "skyward-folkpatch"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "libc",
+ "sha2 0.10.9",
+ "skyward-info",
+ "skyward-install",
+ "skyward-vab",
+ "tempfile",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -2473,6 +2488,7 @@ dependencies = [
  "libc",
  "png",
  "proc-macro2",
+ "skyward-folkpatch",
  "skyward-info",
  "skyward-install",
  "skyward-net",
