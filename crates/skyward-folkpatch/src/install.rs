@@ -231,10 +231,11 @@ impl<'a> Run<'a> {
         if !fs::metadata(storage).map(|m| m.is_dir()).unwrap_or(false) {
             return Err(Stop::Refused(Refusal::StorageClosed));
         }
+        // A partition's own device says where its end is; metadata does not.
         let mut need = MANAGER.len() as u64 + MARGIN;
         for slot in &self.slots.clone() {
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
-            need += fs::metadata(&device).map(|m| m.len()).unwrap_or(0);
+            need += self.partition_size(&device).map_err(Stop::Why)?;
         }
         let have = available(storage).map_err(Stop::Why)?;
         if need > have {
@@ -428,6 +429,8 @@ impl<'a> Run<'a> {
     }
 
     fn stopped(&self, stop: Stop) -> Stopped {
+        // The tools last one run and are unpacked again by the next.
+        let _ = fs::remove_dir_all(&self.tools);
         match stop {
             Stop::Refused(refusal) => {
                 self.discard();

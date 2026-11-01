@@ -10,7 +10,7 @@ use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// How much is read and written at a time.
@@ -74,7 +74,10 @@ pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage))
     let path = into.join(name(slot));
     let part = path.with_extension("img.part");
     let mut reading = File::open(source).with_context(|| format!("open {}", source.display()))?;
-    let total = reading.metadata().with_context(|| format!("find the size of {}", source.display()))?.len();
+    // A block device tells no size to metadata; it does say where its end is,
+    // which is the whole partition.
+    let total = reading.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", source.display()))?;
+    reading.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", source.display()))?;
     let mut written = File::options()
         .write(true)
         .create_new(true)
@@ -111,7 +114,7 @@ pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage))
         again.update(&buffer[..read]);
         size += read as u64;
     }
-    ensure!(size == total, "{} is {size} bytes, not the {total} it should hold", part.display());
+    ensure!(size == done, "{} holds {size} bytes, not the {done} read from {}", part.display(), source.display());
     ensure!(hex(&again.finalize()) == sha256, "{} is not what {} holds", part.display(), source.display());
     fs::rename(&part, &path).with_context(|| format!("put {} in place of {}", part.display(), path.display()))?;
     if let Some(dir) = path.parent() {
