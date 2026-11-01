@@ -11,8 +11,7 @@ pub struct Release {
     /// The tag it was published under, such as `bronco-20261030`.
     pub tag: String,
     /// When it was published, written as GitHub writes a time, such as
-    /// `2026-10-30T19:37:12Z`. A build stamps itself the same way, so the
-    /// two compare as they are written and nothing here parses a time.
+    /// `2026-10-30T19:37:12Z`, for the page to show.
     pub published: String,
     /// The recovery image itself.
     pub image: Asset,
@@ -31,12 +30,18 @@ pub struct Asset {
 }
 
 impl Release {
-    /// Whether this release was published after `build`, the stamp of the
-    /// running recovery. A build that was never stamped cannot be compared
-    /// with anything, and is taken as older than every release.
+    /// Whether this release is newer than `build`, the stamp of the running
+    /// recovery: the tag it was built from, or the time it was made when it
+    /// was not built from one. Tags of this phone carry the day, so they sort
+    /// as they are written and nothing here parses a time.
+    ///
+    /// The time a release is published is not compared: a build is made
+    /// before its release is published, so every release would look newer
+    /// than the build it was made from, and a phone on the newest one would
+    /// be offered it for ever. A build that was never stamped cannot be
+    /// compared with anything, and is taken as older than every release.
     pub fn is_newer_than(&self, build: &str) -> bool {
-        let stamped = build.len() == 20 && build.as_bytes().get(4) == Some(&b'-') && build.ends_with('Z');
-        !stamped || self.published.as_str() > build
+        self.tag.as_str() > build || build == "unknown"
     }
 
     /// The SHA-256 the image is to be checked against: the release's own,
@@ -186,9 +191,13 @@ mod tests {
     #[test]
     fn a_stamp_decides_whether_a_release_is_newer() {
         let r = releases(&listing_json(), "skyward-bronco.img").unwrap().expect("a release");
+        // The phone built from this release is on the newest one already, even
+        // though it was built before the release was published.
+        assert!(!r.is_newer_than("bronco-20261101"), "the tag it was built from is not newer");
+        assert!(r.is_newer_than("bronco-20261031"));
+        assert!(!r.is_newer_than("bronco-20261102"));
+        // A build made from no tag compares as a time, which sorts before any tag.
         assert!(r.is_newer_than("2026-10-31T00:00:00Z"));
-        assert!(!r.is_newer_than("2026-11-01T10:00:00Z"), "the build published itself is not newer");
-        assert!(!r.is_newer_than("2026-11-02T00:00:00Z"));
         // A build that was never stamped is older than anything published.
         assert!(r.is_newer_than("unknown"));
     }

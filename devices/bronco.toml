@@ -42,6 +42,12 @@ partition = "modem"
 [partitions]
 mounted = ["persist"]
 
+# The recovery's own settings live beside the phone's calibration, which is
+# there before the data partition opens. Wi-Fi networks always live in the
+# data partition, never here: persist is not encrypted.
+[settings]
+place = "vendor"
+
 # The recovery ramdisk carries no logd, so the phone's own programs (qseecomd,
 # the credential and key services) have nowhere to say what they are doing. The
 # installed system's logd runs on its own bootstrap libraries, and then adb

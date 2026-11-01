@@ -150,8 +150,8 @@ pub enum Have {
     Whole(u64),
 }
 
-/// Downloading the newest system's full package, as the update page shows
-/// it: how far it has come, how fast, and how it ended.
+/// Downloading the newest recovery's image, as the update page shows it:
+/// how far it has come, how fast, and how it ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadJob {
     /// None until the download has begun.
@@ -1642,8 +1642,8 @@ pub struct State {
     /// network, and whether it shows.
     pub password: String,
     pub show_password: bool,
-    /// The phone maker's update server is known, and the update page asks
-    /// it.
+    /// The phone maker's update server is known, and the recovery update
+    /// page asks it.
     pub update_server: bool,
     pub check: Check,
     pub have: Have,
@@ -4801,13 +4801,16 @@ impl App {
             // As the stock updater does, the page asks the update server as
             // it opens, once a network is joined and nothing has been heard.
             Screen::Update => {
-                let mut fx = vec![Effect::ReadUpdate];
                 if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && self.state.online() {
                     self.state.check = Check::Asking;
-                    fx.push(Effect::CheckUpdate);
+                    vec![Effect::CheckUpdate]
+                } else {
+                    Vec::new()
                 }
-                fx
             }
+            // The system update a package left is read where packages are
+            // installed.
+            Screen::Install => vec![Effect::ReadUpdate],
             Screen::Wlan if self.state.wlan.as_ref().is_some_and(|w| w.power == Power::On) => vec![Effect::ScanWlan],
             _ => Vec::new(),
         }
@@ -7530,22 +7533,22 @@ mod tests {
     #[test]
     fn an_update_waiting_in_the_slot_merges_with_a_swipe_and_shows_how_far_it_has_come() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         app.set_update(Standing::Waiting);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "the page reads where the update stands");
-        assert_eq!(app.screen(), Screen::Update);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Install)), vec![Effect::ReadUpdate], "the page reads where the update stands");
+        assert_eq!(app.screen(), Screen::Install);
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Merge), vec![Effect::Merge]);
         assert_eq!(app.state.update, Standing::Merging(0.0), "the page turns to the merge at once");
-        assert!(app.frame(&f, &i).hits.is_empty(), "nothing to swipe while it merges");
+        let right = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(!right.contains(&Action::Confirm(Confirm::Merge)), "nothing to swipe while it merges");
         app.set_update(Standing::Merging(0.5));
-        assert!(app.frame(&f, &i).hits.is_empty());
+        let right = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(!right.contains(&Action::Confirm(Confirm::Merge)));
         app.set_update(Standing::Merged);
-        assert!(app.frame(&f, &i).hits.is_empty(), "merged, nothing is left to do here");
-        app.key(Key::Back, 0);
-        assert_eq!(app.screen(), Screen::Advanced);
+        let right = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
+        assert!(!right.contains(&Action::Confirm(Confirm::Merge)), "merged, nothing is left to merge");
         app.set_update(Standing::Installed(Slot::A));
-        tap(&mut app, &f, &i, Action::Open(Screen::Update));
-        assert!(app.frame(&f, &i).hits.is_empty(), "an update in the other slot merges once that slot has started");
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Confirm(Confirm::Merge)), "an update in the other slot merges once that slot has started");
     }
 
     #[test]
@@ -7553,8 +7556,8 @@ mod tests {
         let (f, mut i) = (fonts(), info());
         i.snapshot = SnapshotState::Snapshotted;
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate]);
-        assert_eq!(app.screen(), Screen::Update);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Install)), vec![Effect::ReadUpdate]);
+        assert_eq!(app.screen(), Screen::Install);
     }
 
     #[test]
@@ -10349,7 +10352,7 @@ mod tests {
         app.state.update_server = true;
         app.state.wlan = Some(Wlan::default());
         app.refresh();
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "nothing is asked without a network");
+        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Update)).is_empty(), "nothing is asked without a network");
         assert!(tap(&mut app, &f, &i, Action::CheckUpdate).is_empty());
         assert_eq!(app.screen(), Screen::Wlan, "asking takes a network, which the WLAN page joins");
         app.key(Key::Back, 0);
@@ -10388,13 +10391,13 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.state.wlan = Some(connected("Skyward"));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "a phone whose server is not known asks nothing");
+        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Update)).is_empty(), "a phone whose server is not known asks nothing");
         app.key(Key::Back, 0);
         app.state.update_server = true;
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::CheckUpdate]);
         app.update_checked(Err(Unanswered::Failed("update.miui.com did not answer".into())), Have::Nothing);
         app.key(Key::Back, 0);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate], "a failed check is tried again");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::CheckUpdate], "a failed check is tried again");
     }
 
     #[test]

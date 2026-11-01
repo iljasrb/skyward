@@ -16,9 +16,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// When this build was made, as the time it was made in UTC
 /// (`2026-10-30T19:37:12Z`), or `unknown` when the build did not stamp it.
 ///
-/// A release says when it was published in the same way, and two such stamps
-/// compare as they are written, which is all the update page needs: nothing
-/// here parses a time.
+/// A build made from a release's tag is stamped with it, as `bronco-20261030`;
+/// one made from nothing in particular is stamped with the time it was made.
+/// The tags carry the day, so both compare as they are written, which is all
+/// the update page needs: nothing here parses a time.
 pub const BUILD: &str = match option_env!("SKYWARD_BUILD") {
     Some(stamp) => stamp,
     None => "unknown",

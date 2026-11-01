@@ -1,34 +1,27 @@
-![Skyward Recovery](assets/hero.jpg)
-
 # Skyward for the ThinkPhone (bronco)
 
 A fork of [Skyward](https://github.com/kirklin/skyward) — a recovery written in
-Rust, from scratch — for the 2023 Motorola ThinkPhone, `bronco`. Upstream builds
-for Xiaomi phones; this fork builds for one phone, and carries the fixes that
-phone needed.
+Rust — for one phone, the 2023 Motorola ThinkPhone (`bronco`). Verified on A16
+`W1TBS36H.1-63-2-9`, flashed over `recovery_b`.
 
-## What works on the phone
-
-Verified on an A16 build, `W1TBS36H.1-63-2-9`, with the recovery flashed over
-`recovery_b`:
-
-| | |
+| works | |
 |---|---|
-| Boot to the pages | ~7 s |
-| Metadata (DE) decryption | `/data` opens by itself |
-| Credential (CE) unlock | the PIN opens the user's files; `/sdcard` mounts |
-| WLAN | on, scan, join; the network joined is kept for the next boot |
-| File transfer, adb, fastbootd | `mtp,adb` and `fastbootd` both bind |
-| Recovery updates | checked, downloaded and written from this fork's releases |
-| Settings | kept between boots: brightness, theme, language, screen-off, time zone, vibration, file transfer, WLAN |
-| Backup, wipe, installs, audio | not exercised yet |
+| decrypt | the PIN opens `/data` and `/sdcard` (SPSS, keymint, gatekeeper) |
+| WLAN | scans, joins, keeps the network and rejoins it by itself |
+| settings | kept across restarts, including a boot that started in fastboot |
+| backup, restore | the phone's partitions and `/data`, SHA-256 checked end to end |
+| installs | zips with an install script and update packages, from storage or `adb sideload` |
+| fastbootd | getvar, flash, fetch |
+| updates | the update page reads this fork's GitHub releases, checks the SHA-256 and writes the running slot's recovery (and the other when it holds Skyward) |
+| haptics, MTP, adb | a click on the motor's own driver, `mtp,adb`, adb |
 
-## Building
+## Build
 
-The recovery rides on the phone's own recovery image: its init, adbd,
+The recovery rides on the phone's own recovery ramdisk: its init, adbd,
 fastbootd, SELinux policy and libraries stay, and only `system/bin/recovery`
-becomes Skyward. That base is Motorola's to hand out, so it is not in this
-repository — take `recovery_b` out of a stock firmware package:
+becomes Skyward. That base is not in this repository — use the recovery image
+of the ROM the phone runs (`out/target/product/bronco/recovery.img` from a
+LineageOS or Infinity-X build), or `recovery_b` out of a stock firmware package:
 
 ```sh
 rustup target add aarch64-linux-android
@@ -38,56 +31,21 @@ scripts/build-bronco.sh --stock /path/to/stock-recovery_b.img
 fastboot flash recovery_b out/skyward-bronco.img
 ```
 
-The build stamps itself with the time it was made; that stamp is what the
-update page compares against the published releases.
+Pushing a `bronco-*` tag builds and publishes the image with
+`.github/workflows/release.yml`: it takes `recovery.img` from
+[rom.flac.moe](https://rom.flac.moe/bronco/latest/), checked against the sums
+published beside it, builds the image on it, and publishes the image and its
+`SHA256SUMS`, which is what the update page reads.
 
-## Updating the recovery
-
-The update page asks this fork's releases on GitHub for the newest image of
-this phone, downloads it into `/sdcard/Download/Skyward/`, checks it against the
-SHA-256 the release publishes, and writes it over the recovery partitions of
-both slots — the running one always, and the other when it holds this recovery,
-since after a slot switch that one is what boots. Every partition is read back
-and compared with what was written.
-
-Nothing is published for this phone yet, so the page says it is the newest one
-until a release is made (see `scripts/release.sh`).
-
-## What the recovery remembers
-
-Changed a setting and the recovery writes it a couple of seconds later, whole
-and flushed, to the first of these it can:
-
-1. `/mnt/vendor/persist/skyward/` — the partition the phone keeps its own
-   calibration in, which the recovery mounts as it comes up and no reset wipes;
-2. `/data/skyward/` — opens once the decrypt page is answered;
-3. `/sdcard/Skyward/` — waits on the user's screen lock as well.
-
-Which of them is used is decided by what is there: the newest copy is the one
-read, and it is written back where it was found. The file is `settings/values`,
-one `name = value` per line; a value that is missing, unreadable or out of range
-falls back to the default instead of failing. `wlan/wpa_supplicant.conf` beside
-it belongs to the supplicant, which writes back the network it joined — the one
-joined last, and it joins it again on the next boot.
+Nothing is published yet, so the update page reports this build as the newest.
 
 ## What a restore must not touch
 
-`persist` is left out of the baseband set the backup and restore page takes,
-even though it holds the recovery's own remembered settings: it also holds the
-secure world's non-volatile storage — the keymaster and gatekeeper state the
-screen lock is bound to. Restoring an older copy of it makes the trustlet
-derive a proof the data partition did not record, and the phone's PIN stops
-matching: `GatekeeperHalDevice: resp->status: -30`, `cmd lock_settings verify`
-says `didn't match`, and nothing but a new credential (or a reset) recovers it.
-This happened on hardware once, and once was enough.
-
-### If it has already happened
-
-The screen lock stops matching after such a restore: `GatekeeperHalDevice:
-resp->status: -30`, `cmd lock_settings verify --old …` says `didn't match`. A
-factory reset does **not** fix it, because the stale records are in `persist`,
-which a reset leaves alone. From this recovery's shell (its adbd is root; a
-wiped `/data` takes any root with it):
+`persist` stays out of the baseband set the backup page takes: it carries the
+secure world's storage that the screen lock is bound to. Restoring an older copy
+makes gatekeeper answer `-30` to the right PIN (`cmd lock_settings verify --old
+…` → `didn't match`), and a factory reset does not help, because it leaves
+`persist` alone. If that has happened:
 
 ```sh
 kill $(pidof sec_nvm) $(pidof spdaemon)
@@ -95,32 +53,12 @@ rm -rf /mnt/vendor/persist/secnvm/* /mnt/vendor/persist/iar_db/*
 sync
 ```
 
-The SPSS makes them afresh on the next start, and a new credential can be set.
-Only if that is not enough: `/mnt/vendor/persist/data/misc/keystore` (keymaster's
-own store, costs attestation identities), then `secdata` + `secdataBackup`
-(costs Widevine/attestation state). Never the whole `persist` unless you are
-willing to lose the Wi-Fi MAC and the sensors' calibration, and never
-`spss_a`/`spss_b` or `misc`.
-
-## What this fork changes
-
-- **The ThinkPhone's own fixes**, each one written against the phone: the
-  panel's backlight, the runtime bundle that cannot be looped from the
-  recovery's domain, adb kept when a USB configuration is unknown, file
-  transfer bound, and the credential service's own answer reported.
-- **A recovery that updates itself**, instead of checking the phone maker's
-  server for a system update it cannot install.
-- **English by default** when a boot names no locale — fastbootd's command
-  carries none and its partitions are not mounted yet, so the pages used to
-  open in Chinese and stay in it.
-- **Settings that survive a restart**, on the owner's storage beside the logs,
-  and the WLAN's network kept with them.
-- **One device**: the other phones' configurations, the stock OTA check and its
-  tests are gone.
+Then `persist/data/misc/keystore` if the trustlet still refuses a new
+credential, `secdata` + `secdataBackup` only if it is worth the attestation
+state, and never the whole `persist`, `spss_a/b` or `misc`.
 
 ## Credit
 
-[Skyward](https://github.com/kirklin/skyward) is KirKlin's, GPL-3.0-or-later,
-and does all the work; this fork only adds what one phone needed. The device
-configurations of the Samsung/Motorola ports, and the portable recovery work
-behind them, come from the AERA project's port of the same phone.
+[Skyward](https://github.com/kirklin/skyward) is KirKlin's, GPL-3.0-or-later, and
+does the work; this fork adds what one phone needed. The device facts come from
+the AERA project's port of the same phone.
