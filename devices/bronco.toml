@@ -340,6 +340,11 @@ logs = [
     "/data/vendor/wlan_logs",
 ]
 
+# No [stock] here: the recovery this phone's build rides on is published as an
+# image of its own, with its sum beside it, not inside an update package, so
+# nothing has to be taken out of one. The release that carries the image
+# fetches it from there (see .github/workflows/release.yml).
+
 # Where this phone's recovery images are published: the fork's releases on
 # GitHub, and the file in a release that this phone is written from.
 [update]
