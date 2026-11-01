@@ -490,6 +490,9 @@ pub enum Switch {
     FileTransfer,
     /// Compress a backup.
     Compress,
+    /// Leave the zeros a part holds as holes in the backup's files, so that a
+    /// partition's unused stretch takes no room on the storage.
+    Sparse,
     /// Read a backup back once it is written.
     Verify,
     /// Run a zip's install script only if the zip was signed with one of
@@ -499,9 +502,25 @@ pub enum Switch {
     /// over.
     KeepRecovery,
     Wlan,
+    /// Have adbd listened to on the network joined, so a computer reaches the recovery without a cable.
+    AdbWifi,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
 }
+
+/// Whether a computer can reach adbd over the network joined, as the runtime last told it: adbd holds the
+/// port, or it does not and says why.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AdbWifi {
+    #[default]
+    Off,
+    On,
+    Failed(String),
+}
+
+/// The port adbd is asked to listen on, and the one `adb connect` takes when it is given the phone and no
+/// port.
+pub const ADB_WIFI_PORT: u16 = 5555;
 
 /// What a backup can take, in the order the backup page lists it.
 pub const BACKUP_PARTS: [Text; 4] = [
@@ -1558,6 +1577,9 @@ pub struct State {
     pub backup_to: Place,
     pub compress: bool,
     pub verify: bool,
+    /// Whether a backup's files leave the zeros they hold as holes, which
+    /// they do unless asked not to.
+    pub sparse: bool,
     /// The backups found, newest first, those that cannot be read last.
     pub backups: Vec<BackupEntry>,
     /// The backup the restore page shows, as it was found, and which of its
@@ -1635,6 +1657,8 @@ pub struct State {
     /// The WLAN, as the runtime last told it; none on a phone whose WLAN the
     /// recovery does not bring up.
     pub wlan: Option<Wlan>,
+    /// adb over the network joined, as the runtime last told it.
+    pub adb_wifi: AdbWifi,
     /// The network the password page is for, and what is typed there.
     pub joining: Option<Network>,
     /// The network the details page is of, as it was found.
@@ -1689,6 +1713,7 @@ impl Default for State {
             backup_to: Place::Storage,
             compress: false,
             verify: true,
+            sparse: true,
             backups: Vec::new(),
             restore: None,
             backup_job: None,
@@ -1722,6 +1747,7 @@ impl Default for State {
             part_work: None,
             update: Standing::None,
             wlan: None,
+            adb_wifi: AdbWifi::Off,
             joining: None,
             details: None,
             adding: None,
@@ -1942,7 +1968,7 @@ pub enum Effect {
     /// a folder of their own in `place`, telling how it goes with
     /// [`App::backup_started`], [`App::backup_plan`], [`App::backup_at`]
     /// and [`App::backup_ended`].
-    Backup { parts: [bool; 4], place: Place, compress: bool, verify: bool },
+    Backup { parts: [bool; 4], place: Place, compress: bool, verify: bool, sparse: bool },
     /// Restore the parts ticked of the backup in the folder `name` of
     /// `place`, telling how it goes as a backup does.
     Restore { place: Place, name: String, parts: [bool; 4] },
@@ -1959,6 +1985,9 @@ pub enum Effect {
     /// Turn the WLAN on or off; how it stands comes back with
     /// [`App::set_wlan`].
     Wlan(bool),
+    /// Have adbd listen on the network the phone joined, or on the USB port alone again; whether it took
+    /// the port comes back with [`App::set_adb_wifi`].
+    AdbWifi(bool),
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
@@ -3403,6 +3432,14 @@ impl App {
         self.dirty = true;
     }
 
+    /// Whether adbd took the network's port, as the runtime last told it.
+    pub fn set_adb_wifi(&mut self, adb: AdbWifi) {
+        if self.state.adb_wifi != adb {
+            self.state.adb_wifi = adb;
+            self.refresh();
+        }
+    }
+
     /// How fast data went over the network joined in the last second, which
     /// only the status bar shows.
     pub fn set_traffic(&mut self, t: Traffic) {
@@ -4836,16 +4873,25 @@ impl App {
                 self.refresh();
                 return vec![Effect::Wlan(on)];
             }
+            // The switch moves at once; whether adbd takes the port, the runtime then tells.
+            Action::Toggle(Switch::AdbWifi) => {
+                let on = !matches!(self.state.adb_wifi, AdbWifi::On);
+                self.state.adb_wifi = if on { AdbWifi::On } else { AdbWifi::Off };
+                self.refresh();
+                return vec![Effect::AdbWifi(on)];
+            }
             Action::Toggle(switch) => {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
                     Switch::Compress => &mut self.state.compress,
+                    Switch::Sparse => &mut self.state.sparse,
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
+                    Switch::AdbWifi => unreachable!("the adb over the network switch is turned above"),
                 };
                 *on = !*on;
                 let now_on = *on;
@@ -5892,7 +5938,7 @@ impl App {
     /// one lit as it comes back up; otherwise the first volume press lights
     /// a control, and the power key turns the panel off. The power key and
     /// volume down together take a screenshot instead: whichever of the two
-    /// goes down first waits [`CHORD_MS`] for the other, or until it is let
+    /// goes down first waits `CHORD_MS` for the other, or until it is let
     /// go, and then does what it does alone, as pressed when it went down.
     pub fn key(&mut self, key: Key, now: u64) -> Vec<Effect> {
         // Any button stops a gliding page, and brings a sliding one to rest.
@@ -6078,7 +6124,8 @@ impl App {
                         (Place::UsbDrive, _) => USB_DRIVE_WANTED,
                     })
                 };
-                let backup = Effect::Backup { parts: s.backup, place: s.backup_to, compress: s.compress, verify: s.verify };
+                let backup =
+                    Effect::Backup { parts: s.backup, place: s.backup_to, compress: s.compress, verify: s.verify, sparse: s.sparse };
                 match refused {
                     Some(why) => self.say(l.pick(why), now),
                     None => fx.push(backup),
@@ -8976,6 +9023,20 @@ mod tests {
     }
 
     #[test]
+    fn a_backup_leaves_the_zeros_it_holds_as_holes_unless_asked_not_to() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Backup, &f, &i);
+        app.data_waiting(Some((10, Keys::Digits)));
+        let holes = Effect::Backup { parts: app.state.backup, place: Place::Storage, compress: false, verify: true, sparse: true };
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![holes], "holes are asked for as the page opens");
+        let mut app = opened(Screen::Backup, &f, &i);
+        app.data_waiting(Some((10, Keys::Digits)));
+        tap(&mut app, &f, &i, Action::Toggle(Switch::Sparse));
+        let written = Effect::Backup { parts: app.state.backup, place: Place::Storage, compress: false, verify: true, sparse: false };
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![written], "and not once the row is turned off");
+    }
+
+    #[test]
     fn a_backup_takes_what_is_ticked_to_where_it_is_sent() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Backup, &f, &i);
@@ -8984,7 +9045,7 @@ mod tests {
         assert_eq!(app.deadline(0), Some(TOAST_MS), "and says so");
         // The owner's files open first; another user's still wait.
         app.data_waiting(Some((10, Keys::Digits)));
-        let first = Effect::Backup { parts: [true, true, false, true], place: Place::Storage, compress: false, verify: true };
+        let first = Effect::Backup { parts: [true, true, false, true], place: Place::Storage, compress: false, verify: true, sparse: true };
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![first]);
         tap(&mut app, &f, &i, Action::BackupPart(2));
         assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty(), "the data partition is backed up only with every user's files open");
@@ -8996,7 +9057,7 @@ mod tests {
         tap(&mut app, &f, &i, Action::Toggle(Switch::Verify));
         assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty(), "no drive is plugged in");
         app.set_usb_drive(Some(UsbDrive::Shown));
-        let second = Effect::Backup { parts: [false, true, true, true], place: Place::UsbDrive, compress: true, verify: false };
+        let second = Effect::Backup { parts: [false, true, true, true], place: Place::UsbDrive, compress: true, verify: false, sparse: true };
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![second]);
         for k in 1..4 {
             tap(&mut app, &f, &i, Action::BackupPart(k));
@@ -10051,6 +10112,29 @@ mod tests {
                 reach: Some(Reach::Online),
             }),
         )
+    }
+
+    #[test]
+    fn adb_over_the_network_is_asked_for_only_where_a_network_reaches() {
+        let (f, i) = (fonts(), info());
+        let row = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Toggle(Switch::AdbWifi));
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.wlan = Some(Wlan { power: Power::On, networks: Vec::new(), joined: None });
+        app.refresh();
+        app.act(Action::Open(Screen::Wlan), 0);
+        assert!(!row(&mut app), "no network joined, nowhere for a computer to reach it");
+        app.set_wlan(connected("Skyward"));
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::AdbWifi)), vec![Effect::AdbWifi(true)]);
+        assert_eq!(app.state.adb_wifi, AdbWifi::On, "the switch moves at once");
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::AdbWifi)), vec![Effect::AdbWifi(false)]);
+        assert_eq!(app.state.adb_wifi, AdbWifi::Off);
+        app.set_adb_wifi(AdbWifi::Failed("adbd did not take port 5555".into()));
+        assert_eq!(app.state.adb_wifi, AdbWifi::Failed("adbd did not take port 5555".into()), "what came of it is kept for the row");
+        assert!(row(&mut app), "the row keeps its place, to be asked for again");
+        // Restarting adbd ends the transfer in it, so no row is offered while an installer runs.
+        app.state.install = Install::Waiting;
+        app.refresh();
+        assert!(!row(&mut app));
     }
 
     #[test]

@@ -277,11 +277,13 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
     };
     let mount = mounted.serve(conn);
     let done = install(ctx, &mount, offer.size).unwrap_or_else(Done::Error);
-    // A package that installs itself reads only the parts its script wants,
-    // so the computer is still sending the rest, and it gives up on a stream
-    // that stays quiet while the script works -- the end of such a transfer
-    // then waits for an answer that never comes, and the port is never handed
-    // back to adb. A computer that is gone is told nothing.
+    // The end of a transfer is a write to the computer, and the kernel keeps
+    // that write until the computer takes it: one that has gone leaves the
+    // write blocked for good -- measured here as the installer thread asleep
+    // inside ffs_epfile_io -- and with it the hand back to adb never happens.
+    // A package a script installs is never read whole, since the script wants
+    // the parts it wants, so its computer is still sending the rest and is
+    // gone by the time the install ends: nothing is said to it.
     let script = matches!(done, Done::Script { .. });
     let (mut conn, served) = mount.unmount();
     let outcome = conclude(done, served, ctx.origin);

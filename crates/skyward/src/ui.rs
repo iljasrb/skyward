@@ -1,3 +1,4 @@
+use crate::adbwifi;
 use crate::backup;
 use crate::decrypt::{self, Decryptor};
 use crate::filework;
@@ -30,8 +31,8 @@ use skyward_net::http::Servers;
 use skyward_net::release::{Installed, Release, Unanswered};
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
-    App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
-    FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
+    App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind,
+    FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
     RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
@@ -57,6 +58,9 @@ const LEAVE_AFTER_MS: u64 = 1500;
 /// How long after the screen starts a touch panel may still come up; with
 /// none by then, the pages are worked with the keys, their light shown.
 const TOUCH_WAIT: Duration = Duration::from_secs(5);
+
+/// How long the first page takes to come up out of the dark at the start.
+const APPEAR: Duration = Duration::from_millis(400);
 
 /// Where logs saved to the temporary folder go, and where in internal
 /// storage the others do.
@@ -1028,6 +1032,9 @@ fn install_options(app: &App) -> Options {
 /// How often the WLAN page scans while it shows.
 const SCAN_EVERY: Duration = Duration::from_secs(10);
 
+/// How long adbd is given to hold the port after init is asked to restart it.
+const ADB_WAIT: Duration = Duration::from_secs(3);
+
 fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
@@ -1332,7 +1339,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // What the boots before kept: brightness, the theme, the language and
     // the rest are back before the first frame is drawn, and a WLAN that was
     // on is brought back up by itself.
-    let (saved, settings_where) = saved_settings();
+    let (saved, mut settings_where) = saved_settings();
     let wlan_was_on = saved.wlan;
     app.set_saved_settings(saved);
     if wlan_was_on {
@@ -1344,6 +1351,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
     }
     let mut scanned_at = Instant::now();
+    // When adbd was asked for the network's port, until the kernel is read as showing it holds it.
+    let mut adb_until: Option<Instant> = None;
     app.state.update_server = cfg.update.is_some();
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1404,12 +1413,20 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             app.set_fastboot(running, link);
             port_at = Instant::now();
         }
+        // The page comes up out of the dark over a moment, rather than the
+        // bootloader's frame snapping into this one, and is drawn again as it
+        // does.
+        let appear = (started.elapsed().as_millis() as f32 / APPEAR.as_millis() as f32).min(1.0);
+        if appear < 1.0 {
+            app.redraw();
+        }
         let panel = app.panel(now);
         let mut shown = false;
         if panel.is_some() {
             if app.take_dirty() {
                 let t0 = Instant::now();
                 app.compose(&mut screen, &fonts, &info, &shown_clock, now);
+                screen.fade(appear);
                 surface.present(&screen)?;
                 eprintln!("frame {:?} in {} ms", app.screen(), t0.elapsed().as_millis());
                 if let Some(path) = dump {
@@ -1442,7 +1459,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // gets at least a millisecond.
         let floor = if shown { 0 } else { 1 };
         let until_due = app.deadline(now).map(|d| d.saturating_sub(now) as i32);
-        let timeout = if ahead { 0 } else { until_due.map_or(1000, |t| t.clamp(floor, 1000)) };
+        // Coming up, the page is stepped rather than waited on.
+        let wait_cap = if appear < 1.0 { 16 } else { 1000 };
+        let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
             fds.push(i.fd());
@@ -1753,6 +1772,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             }
             if let Some(t) = traffic {
                 app.set_traffic(t);
+            }
+        }
+        if let Some(until) = adb_until {
+            if adbwifi::listening() {
+                adb_until = None;
+                app.set_adb_wifi(AdbWifi::On);
+            } else if Instant::now() >= until {
+                adb_until = None;
+                let why = format!("adbd did not take port {}", skyward_ui::app::ADB_WIFI_PORT);
+                skyward_sys::kmsg(&why)?;
+                app.set_adb_wifi(AdbWifi::Failed(why));
             }
         }
         // The WLAN page scans again now and then while it shows, as the
@@ -2147,7 +2177,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     // An install still stopping may yet write; a backup or
                     // restore waits for it.
-                    Effect::Backup { parts, place, compress, verify } => {
+                    Effect::Backup { parts, place, compress, verify, sparse } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
                         if installer.is_some() {
                             app.report(app.state.lang.pick(INSTALL_UNFINISHED), now);
@@ -2170,6 +2200,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             ownership,
                             compress,
                             verify,
+                            sparse,
                             remount: (place == Place::UsbDrive).then(|| PathBuf::from(USB_DRIVE)),
                             made,
                             device: cfg.device.codename.clone(),
@@ -2219,6 +2250,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         merger = Some(merge::Merger::start(slot, true)?);
                     }
                     Effect::Wlan(on) => wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off }),
+                    // adbd takes the port a moment after init is asked to restart it; the row tells what came
+                    // of it.
+                    Effect::AdbWifi(on) => match if on { adbwifi::listen() } else { adbwifi::stop() } {
+                        Ok(()) if on => adb_until = Some(Instant::now() + ADB_WAIT),
+                        Ok(()) => app.set_adb_wifi(AdbWifi::Off),
+                        Err(e) => {
+                            skyward_sys::kmsg(&format!("adbd was not asked for the network's port: {e:#}"))?;
+                            app.set_adb_wifi(AdbWifi::Failed(format!("{e:#}")))
+                        }
+                    },
                     Effect::ScanWlan => {
                         scanned_at = Instant::now();
                         wlan_worker(&wlan)?.send(wlan::Command::Scan);
@@ -2317,6 +2358,23 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         read_at = Instant::now();
                         info = skyward_info::collect(cfg)?;
                         fastboot = false;
+                        // The settings are read at boot, before this phone has
+                        // the storage they are kept on: fastboot runs without
+                        // it, so what it read was nothing and the pages showed
+                        // their own defaults. They are read again now that the
+                        // storage is there.
+                        let (saved, kept_at) = saved_settings();
+                        let wlan_was_on = saved.wlan;
+                        app.set_saved_settings(saved);
+                        settings_where = kept_at;
+                        if wlan_was_on {
+                            match &wlan {
+                                Some(w) => w.send(wlan::Command::On),
+                                None => {
+                                    let _ = skyward_sys::kmsg("the WLAN was on, and this phone's recovery brings none up");
+                                }
+                            }
+                        }
                         app.enter_recovery();
                     }
                     // A port that something else has takes file transfer

@@ -1,8 +1,8 @@
 use crate::app::{
-    Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
-    FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS,
-    FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
+    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field,
+    FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
+    Rows, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED,
+    DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -1702,8 +1702,14 @@ pub fn backup(cx: &Ctx) -> Frame {
     let options = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["压缩", "壓縮", "Compress"])).subtitle(l.pick(["备份更小，耗时更长", "備份更小，耗時更長", "Smaller, and slower to make"])).trail(Trail::Switch(s.compress)),
         Row::new(l.pick(["完成后校验", "完成後驗證", "Verify when done"])).subtitle(l.pick(["确认备份文件完整", "確認備份檔案完整", "Checks the backup's files are whole"])).trail(Trail::Switch(s.verify)),
+        Row::new(l.pick(["跳过空白区域", "略過空白區域", "Skip empty space"]))
+            .subtitle(l.pick(["空白部分不占空间", "空白部分不佔空間", "Zeros take no room in the files"]))
+            .trail(Trail::Switch(s.sparse)),
     ]);
-    out.extend(hits(&options.rows, &[Action::Toggle(Switch::Compress), Action::Toggle(Switch::Verify)]));
+    out.extend(hits(
+        &options.rows,
+        &[Action::Toggle(Switch::Compress), Action::Toggle(Switch::Verify), Action::Toggle(Switch::Sparse)],
+    ));
     let note = l.pick([
         "备份将保存在 Skyward/backups 文件夹中，以开始备份的时间命名。",
         "備份將儲存在 Skyward/backups 資料夾中，以開始備份的時間命名。",
@@ -2608,6 +2614,26 @@ pub fn wlan(cx: &Ctx) -> Frame {
                     if let Some(note) = link.reach.as_ref().and_then(|r| fmt::reach(l, r)) {
                         y = widgets::footnote(&mut c, t, f, y, &note);
                     }
+                    // adbd on the network joined, so a computer reaches the recovery with no cable. Not while an
+                    // installer runs: restarting adbd ends the transfer.
+                    if matches!(s.install, Install::Idle) {
+                        let on = matches!(s.adb_wifi, AdbWifi::On);
+                        let hint = match &s.adb_wifi {
+                            AdbWifi::Off => String::new(),
+                            AdbWifi::On => format!("adb connect {}:{ADB_WIFI_PORT}", link.address),
+                            AdbWifi::Failed(why) => tr!(l, "未能开启：{why}", "未能開啟：{why}", "Couldn't turn it on: {why}"),
+                        };
+                        let mut row = Row::new(l.pick(ADB_OVER_WLAN)).trail(Trail::Switch(on));
+                        if !hint.is_empty() {
+                            row = row.subtitle(&hint);
+                        }
+                        let switch = widgets::list(&mut c, t, f, y + t.m.card_gap, &[row]);
+                        out.extend(hits(&switch.rows, &[Action::Toggle(Switch::AdbWifi)]));
+                        y = switch.bottom;
+                        if on {
+                            y = widgets::footnote(&mut c, t, f, y, l.pick(ADB_LISTENING));
+                        }
+                    }
                 }
             }
             let others: Vec<(usize, &Network)> =
@@ -2651,6 +2677,12 @@ pub fn wlan(cx: &Ctx) -> Frame {
 }
 
 const ADD_NETWORK: Text = ["添加网络", "新增網路", "Add network"];
+const ADB_OVER_WLAN: Text = ["通过网络使用 ADB", "透過網路使用 ADB", "ADB over Wi-Fi"];
+const ADB_LISTENING: Text = [
+    "同一网络中的任何设备都能不输密码就控制这个 recovery。",
+    "同一網路中的任何裝置都能不輸入密碼就控制這個 recovery。",
+    "Anyone on this network can control this recovery without a password.",
+];
 const SHOW_PASSWORD: Text = ["显示密码", "顯示密碼", "Show password"];
 const CONNECT_KEY: Text = ["连接", "連線", "Connect"];
 const SECURITY: Text = ["安全性", "安全性", "Security"];

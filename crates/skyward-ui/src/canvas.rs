@@ -118,6 +118,20 @@ impl Canvas {
         drop(canvases);
     }
 
+    /// Keep `share` of what is drawn on the canvas, fading the rest into the
+    /// black behind it: how a page comes up out of the dark, and goes back.
+    pub fn fade(&mut self, share: f32) {
+        let share = share.clamp(0.0, 1.0);
+        if share >= 1.0 {
+            return;
+        }
+        for px in self.data.as_chunks_mut::<4>().0 {
+            for c in &mut px[..3] {
+                *c = (*c as f32 * share) as u8;
+            }
+        }
+    }
+
     /// The rows the canvas holds.
     pub fn held(&self) -> std::ops::Range<u32> {
         self.top..self.bottom
@@ -1195,6 +1209,18 @@ mod tests {
         assert_eq!(&pixels[..3], &[10, 20, 30], "the color whatever the alpha, as the panel shows it");
         assert_eq!(&pixels[15..18], &[200, 100, 50]);
         assert_eq!(&pixels[3..6], &[243, 243, 243]);
+    }
+
+    #[test]
+    fn a_page_can_be_shown_part_of_the_way_out_of_the_dark() {
+        let mut c = Canvas::filled(2, 1, Rgba::rgb(200, 100, 50));
+        c.data[3] = 255;
+        c.fade(0.5);
+        assert_eq!(&c.data[..4], &[100, 50, 25, 255], "half of each color, and the alpha the panel ignores left alone");
+        c.fade(1.0);
+        assert_eq!(&c.data[..4], &[100, 50, 25, 255], "shown whole, nothing is done again");
+        c.fade(0.0);
+        assert_eq!(&c.data[..4], &[0, 0, 0, 255], "into the black of the page behind it");
     }
 
     #[test]
