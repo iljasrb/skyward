@@ -187,6 +187,7 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
     let mut outs = Vec::with_capacity(devices.len());
     for path in devices {
         let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        writable(&f).with_context(|| format!("let {} be written", path.display()))?;
         let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
         f.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", path.display()))?;
         outs.push((path, f, size));
@@ -243,6 +244,29 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
     }
     Ok(())
 }
+
+/// Let the device behind `f` be written.
+///
+/// A partition an update has just been applied to is left read-only by the
+/// service that applied it: opening it for writing still works, and the write
+/// then fails with `EPERM`. The flag is the device's own, and it can be
+/// cleared, which is what this does. Anything that is not a block device --
+/// the files the tests write on a computer -- keeps whatever it had.
+fn writable(f: &File) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let clear: libc::c_int = 0;
+    if unsafe { libc::ioctl(f.as_raw_fd(), BLKROSET as _, &clear) } != 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ENOTTY) {
+            return Err(e).context("clear the device's read-only flag");
+        }
+    }
+    Ok(())
+}
+
+/// The ioctl that sets a block device read-only, or lets it be written: its
+/// number is the same everywhere, and its type is the libc's of the phone.
+const BLKROSET: libc::c_int = 0x125d;
 
 /// Drop the device's cached pages, so reading it back reads the flash.
 #[cfg(target_os = "android")]

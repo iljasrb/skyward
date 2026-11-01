@@ -1,5 +1,4 @@
 use anyhow::{anyhow, ensure, Context, Result};
-use evdev::raw_stream::RawDevice;
 use skyward_config::Strength;
 use std::f32::consts::TAU;
 use std::fs::{self, File, OpenOptions};
@@ -12,6 +11,7 @@ use std::time::Duration;
 // linux/input-event-codes.h
 const EV_FF: u16 = 0x15;
 const FF_PERIODIC: u16 = 0x51;
+const FF_CONSTANT: u16 = 0x52;
 const FF_CUSTOM: u16 = 0x5d;
 
 /// The rate a made click's samples are played at, the lowest the driver
@@ -46,6 +46,9 @@ enum Click {
     Kept(i16),
     /// Samples made at the motor's resonant frequency, played at [`RATE`].
     Made(Vec<i8>),
+    /// A constant force for this long: the driver runs the motor for as long
+    /// as the effect plays, at the strength asked for.
+    Steady(Duration),
 }
 
 impl Haptics {
@@ -53,19 +56,18 @@ impl Haptics {
     /// fills the driver's queue with what it plays, so the click is loaded
     /// only as it is played.
     pub fn open(cfg: &skyward_config::Haptics) -> Result<Haptics> {
-        let (path, dev) = motor()?;
-        let click = match (cfg.click, &cfg.resonance) {
-            (Some(id), _) => {
-                eprintln!("haptics {}: clicks with waveform {id}", path.display());
-                Click::Kept(id)
-            }
-            (None, Some(file)) => {
-                let hz = resonance(file)?;
-                eprintln!("haptics {}: clicks made for a motor swinging at {hz} Hz", path.display());
-                Click::Made(made(hz))
-            }
-            (None, None) => unreachable!("the configuration names a click of one kind"),
+        let click = match (cfg.click, &cfg.resonance, cfg.length) {
+            (Some(id), _, _) => Click::Kept(id),
+            (None, Some(file), _) => Click::Made(made(resonance(file)?)),
+            (None, None, Some(ms)) => Click::Steady(Duration::from_millis(u64::from(ms))),
+            _ => unreachable!("the configuration names a click of one kind"),
         };
+        let (path, dev) = motor(&click)?;
+        match &click {
+            Click::Kept(id) => eprintln!("haptics {}: clicks with waveform {id}", path.display()),
+            Click::Made(made) => eprintln!("haptics {}: clicks made of {} samples", path.display(), made.len()),
+            Click::Steady(length) => eprintln!("haptics {}: clicks of {} ms held", path.display(), length.as_millis()),
+        }
         Ok(Haptics { dev, click, strength: cfg.strength, playing: Arc::new(Mutex::new(None)), clicks: 0 })
     }
 
@@ -112,18 +114,20 @@ pub fn probe(cfg: &skyward_config::Haptics, position: f32) -> Result<()> {
 
 /// The first input device under /dev/input that takes periodic
 /// force-feedback effects, opened for writing.
-fn motor() -> Result<(PathBuf, File)> {
+fn motor(click: &Click) -> Result<(PathBuf, File)> {
+    // A driver takes the effects it knows and says so: the one that plays a
+    // constant force need not take the made samples of a periodic effect.
+    let wanted = match click {
+        Click::Steady(_) => evdev::FFEffectCode::FF_CONSTANT,
+        Click::Kept(_) | Click::Made(_) => evdev::FFEffectCode::FF_PERIODIC,
+    };
     for (path, dev) in evdev::raw_stream::enumerate() {
-        if takes_periodic(&dev) {
+        if dev.supported_ff().is_some_and(|ff| ff.contains(wanted)) {
             let file = OpenOptions::new().read(true).write(true).open(&path).with_context(|| format!("open {}", path.display()))?;
             return Ok((path, file));
         }
     }
-    Err(anyhow!("no input device takes force-feedback effects"))
-}
-
-fn takes_periodic(dev: &RawDevice) -> bool {
-    dev.supported_ff().is_some_and(|ff| ff.contains(evdev::FFEffectCode::FF_PERIODIC))
+    Err(anyhow!("no input device takes force-feedback effect {wanted:?}"))
 }
 
 /// The share of the click's full strength at the slider's `position`.
@@ -135,9 +139,16 @@ fn share(strength: &Strength, position: f32) -> f32 {
 /// it in, in tenths of a hertz.
 fn resonance(file: &str) -> Result<f32> {
     let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
-    let tenths: u32 = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{file} holds {text:?}"))?;
-    ensure!(tenths > 0, "{file} says the motor swings at 0 Hz");
-    Ok(tenths as f32 / 10.0)
+    let first = text.split_whitespace().next().with_context(|| format!("{file} is empty"))?;
+    let value: f32 = first.parse().with_context(|| format!("{file} holds {text:?}"))?;
+    // Drivers say it two ways: in tenths of a hertz with nothing after the
+    // number, as Xiaomi's do, or in whole hertz with the unit after it, as
+    // this phone's does. Reading the second as the first made a motor
+    // swinging at 231 Hz swing at 23, which no one feels.
+    let hertz = first.contains('.') || text.to_ascii_lowercase().contains("hz");
+    let hz = if hertz { value } else { value / 10.0 };
+    ensure!((10.0..=1000.0).contains(&hz), "{file} says the motor swings at {hz} Hz, which is no motor");
+    Ok(hz)
 }
 
 /// A click's samples at [`RATE`] for a motor that swings at `hz`: whole
@@ -175,6 +186,28 @@ struct Samples {
 /// effect in a slot of its own. The driver drives the motor at the click's
 /// highest voltage times the magnitude.
 fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
+    if let Click::Steady(length) = click {
+        // A constant effect: the driver runs the motor while it plays, at
+        // the level it carries.
+        let constant = libc::ff_constant_effect {
+            level: (share.clamp(0.0, 1.0) * f32::from(i16::MAX)).round() as i16,
+            envelope: libc::ff_envelope { attack_length: 0, attack_level: 0, fade_length: 0, fade_level: 0 },
+        };
+        let mut u = [0u64; 4];
+        unsafe { std::ptr::write(u.as_mut_ptr().cast::<libc::ff_constant_effect>(), constant) };
+        let mut effect = libc::ff_effect {
+            type_: FF_CONSTANT,
+            id: -1,
+            direction: 0,
+            trigger: libc::ff_trigger { button: 0, interval: 0 },
+            replay: libc::ff_replay { length: u16::try_from(length.as_millis())?, delay: 0 },
+            u,
+        };
+        if unsafe { libc::ioctl(dev.as_raw_fd(), upload_request() as _, &mut effect) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        return Ok(Loaded { slot: effect.id, length: *length });
+    }
     // The driver tells the two kinds apart by the length in bytes of what
     // the effect points to, and loads nothing for any other length, though
     // the upload still succeeds. For a waveform it keeps it reads the
@@ -192,6 +225,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
             samples.data = made.as_ptr();
             (std::mem::size_of::<Samples>(), (&mut samples as *mut Samples).cast::<i16>())
         }
+        Click::Steady(_) => unreachable!("a constant click is loaded above"),
     };
     let periodic = libc::ff_periodic_effect {
         waveform: FF_CUSTOM,
@@ -214,10 +248,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
     // The union holds the periodic effect; it is exactly as large.
     const _: () = assert!(std::mem::size_of::<libc::ff_periodic_effect>() == std::mem::size_of::<[u64; 4]>());
     effect.u = unsafe { std::mem::transmute::<libc::ff_periodic_effect, [u64; 4]>(periodic) };
-    // EVIOCSFF: _IOW('E', 0x80, struct ff_effect)
-    let size = std::mem::size_of::<libc::ff_effect>() as u32;
-    let request = (1u32 << 30) | (size << 16) | (u32::from(b'E') << 8) | 0x80;
-    if unsafe { libc::ioctl(dev.as_raw_fd(), request as _, &mut effect) } < 0 {
+    if unsafe { libc::ioctl(dev.as_raw_fd(), upload_request() as _, &mut effect) } < 0 {
         return Err(io::Error::last_os_error().into());
     }
     let length = match click {
@@ -229,8 +260,15 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
         }
         // The queue is full before the samples start playing.
         Click::Made(made) => Duration::from_secs_f64(made.len() as f64 / f64::from(RATE)),
+        Click::Steady(length) => *length,
     };
     Ok(Loaded { slot: effect.id, length })
+}
+
+/// EVIOCSFF: _IOW('E', 0x80, struct ff_effect), which loads an effect.
+fn upload_request() -> u32 {
+    let size = std::mem::size_of::<libc::ff_effect>() as u32;
+    (1u32 << 30) | (size << 16) | (u32::from(b'E') << 8) | 0x80
 }
 
 /// Start the loaded effect in slot `id`.
@@ -264,6 +302,23 @@ mod tests {
         let quarter = (RATE as f32 / 172.4 / 4.0).round() as usize;
         assert!(samples[quarter] > 120, "it rises first");
         assert!(samples[drive + quarter] < -120, "it falls first once turned over");
+    }
+
+    #[test]
+    fn the_resonance_is_read_in_tenths_or_in_hertz_with_its_unit() {
+        let dir = std::env::temp_dir().join(format!("skyward-haptics-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let write = |text: &str| {
+            let path = dir.join("lra_frequency_hz");
+            fs::write(&path, text).unwrap();
+            resonance(path.to_str().unwrap())
+        };
+        assert_eq!(write("231 Hz\n").unwrap(), 231.0, "whole hertz, unit after it");
+        assert_eq!(write("2050\n").unwrap(), 205.0, "tenths of a hertz, nothing after it");
+        assert_eq!(write("172.4 Hz").unwrap(), 172.4, "hertz to the tenth");
+        assert!(write("0\n").is_err());
+        assert!(write("3 Hz\n").is_err(), "no motor swings at 3 Hz");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
