@@ -133,8 +133,6 @@ pub struct Facts<'a> {
     pub current: Slot,
     /// The slots patched.
     pub slots: &'a [Slot],
-    pub manager_file: &'a str,
-    pub manager_sha256: &'a str,
     pub kpimg_version: &'a str,
     pub kpimg_sha256: &'a str,
     pub kptools_sha256: &'a str,
@@ -151,8 +149,6 @@ pub fn manifest(facts: &Facts) -> String {
     text.push_str(&format!("device = {}\n", facts.device));
     text.push_str(&format!("current_slot = {}\n", facts.current.letter()));
     text.push_str(&format!("slots = {}\n", slots.join(", ")));
-    text.push_str(&format!("manager = {}\n", facts.manager_file));
-    text.push_str(&format!("manager_sha256 = {}\n", facts.manager_sha256));
     text.push_str(&format!("kpimg_version = {}\n", facts.kpimg_version));
     text.push_str(&format!("kpimg_sha256 = {}\n", facts.kpimg_sha256));
     text.push_str(&format!("kptools_sha256 = {}\n", facts.kptools_sha256));
@@ -231,8 +227,6 @@ mod tests {
             device: "nezha",
             current: Slot::A,
             slots: &[Slot::A, Slot::B],
-            manager_file: crate::MANAGER_FILE,
-            manager_sha256: "1d29",
             kpimg_version: crate::KPIMG_VERSION,
             kpimg_sha256: "7a7a",
             kptools_sha256: "ea06",
@@ -244,7 +238,6 @@ mod tests {
             "device = nezha",
             "current_slot = A",
             "slots = A, B",
-            crate::MANAGER_FILE,
             crate::KPIMG_VERSION,
             "backup_a = backup/boot_a.img 12 ",
             &backup.sha256,

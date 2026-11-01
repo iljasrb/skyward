@@ -1,9 +1,9 @@
-//! Installing FolkPatch's root onto the boot partition: the KernelPatch tools
-//! it is patched with, the manager that opens it, and the SuperKey that is the
-//! manager's to ask for.
+//! Patching FolkPatch's root into the boot partition: the KernelPatch tools it
+//! is patched with, and the SuperKey that opens what is patched in.
 //!
-//! The manager's own recovery package is never run and no script inside it is
-//! read: the pinned `kptools` is started here, and the image it makes is
+//! Only the patch is made here. The manager that uses it is the owner's to
+//! install in Android, from its own release; nothing of it is carried, saved
+//! or run. The pinned `kptools` is started here, and the image it makes is
 //! written by this recovery. The key is made here or typed on the screen, kept
 //! out of command lines and logs, and saved only where root can read it.
 
@@ -11,7 +11,7 @@ pub mod backup;
 pub mod install;
 pub mod key;
 
-pub use install::install;
+pub use install::{install, patched_slot};
 pub use key::{KeyFault, SuperKey};
 
 use anyhow::{Context, Result};
@@ -27,17 +27,13 @@ use std::time::SystemTime;
 /// as they are.
 pub const BOOT: &str = "boot";
 
-/// The manager that opens what is patched in, and the release it comes from.
-pub const MANAGER_PACKAGE: &str = "me.yuki.folk";
-pub const MANAGER_VERSION: &str = "115404";
-
 /// The KernelPatch release the tools are of.
 pub const KPIMG_VERSION: &str = "0.13.9";
 
-// The tools and the manager themselves, which the build fetched from their
-// release and checked against the hash it pins; `MANAGER_FILE` names the
-// package among them. Nothing is taken from the tree, so a clone carries no
-// seventeen megabytes of them and an offline build uses what the cache has.
+// The tools themselves, which the build took from the release and checked
+// against the hashes it pins. Nothing is taken from the tree, so a clone
+// carries no seventeen megabytes of them and an offline build uses what the
+// cache has.
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 /// What a run is asked to do besides the phone it is on.
@@ -53,9 +49,12 @@ pub struct Options {
     pub battery: skyward_info::Battery,
     /// The key to make the patch with.
     pub key: Key,
+    /// Patch an image that carries the patch already, which the user asked for
+    /// with a swipe of their own.
+    pub repatch: bool,
     /// Where the phone's partitions are linked, as `/dev/block/by-name`.
     pub partition_dir: PathBuf,
-    /// The owner's storage, as `/sdcard`, which the manager is saved in.
+    /// The owner's storage, as `/sdcard`, which the backups are saved in.
     pub storage: PathBuf,
     /// Where only root reads what the run keeps, as
     /// `/data/local/tmp/skyward-folkpatch`.
@@ -88,8 +87,6 @@ impl fmt::Debug for Key {
 pub enum Stage {
     /// Reading the phone and the images before anything is written.
     Checking,
-    /// Saving the manager in the owner's storage.
-    Copying { done: u64, total: u64 },
     /// Saving the boot partition of a slot as it was.
     BackingUp { slot: Slot, done: u64, total: u64 },
     /// Patching a slot's image with `kptools`.
@@ -118,8 +115,6 @@ pub struct Installed {
     pub key: SuperKey,
     /// Where only root reads the key.
     pub key_path: PathBuf,
-    /// The manager, saved in the owner's storage.
-    pub apk_path: PathBuf,
     /// Where the copies of the boot partitions are.
     pub backup_dir: PathBuf,
     /// Whether the kernel was built with `CONFIG_KALLSYMS_ALL`, which some
@@ -165,17 +160,17 @@ pub enum Refusal {
     NoKallsyms,
     /// A library or interpreter `kptools` needs that this recovery has not.
     NoTools(String),
-    /// The owner's storage is closed, so the manager cannot be saved.
+    /// The owner's storage is closed, so the backups cannot be saved.
     StorageClosed,
-    /// Not enough room for the manager, every backup, and a margin.
+    /// Not enough room for every backup, and a margin.
     NoRoom { need: u64, have: u64 },
-    /// A key the manager would not take.
+    /// A key `kptools` would not take.
     Key(KeyFault),
 }
 
 /// The key of the most recent run whose key is still on this phone, from the
 /// folders only root reads and from copies the user chose to keep beside the
-/// manager.
+/// the owner's storage.
 ///
 /// A stock update replaces the boot image, and with it the hash of the key, so
 /// this is what lets a phone patched again after one keep the key it had.
@@ -189,7 +184,7 @@ pub fn last_key(private: &Path, storage: &Path) -> Option<SuperKey> {
             let Some(written) = fs::metadata(&path).and_then(|m| m.modified()).ok() else { continue };
             let Ok(text) = fs::read_to_string(&path) else { continue };
             let Ok(key) = SuperKey::validate(text.trim()) else { continue };
-            // Of two written in the same second the copy beside the manager is
+            // Of two written in the same second the copy in the owner's storage is
             // the last of them, the folders being scanned in that order.
             if newest.as_ref().is_none_or(|(at, _)| written >= *at) {
                 newest = Some((written, key));
@@ -199,7 +194,7 @@ pub fn last_key(private: &Path, storage: &Path) -> Option<SuperKey> {
     newest.map(|(_, key)| key)
 }
 
-/// Keep `key` beside the manager in the folder of the run that made it, where
+/// Keep `key` in the folder of the run that made it, in the owner's storage, where
 /// the user can read it in Android — and where any app that can read internal
 /// storage can read it too, which is the whole reason it is not kept there by
 /// itself.
@@ -241,9 +236,6 @@ mod tests {
     fn the_files_the_crate_carries_are_the_pinned_release() {
         assert_eq!(KPTOOLS.len(), 249_040);
         assert_eq!(KPIMG.len(), 430_816);
-        assert_eq!(MANAGER.len(), 17_378_611);
-        assert!(MANAGER.starts_with(b"PK"), "the manager is its package");
-        assert!(MANAGER_FILE.ends_with(".apk"));
     }
 
     #[test]
@@ -261,7 +253,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let newer = run(&private, "20261101-130000", "newer456");
         assert_eq!(last_key(&private, &storage).unwrap().expose(), "newer456");
-        // A copy the user kept beside the manager comes later still.
+        // A copy the user kept in their own storage comes later still.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let shared = run(&storage.join("Download/Skyward/FolkPatch"), "20261101-140000", "shared789");
         assert_eq!(last_key(&private, &storage).unwrap().expose(), "shared789");
@@ -272,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_the_user_keeps_beside_the_manager_can_be_read_by_android() {
+    fn a_key_the_user_keeps_in_their_storage_can_be_read_by_android() {
         let dir = tempfile::tempdir().unwrap();
         let key = SuperKey::validate("abcd1234").unwrap();
         let path = share_key(dir.path(), &key).unwrap();

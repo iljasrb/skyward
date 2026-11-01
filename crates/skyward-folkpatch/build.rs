@@ -1,5 +1,9 @@
-//! Fetch the manager this crate carries, once, and take the two tools out of
-//! it, checking all three against the release they are pinned to.
+//! Fetch the FolkPatch release, once, and take the two KernelPatch tools out of
+//! it, checking each against the hash this crate pins.
+//!
+//! The release is a package for the manager, and the tools sit in it; the
+//! package itself is never embedded, saved or run, so what the compiler keeps
+//! is `kptools` and `kpimg` alone.
 //!
 //! The download waits in the user's cache, so only the first build of a
 //! machine pulls it; the files the compiler embeds are the ones found there,
@@ -16,15 +20,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use zip::ZipArchive;
 
-/// The manager, where its release keeps it, and the SHA-256 that release
-/// gives it.
-const MANAGER: (&str, &str, &str) = (
+/// The release the tools come in, and the SHA-256 that release gives it.
+const PACKAGE: (&str, &str, &str) = (
     "FolkPatch_115404_0f3f42ba_on_main-release.apk",
     "https://github.com/LyraVoid/FolkPatch/releases/download/115404/FolkPatch_115404_0f3f42ba_on_main-release.apk",
     "1d29c147443ce0986e3d9f5241f9d377dc1e9c7a60ea51c165737748c5302d2f",
 );
 
-/// The tools inside the manager's package, and the SHA-256 of each.
+/// The tools inside it, and the SHA-256 of each.
 const TOOLS: [(&str, &str, &str); 2] = [
     ("kptools", "lib/arm64-v8a/libkptools.so", "ea06a9a46dc1f210c71a61a9f07556fa9b739c327847c7ab16ccbb46fdb7631c"),
     ("kpimg", "assets/kpimg", "7a7aa4b930d1a9d684cbb426a3999f75cb2e2cead26673dcbbc5f70871f01141"),
@@ -35,16 +38,13 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let cache = cache();
     fs::create_dir_all(&cache).unwrap_or_else(|e| panic!("make {}: {e}", cache.display()));
-    let manager = cached(MANAGER.0, MANAGER.1, MANAGER.2, &cache);
+    let package = cached(PACKAGE.0, PACKAGE.1, PACKAGE.2, &cache);
 
-    let mut assets = String::from("// Written by build.rs: the files this crate carries, fetched and checked.\n\n");
-    assets.push_str(&format!("/// The manager's package, by the name its release gives it.\npub const MANAGER_FILE: &str = {:?};\n", MANAGER.0));
-    assets.push_str(&format!("/// The manager's package, as its release ships it.\npub const MANAGER: &[u8] = include_bytes!({:?});\n", manager.display().to_string()));
-    assets.push_str(&format!("/// The SHA-256 of the manager's package.\npub const MANAGER_SHA256: &str = {:?};\n", MANAGER.2));
+    let mut assets = String::from("// Written by build.rs: the tools this crate carries, fetched and checked.\n\n");
     for (name, inside, wanted) in TOOLS {
-        let path = unpack(&manager, name, inside, wanted, &cache);
+        let path = unpack(&package, name, inside, wanted, &cache);
         assets.push_str(&format!(
-            "/// `{name}`, as the manager's package ships it.\npub const {}: &[u8] = include_bytes!({:?});\n",
+            "/// `{name}`, as the release ships it.\npub const {}: &[u8] = include_bytes!({:?});\n",
             name.to_uppercase(),
             path.display().to_string()
         ));
@@ -86,17 +86,17 @@ fn cached(name: &str, url: &str, wanted: &str, cache: &Path) -> PathBuf {
     path
 }
 
-/// The tool `inside` the manager's package, which is `name` here, unpacked
-/// into `cache` and checked against `wanted`; the file is only there under
-/// its own name once it is known good.
-fn unpack(manager: &Path, name: &str, inside: &str, wanted: &str, cache: &Path) -> PathBuf {
+/// The tool `inside` the release, which is `name` here, unpacked into `cache`
+/// and checked against `wanted`; the file is only there under its own name
+/// once it is known good.
+fn unpack(package: &Path, name: &str, inside: &str, wanted: &str, cache: &Path) -> PathBuf {
     let path = cache.join(name);
     if hash(&path).as_deref() == Some(wanted) {
         return path;
     }
-    let file = fs::File::open(manager).unwrap_or_else(|e| panic!("open {}: {e}", manager.display()));
-    let mut package = ZipArchive::new(file).unwrap_or_else(|e| panic!("read {} as a package: {e}", manager.display()));
-    let mut entry = package.by_name(inside).unwrap_or_else(|e| panic!("find {inside} in {}: {e}", manager.display()));
+    let file = fs::File::open(package).unwrap_or_else(|e| panic!("open {}: {e}", package.display()));
+    let mut release = ZipArchive::new(file).unwrap_or_else(|e| panic!("read {} as a package: {e}", package.display()));
+    let mut entry = release.by_name(inside).unwrap_or_else(|e| panic!("find {inside} in {}: {e}", package.display()));
     let mut bytes = Vec::with_capacity(entry.size() as usize);
     entry.read_to_end(&mut bytes).unwrap_or_else(|e| panic!("read {inside}: {e}"));
     assert_eq!(hex(&Sha256::digest(&bytes)), wanted, "{inside} is not the pinned tool");

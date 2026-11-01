@@ -2,7 +2,7 @@
 //! `kptools` makes of a boot partition, and how the result is written and read
 //! back.
 //!
-//! Nothing here runs the manager's package or any script inside it: the pinned
+//! Nothing here runs the manager or any script of it: the pinned
 //! `kptools` is started directly, what it makes is looked into before it is
 //! written, and the key reaches it down a pipe rather than on a command line a
 //! `ps` would show.
@@ -10,10 +10,9 @@
 use crate::backup::{self, Backup, Layout};
 use crate::{
     Failure, Installed, Key, Options, Outcome, Refusal, Stage, SuperKey, BOOT, KPIMG, KPIMG_SHA256, KPIMG_VERSION, KPTOOLS,
-    KPTOOLS_SHA256, MANAGER, MANAGER_FILE, MANAGER_SHA256,
+    KPTOOLS_SHA256,
 };
 use anyhow::{ensure, Context, Result};
-use sha2::Sha256;
 use skyward_install::image::{self, ImageKind, Ramdisk};
 use skyward_vab::Slot;
 use std::fs::{self, File, OpenOptions};
@@ -36,9 +35,6 @@ const TOOL_LIBS: [(&str, &str); 5] = [
 /// Room left on the owner's storage after everything a run writes, so that the
 /// last copy can be renamed and the manifest written beside it.
 const MARGIN: u64 = 8 << 20;
-
-/// How much is read and written at a time.
-const CHUNK: usize = 1 << 20;
 
 /// Where a version 3 or 4 boot image keeps its kernel, and the header the
 /// count of its bytes is read from.
@@ -164,7 +160,6 @@ impl<'a> Run<'a> {
             slots: self.written.clone(),
             key,
             key_path: self.key_path.clone().expect("the key was saved before any write"),
-            apk_path: self.layout.dir.join(MANAGER_FILE),
             backup_dir: self.layout.backups.clone(),
             kallsyms_all: self.kallsyms_all,
         })
@@ -217,7 +212,7 @@ impl<'a> Run<'a> {
             if !kallsyms {
                 return Err(Stop::Refused(Refusal::NoKallsyms));
             }
-            if self.patched(&mut image_bytes, *slot).map_err(Stop::Why)? {
+            if !self.options.repatch && self.patched(&mut image_bytes, *slot).map_err(Stop::Why)? {
                 return Err(Stop::Refused(Refusal::AlreadyPatched(*slot)));
             }
         }
@@ -232,7 +227,7 @@ impl<'a> Run<'a> {
             return Err(Stop::Refused(Refusal::StorageClosed));
         }
         // A partition's own device says where its end is; metadata does not.
-        let mut need = MANAGER.len() as u64 + MARGIN;
+        let mut need = MARGIN;
         for slot in &self.slots.clone() {
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
             need += self.partition_size(&device).map_err(Stop::Why)?;
@@ -245,8 +240,8 @@ impl<'a> Run<'a> {
     }
 
     /// The copies of the boot partitions, then what has to be in the owner's
-    /// storage before a boot partition is touched: the manager, the key, and
-    /// the manifest that says where everything is.
+    /// storage before a boot partition is touched: the key, and the manifest
+    /// that says where everything is.
     fn saved(&mut self) -> Result<(), Stop> {
         for slot in &self.slots.clone() {
             self.told(Stage::BackingUp { slot: *slot, done: 0, total: 0 });
@@ -263,8 +258,7 @@ impl<'a> Run<'a> {
         self.key = Some(key.clone());
         let key_path = self.save_key(&key).map_err(Stop::Why)?;
         self.key_path = Some(key_path.clone());
-        let apk = self.copy_manager().map_err(Stop::Why)?;
-        self.write_manifest(&apk, &key_path).map_err(Stop::Why)?;
+        self.write_manifest(&key_path).map_err(Stop::Why)?;
         Ok(())
     }
 
@@ -283,37 +277,19 @@ impl<'a> Run<'a> {
         Ok(path)
     }
 
-    fn copy_manager(&mut self) -> Result<PathBuf> {
-        let path = self.layout.dir.join(MANAGER_FILE);
-        let part = path.with_extension("apk.part");
-        let mut file = File::create(&part).with_context(|| format!("make {}", part.display()))?;
-        let total = MANAGER.len() as u64;
-        for (n, chunk) in MANAGER.chunks(CHUNK).enumerate() {
-            file.write_all(chunk).with_context(|| format!("write {}", part.display()))?;
-            (self.tell)(Stage::Copying { done: (n * CHUNK) as u64 + chunk.len() as u64, total });
-        }
-        file.sync_all().with_context(|| format!("flush {}", part.display()))?;
-        drop(file);
-        ensure!(sha256(&fs::read(&part)?) == MANAGER_SHA256, "the manager is not the pinned one");
-        fs::rename(&part, &path).with_context(|| format!("put {} in place", path.display()))?;
-        Ok(path)
-    }
-
-    fn write_manifest(&self, apk: &Path, key_path: &Path) -> Result<()> {
+    fn write_manifest(&self, key_path: &Path) -> Result<()> {
         let layout = &self.layout;
         let facts = backup::Facts {
             device: &self.options.device,
             current: self.options.current,
             slots: &self.options.slots,
-            manager_file: MANAGER_FILE,
-            manager_sha256: MANAGER_SHA256,
             kpimg_version: KPIMG_VERSION,
             kpimg_sha256: KPIMG_SHA256,
             kptools_sha256: KPTOOLS_SHA256,
             backups: &self.backups,
             key_path,
         };
-        backup::write(&facts, &layout.dir).with_context(|| format!("write the manifest beside {}", apk.display()))?;
+        backup::write(&facts, &layout.dir).with_context(|| format!("write the manifest in {}", layout.dir.display()))?;
         Ok(())
     }
 
@@ -517,6 +493,42 @@ fn kallsyms(flags: &str) -> (bool, bool) {
     (set("CONFIG_KALLSYMS"), set("CONFIG_KALLSYMS_ALL"))
 }
 
+/// Whether `slot`'s boot image carries the patch already, as `kptools` reads
+/// it. The tools are written under `private` for the length of the question
+/// and taken away again; nothing on the phone is written.
+pub fn patched_slot(partition_dir: &Path, slot: Slot, private: &Path) -> Result<bool> {
+    let tools = private.join("probe");
+    let made = (|| -> Result<()> {
+        fs::create_dir_all(&tools).with_context(|| format!("make {}", tools.display()))?;
+        for dir in [private, tools.as_path()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).with_context(|| format!("keep {} to root", dir.display()))?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = made {
+        let _ = fs::remove_dir_all(&tools);
+        return Err(e);
+    }
+    let asked = (|| -> Result<bool> {
+        let kptools = tools.join("kptools");
+        fs::write(&kptools, KPTOOLS).with_context(|| format!("write {}", kptools.display()))?;
+        fs::set_permissions(&kptools, fs::Permissions::from_mode(0o700)).with_context(|| format!("let {} be run", kptools.display()))?;
+        let device = image::device(partition_dir, BOOT, slot);
+        let mut image = File::open(&device).with_context(|| format!("open {}", device.display()))?;
+        let kernel = tools.join("kernel.img");
+        fs::write(&kernel, kernel_of(&mut image)?).with_context(|| format!("write {}", kernel.display()))?;
+        let output = Command::new(&kptools)
+            .args(["-l", "-i", &kernel.to_string_lossy()])
+            .stdin(Stdio::null())
+            .output()
+            .context("ask kptools about the kernel")?;
+        let list = String::from_utf8_lossy(&output.stdout);
+        Ok(patched(&list).unwrap_or(false))
+    })();
+    let _ = fs::remove_dir_all(&tools);
+    asked
+}
+
 /// The bytes left on the filesystem `dir` is on.
 fn available(dir: &Path) -> Result<u64> {
     use std::os::unix::ffi::OsStrExt;
@@ -528,9 +540,10 @@ fn available(dir: &Path) -> Result<u64> {
 }
 
 /// The SHA-256 of `bytes`, as the manifest and the screen write it.
+#[cfg(test)]
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -581,6 +594,5 @@ mod tests {
     fn the_sha_of_a_pinned_file_is_the_one_the_build_checked() {
         assert_eq!(sha256(KPTOOLS), KPTOOLS_SHA256);
         assert_eq!(sha256(KPIMG), KPIMG_SHA256);
-        assert_eq!(sha256(MANAGER), MANAGER_SHA256);
     }
 }

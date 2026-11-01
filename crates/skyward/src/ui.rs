@@ -36,8 +36,12 @@ use skyward_ui::app::{
     RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
+#[cfg(feature = "folkpatch")]
+use skyward_ui::app::Pick;
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang, Surface};
+#[cfg(feature = "folkpatch")]
+use skyward_vab::Slot as SkywardSlot;
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
@@ -2144,7 +2148,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // it from starting is said on the page, which would
                     // otherwise wait on a run that never began.
                     #[cfg(feature = "folkpatch")]
-                    Effect::Root { pick, key } => {
+                    Effect::Root { pick, key, repatch } => {
                         ensure!(installer.is_none() && root_worker.is_none(), "a run is under way already");
                         let refused = |app: &mut App, why: String| {
                             app.root_finished(
@@ -2172,6 +2176,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                                 slots: pick.slots(current),
                                 battery,
                                 key,
+                                repatch,
                                 partition_dir: PathBuf::from("/dev/block/by-name"),
                                 storage: PathBuf::from(skyward_crypto::data::SDCARD),
                                 private: PathBuf::from("/data/local/tmp/skyward-folkpatch"),
@@ -2197,6 +2202,24 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     // A copy beside the manager, which the user asked for and
                     // was told the cost of.
+                    // Whether the slot the page would write carries the patch
+                    // already, said on the page before anything is written.
+                    #[cfg(feature = "folkpatch")]
+                    Effect::ReadRootPatched { pick } => {
+                        let slot = match pick {
+                            Pick::Current | Pick::Both => info.slot,
+                            Pick::Other => info.slot.map(SkywardSlot::other),
+                        };
+                        let patched = slot.is_some_and(|slot| {
+                            skyward_folkpatch::patched_slot(
+                                Path::new("/dev/block/by-name"),
+                                slot,
+                                Path::new("/data/local/tmp/skyward-folkpatch"),
+                            )
+                            .unwrap_or(false)
+                        });
+                        app.set_root_patched(patched);
+                    }
                     #[cfg(feature = "folkpatch")]
                     Effect::ShareRootKey { run, key } => {
                         let kept = skyward_folkpatch::share_key(&run, &key)

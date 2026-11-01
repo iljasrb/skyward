@@ -67,9 +67,9 @@ pub const ENTRIES: &[Entry] = &[
     ),
     #[cfg(feature = "folkpatch")]
     entry(
-        ["Root", "Root", "Root"],
+        ["KernelPatch（FolkPatch）", "KernelPatch（FolkPatch）", "KernelPatch (FolkPatch)"],
         HOME,
-        Screen::Root,
+        Screen::Apatch,
         &["root", "folkpatch", "apatch", "kpatch", "kernelpatch", "tiquan", "superkey"],
     ),
     entry(SETTINGS, HOME, Screen::Settings, &["shezhi", "sz", "settings"]),

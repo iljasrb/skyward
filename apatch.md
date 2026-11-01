@@ -5,12 +5,13 @@ Status: implementation plan. No code has been written yet.
 This adds an optional FolkPatch (KernelPatch) root installer to Skyward. A build
 without the feature is byte-for-byte the recovery it is today. A build with it
 gets a **Root** page that patches the selected `boot` slot(s), saves the original
-partitions, and puts the matching FolkPatch manager APK and SuperKey in internal
-storage.
+partitions, and keeps the SuperKey it patched with.
 
 The kernel-side binary is KernelPatch 0.13.9 as repackaged by FolkPatch 115404.
 Skyward does not run the FolkPatch recovery ZIP or any install script from the
-APK; it invokes the pinned `kptools` directly and writes the image itself.
+APK; it invokes the pinned `kptools` directly and writes the image itself. The
+manager is the owner's to install in Android, from its own release: nothing of it
+is carried, saved or run here.
 
 ## Scope
 
@@ -21,16 +22,17 @@ APK; it invokes the pinned `kptools` directly and writes the image itself.
 - Choose Current, Other, or Both slots, default Current, with the existing
   picker.
 - Save the untouched `boot` partition of every selected slot before writing.
-- Copy the pinned FolkPatch manager APK to internal storage and save the
-  SuperKey where the recovery and the user can read it, but other apps cannot.
+- Save the SuperKey where the recovery and the user can read it, but other apps
+  cannot, and keep a copy beside the run only when the user asks for one.
 - A dedicated Root page reached from the home page.
-- A compile-time cargo feature that omits the installer, the embedded assets and
+- A compile-time cargo feature that omits the installer, the embedded tools and
   the UI when off.
 
 ### Out
 
 - Unpatch, restore, or key-reset UI. Backups are restorable manually.
-- Installing the APK from recovery. Recovery has no package manager.
+- Installing the manager from recovery. Recovery has no package manager, and the
+  APK is not carried.
 - Module, KPM, or root-app management.
 - Non-A/B devices.
 - `init_boot`, `vendor_boot`, `recovery`, `vbmeta`, or super changes.
@@ -64,29 +66,33 @@ APK; it invokes the pinned `kptools` directly and writes the image itself.
 1. Boot Skyward recovery.
 2. Home -> **Root**.
 3. Pick Current, Other, or Both. Current is the default.
-4. Pick **Generate** or **Enter**, then type a key if entering one.
+4. Pick **Generate**, **Enter** (and type the key), or **Use the last key**.
 5. Swipe to install.
 6. Skyward checks the battery, kernel config, free space, and that each selected
-   `boot` is a stock, unpatched boot image.
+   `boot` is a stock, unpatched boot image. An image that carries the patch
+   already stops the run, and the page then offers to patch over it anyway.
 7. It writes the original partitions to
-   `/sdcard/Download/Skyward/FolkPatch/<stamp>/backup/`, then the manager APK,
-   then patches, verifies, flashes, and reads back each slot.
-8. The success page shows the SuperKey, APK path, key path, and backup path.
-9. Reboot Android, install the APK from Downloads, open FolkPatch, and enter the
-   SuperKey.
+   `/sdcard/Download/Skyward/FolkPatch/<stamp>/backup/`, then patches, verifies,
+   flashes, and reads back each slot.
+8. The run prints its steps in a log window as it goes; the success page keeps the
+   last of them and shows the SuperKey on a line of its own.
+9. Reboot Android, open FolkPatch, and enter the SuperKey.
 
-The page warns that the key is shown only for this recovery session and must be
-written down before rebooting. The root-only file remains available through
-Skyward's file manager or terminal.
+The page shows the key in the monospace face, and offers to keep a copy in internal
+storage with the cost said plainly: anything with storage permission can read it,
+and the key is root-equivalent. The newest key an earlier run left on this phone
+can be reused and shown, so patching again after a stock update keeps the key the
+phone had. The root-only file remains available through Skyward's file manager or
+terminal.
 
 ## Architecture
 
 ```text
 crates/skyward-folkpatch/        new, optional
   assets/licenses/               GPL-2.0 and GPL-3.0 texts of the pinned releases
-  build.rs                       fetch, unpack and SHA-256 check of the three files
+  build.rs                       fetch, unpack and SHA-256 check of the two tools
   src/lib.rs                     constants, key, options, outcomes, refusals
-  src/install.rs                 preflight, backup, patch, flash, copy
+  src/install.rs                 preflight, backup, patch, flash
   src/backup.rs                  raw partition backup and manifest
   src/key.rs                     generation and validation
 
@@ -130,7 +136,7 @@ folkpatch = ["dep:skyward-folkpatch"]
 `skyward-folkpatch` is an optional dependency in both. Feature off means:
 
 - no `skyward-folkpatch` compile;
-- no 18 MB of assets in the binary;
+- no tools fetched or embedded;
 - no `Screen::Root`, `Screen::RootKey`, `Action::Root`, `Confirm::RootPatch`,
   `Effect::Root`, or `State.root`;
 - no home row and no search entry.
@@ -148,10 +154,7 @@ AVB partition-fit check, failing clearly if the image no longer fits.
 
 ```rust
 pub const BOOT: &str = "boot";
-pub const MANAGER_PACKAGE: &str = "me.yuki.folk";
-pub const MANAGER_VERSION: &str = "115404";
 pub const KPIMG_VERSION: &str = "0.13.9";
-pub const MANAGER_FILE: &str = "FolkPatch_115404_0f3f42ba_on_main-release.apk";
 
 pub struct Options {
     pub device: String,            // the phone's own name
@@ -159,6 +162,7 @@ pub struct Options {
     pub slots: Vec<Slot>,          // one or both, deduplicated
     pub battery: Battery,          // the charge the recovery read
     pub key: Key,                  // Generate, or Enter(SuperKey) already validated
+    pub repatch: bool,             // patch an image that carries the patch already
     pub partition_dir: PathBuf,    // /dev/block/by-name
     pub storage: PathBuf,          // /sdcard
     pub private: PathBuf,          // /data/local/tmp/skyward-folkpatch
@@ -188,8 +192,8 @@ pub enum Outcome {
 }
 ```
 
-`Installed` carries the selected slots, the SuperKey, the key file path, the APK
-path, the backup directory, and whether `CONFIG_KALLSYMS_ALL` was set.
+`Installed` carries the selected slots, the SuperKey, the key file path, the
+backup directory, and whether `CONFIG_KALLSYMS_ALL` was set.
 
 `Failure` carries the stage, the slot if one was being worked on, the reason, the
 backups completed so far, the slots that may have been written, and the saved
@@ -217,8 +221,8 @@ All checks run before any boot write. Refuse when:
   (`libc`, `libm`, `libdl`, `libz`);
 - the owner's internal storage is not open, or the run directory cannot be
   created;
-- there is not enough free space for the APK, every selected full partition
-  backup, and an 8 MiB margin;
+- there is not enough free space for every selected full partition backup and an
+  8 MiB margin;
 - the SuperKey is invalid.
 
 `CONFIG_KALLSYMS_ALL` is a warning, not a refusal. FolkPatch supports kernels
@@ -241,7 +245,6 @@ detected. The documented requirement is a stock boot image.
 
 ```text
 /sdcard/Download/Skyward/FolkPatch/<stamp>/
-  FolkPatch_115404_0f3f42ba_on_main-release.apk
   manifest.txt
   backup/
     boot_a.img
@@ -253,11 +256,12 @@ detected. The documented requirement is a stock boot image.
   tools/                          transient kptools and kpimg
 ```
 
-`manifest.txt` holds the device codename, current slot, selected slots, manager
-file/hash, kpimg version/hash, `kptools` hash, backup paths/sizes/hashes, and the
-key file path. It never holds the key or a hash of it.
+`manifest.txt` holds the device codename, current slot, selected slots, kpimg
+version/hash, `kptools` hash, backup paths/sizes/hashes, and the key file path. It
+never holds the key or a hash of it.
 
-The key is deliberately **not** written beside the APK in shared storage.
+The key is deliberately **not** written in shared storage unless the user asks for
+a copy there and is told what it means.
 Android's `/sdcard` FUSE layer can expose a root-owned file to apps with storage
 permission; a SuperKey is root-equivalent. The success page shows the key, and
 the root-only file can be read from Skyward's file manager or terminal. The
@@ -275,16 +279,17 @@ For each selected slot:
 
 A backup is never reused or overwritten by a later run. If a run is interrupted,
 its files stay; the next run gets a new stamp directory and refuses if the boot
-image is already patched. The user restores from the earlier run's backup before
-trying again.
+image is already patched, since a key it cannot read may open that patch. The
+page then offers to patch over it anyway, for a user who means to; the earlier
+run's backup is the way back.
 
 Backups are full partition images, not just the image payload, so
 `fastboot flash boot_a boot_a.img` restores exactly what was there.
 
 ## Patching
 
-`kptools` and `kpimg` are extracted from the embedded assets to the transient
-`tools/` directory, mode 0700, and removed after the run. `kptools` is a
+`kptools` and `kpimg` are written from the binary to the transient `tools/`
+directory, mode 0700, and removed after the run. `kptools` is a
 dynamically linked aarch64 PIE using `/system/bin/linker64`; the preflight checks
 that interpreter and its libraries.
 
@@ -333,21 +338,17 @@ be patched; `Failure.written` says so, and both backups exist.
 No boot-control slot is changed. Patching Other does not switch to it; the user
 uses the existing Slot page. Patching Both leaves the current slot active.
 
-## Manager and SuperKey
+## The key
 
 After backups, before any boot write:
 
 1. Generate or validate the key.
-2. Create the run directory.
-3. Copy the APK to a `.part` file, `fsync`, hash-check against the pinned hash,
-   rename into place.
-4. Create the private directory, write `superkey.txt` mode 0600 via `create_new`,
+2. Create the private directory, write `superkey.txt` mode 0600 via `create_new`,
    `fsync`, and read it back.
-5. Write `manifest.txt` with paths and hashes only.
+3. Write `manifest.txt` with paths and hashes only.
 
-If either copy fails, boot is untouched. The APK is the exact pinned FolkPatch
-115404 release. Recovery does not attempt `pm install`; the user taps it in
-Android.
+If either write fails, boot is untouched. Nothing of the manager is saved: the
+owner installs it in Android from its own release and enters the key there.
 
 Generated keys are 24 characters from `[A-Za-z0-9]`, drawn from `/dev/urandom`
 with rejection sampling, and rejected unless they contain at least one letter
@@ -355,53 +356,48 @@ and one digit. Entered keys are validated against the same rules APatch states:
 8-63 characters, ASCII letters and digits, at least one of each, no spaces or
 symbols. The crate revalidates whatever the UI passes.
 
-The APK cannot be installed while the data partition is locked, so the Root page
-requires the owner's storage to be open. If it is not, the page says so and
-offers the Decrypt page; it does not offer a boot-only install. This keeps the
-stated scope (boot + manager + key) honest.
+The backups go in the owner's storage, which a locked data partition keeps shut,
+so the Root page requires it to be open. If it is not, the page says so and
+offers the Decrypt page; it does not offer a run whose backup has nowhere to go.
 
 ## UI
 
 ### Home
 
-Add a feature-gated one-row group after the tool rows:
+The home page gains one row, **Root**. It opens `Screen::Root`, a hub that says
+these are the root methods built into this recovery and lists them; the one there
+is is **KernelPatch (FolkPatch)**, which opens `Screen::Apatch`. Search finds it
+under KernelPatch, FolkPatch, APatch, root, and pinyin keys.
 
-```text
-Root   FolkPatch
-```
+### KernelPatch (FolkPatch)
 
-It opens `Screen::Root`. The same page is added to search under Root, FolkPatch,
-APatch, and pinyin keys.
+One screen, laid out so nothing moves as the run goes:
 
-### Root page
+- **Bundled** card: the KernelPatch release, as FolkPatch builds it, with both
+  tool hashes in the card's own text;
+- **Partitions**: Current / Other / Both;
+- **Key**: Generate / Enter a key / Use the last key (dim when no key is on
+  file), and under them the SuperKey card, which shows where the key stands and
+  opens the superkey page;
+- the page's own footnotes: whether the image carries the patch already, what
+  stands in the way, or that nothing does, and the cost of the patch;
+- a swipe to start, whose label becomes "patch it again" when the slot already
+  carries the patch.
 
-Idle state:
+The superkey page types the key on the normal keyboard once *Enter a key* is
+chosen, and shows the key the run would use otherwise, with the key an earlier
+run made under it.
 
-- a short explanation and the security warning;
-- slot picker using the existing `Pick` rows and `pages::pick_title`;
-- key mode rows: Generate / Enter;
-- an Enter row that opens `Screen::RootKey` on the normal on-screen keyboard;
-- footnotes for data closed, low battery, or no A/B slot;
-- warnings for a locked bootloader or a pending update, without hiding confirm;
-- a swipe-to-confirm track, only when every prerequisite is met.
+### The run's page
 
-Running state:
+A page of its own (`Screen::ApatchJob`), so nothing of the setup sits under it:
 
-- a progress card showing Checking, Copying, Backing up slot X, Patching slot X,
-  Verifying slot X, Flashing slot X;
-- no back action and no cancel. Leaving the page is refused with a "wait for it
-  to finish" message, as the partition-work page does.
-
-Finished state:
-
-- success: green result, slots patched, the full SuperKey, APK path, key path,
-  backup directory, and a note that the APK is installed from Android;
-- failure: the stage, slot, reason, written slots, backup paths, and the exact
-  `fastboot` commands to restore;
-- refusal: the reason and "nothing was written".
-
-All strings get Hans, Hant, and English `Text` entries. Commands and paths stay
-ASCII.
+- **Log**: the window the run prints into, keeping its size from the first line
+  to the last, the newest at its foot and older lines falling off the top;
+- **Key**: the key it made, in a card of its own, in the monospace face;
+- the swipe that follows the run: a copy of the key, or writing the image again
+  when a run stopped at one that carries the patch already;
+- Done, once it has ended. Back is refused while it runs.
 
 ### State and actions
 
@@ -419,17 +415,18 @@ pub enum RootAction {
     Pick(Pick),
     KeyMode(KeyMode),
     EditKey,
+    ShowLast,
 }
 ```
 
-`Action::Root(RootAction)` carries those. `Confirm::RootPatch` starts the work.
-`Effect::Root(RootRequest)` carries the concrete slots and `skyward_folkpatch::Key`
-to the runtime. `RootRequest` is defined in `skyward-ui/src/root.rs`; its key has
-the crate's redacting `Debug`.
+`Action::Root(RootAction)` carries those. `Confirm::RootPatch` starts the work and
+`Confirm::RootRepatch` patches over an image that has the patch already.
+`Effect::Root { pick, key, repatch }` carries what the runtime needs;
+the key has the crate's redacting `Debug`.
 
 `Screen::Root` and `Screen::RootKey` are feature-gated. `App` gains:
 
-- `root_stage(stage)` updating the progress state;
+- `root_stage(stage)` updating the progress state and printing the step once;
 - `root_finished(outcome, now)` storing the result and waking the panel;
 - `field_mut` and keyboard handling for `Screen::RootKey`;
 - a `Screen::Root` arm in `back` that refuses while running and clears the
@@ -477,9 +474,9 @@ reflash path.
 ## Failure handling and rollback
 
 - Preflight refusal: nothing written; show why.
-- Backup/copy failure: no boot write; show the completed backups.
-- Patch or verify failure: no boot write; manager/key may already be on storage;
-  show the saved key path if one exists.
+- Backup failure: no boot write; show the completed backups.
+- Patch or verify failure: no boot write; the key may already be on storage, and
+  the page shows the saved key path if one exists.
 - Flash failure: that slot may be partially written; mark it in `written`, show
   both backups, and tell the user not to reboot into it.
 - Interrupted run: the next run refuses an already-patched image; use the earlier
@@ -503,24 +500,24 @@ fastboot reboot
 | --- | --- | ---: | --- |
 | `kptools` | FolkPatch 115404 `lib/arm64-v8a/libkptools.so` | 249,040 | `ea06a9a46dc1f210c71a61a9f07556fa9b739c327847c7ab16ccbb46fdb7631c` |
 | `kpimg` | FolkPatch 115404 `assets/kpimg` | 430,816 | `7a7aa4b930d1a9d684cbb426a3999f75cb2e2cead26673dcbbc5f70871f01141` |
-| Manager APK | FolkPatch release 115404, `FolkPatch_115404_0f3f42ba_on_main-release.apk` | 17,378,611 | `1d29c147443ce0986e3d9f5241f9d377dc1e9c7a60ea51c165737748c5302d2f` |
 
 - FolkPatch 115404: <https://github.com/LyraVoid/FolkPatch/releases/tag/115404>,
   package `me.yuki.folk`, versionCode 115404, versionName `0f3f42ba`.
 - KernelPatch 0.13.9: <https://github.com/bmax121/KernelPatch/releases/tag/0.13.9>.
   FolkPatch repackaged that source, but its bundled pair is not byte-identical to
   the KernelPatch 0.13.9 release assets (`kptools-android` is 248,016 bytes,
-  `kpimg-android` 296,336), so the tools are taken from the manager's package and
-  manager and tools stay from one release.
+  `kpimg-android` 296,336), so the tools are taken from the FolkPatch release and
+  stay from one release.
 
-`build.rs` fetches the manager's package from the pinned release with `curl` the
-first time a machine builds this crate, unpacks `kptools` and `kpimg` from it, and
-hashes all three, failing the build if one is not what the table above pins. The
-fetched package and the two unpacked tools wait in `$XDG_CACHE_HOME/skyward/
-folkpatch` (`~/.cache/...` without it), so a later build reads and re-checks them
-instead of pulling 17 MiB again, and `cargo clean` does not throw them away. The
-tree carries no assets besides the license texts: the cost is about 17.2 MiB in
-the recovery binary only, and a first build on a machine needs the network.
+`build.rs` fetches that release with `curl` the first time a machine builds this
+crate, unpacks `kptools` and `kpimg` from it, and hashes both, failing the build
+if one is not what the table above pins. The package is only the carrier: it is
+not embedded, saved or run. The fetched package and the two unpacked tools wait in
+`$XDG_CACHE_HOME/skyward/folkpatch` (`~/.cache/...` without it), so a later build
+reads and re-checks them instead of pulling 17 MiB again, and `cargo clean` does
+not throw them away. The tree carries no assets besides the license texts: the
+cost is about 680 KiB in the recovery binary only, and a first build on a machine
+needs the network.
 
 ### Verified against the pinned binary, on a ThinkPhone in recovery
 
@@ -555,16 +552,13 @@ UPX 5.3.0 was tested against the pinned assets:
 | --- | ---: | ---: | --- |
 | `kptools` | 249,040 | 120,924 | 48.6%; runs under the recovery's `linker64` via qemu |
 | `kpimg` | 430,816 | — | rejected, not an executable |
-| Manager APK | 17,378,611 | — | rejected, not an executable |
 | Skyward `recovery` | 7,966,392 | 3,457,064 | 43.4%; not device-tested |
 
-Decision: do not use UPX. The only usable asset win is 128 KB, while the manager
-APK dominates the feature size and cannot be packed. Packing Skyward itself
-would put a decompression stub ahead of the Rust runtime, change crash and debug
-behavior, and need its own device matrix; the 4.5 MB saving does not justify
-that risk. If a recovery partition is too small, shrink or externalize the APK
-before considering binary packing, or rebuild `kptools` from source with LTO and
-strip rather than repacking the pinned release.
+Decision: do not use UPX. The only usable asset win is 128 KB. Packing Skyward
+itself would put a decompression stub ahead of the Rust runtime, change crash and
+debug behavior, and need its own device matrix; the 4.5 MB saving does not justify
+that risk. If a recovery partition is too small, rebuild `kptools` from source with
+LTO and strip rather than repacking the pinned release.
 
 The pinned `kptools` stays byte-identical to the release asset, so `build.rs`
 continues to check the upstream hash.
@@ -572,10 +566,9 @@ continues to check the upstream hash.
 ## Licensing and security
 
 - KernelPatch is GPL-2.0; FolkPatch and Skyward are GPL-3.0. Include the full
-  license texts and source links in `crates/skyward-folkpatch/assets/licenses/`,
-  a root `THIRD_PARTY_NOTICES.md`, and a copy of the notices in each run folder.
-  Release review must confirm that the tools and APK remain separate extracted
-  files (mere aggregation), not linked into Skyward.
+  license texts and source links in `crates/skyward-folkpatch/assets/licenses/`
+  and a root `THIRD_PARTY_NOTICES.md`. Release review must confirm that the tools
+  remain separate extracted files (mere aggregation), not linked into Skyward.
 - The SuperKey is root-equivalent. It is generated from a CSPRNG, never logged,
   never put in argv, never stored in shared storage, and saved mode 0600 in a
   0700 directory.
@@ -587,8 +580,8 @@ continues to check the upstream hash.
   a partition job.
 - Only `boot` is written. `init_boot`, `vendor_boot`, `recovery`, `dtbo`,
   `vbmeta`, super, and user data are untouched.
-- The manager APK and the KernelPatch tools are pinned by hash. Skyward does not
-  execute the APK's scripts or any downloaded code.
+- The KernelPatch tools are pinned by hash. Skyward does not execute the
+  FolkPatch package's scripts or any downloaded code.
 - Recovery adb is already an unauthenticated root shell; the Root page does not
   widen that boundary, but it does make the SuperKey the thing to protect.
 
@@ -600,7 +593,7 @@ Feature off:
   warnings`;
 - `cargo ndk -t arm64-v8a --platform 30 clippy -p skyward -p skyward-install -- -D
   warnings`;
-- no Root home row or search entry, and the binary contains no manager assets.
+- no Root home row or search entry, and the binary carries no tools.
 
 Feature on:
 
@@ -632,17 +625,18 @@ Manual device matrix:
 - data locked (no confirm, no writes), then unlocked;
 - locked bootloader and pending OTA warnings (confirm stays available), low
   battery refusal;
-- boot the patched slot, install the APK, enter the key, confirm root;
+- boot the patched slot, install the manager in Android, enter the key, confirm
+  root;
 - restore from backup with fastboot and confirm the stock boot returns;
-- power loss mid-run, then confirm the next run refuses already-patched boot and
-  points at the earlier backup.
+- power loss mid-run, then confirm the next run refuses already-patched boot,
+  offers to patch over it, and points at the earlier backup.
 
 ## Rollout
 
 1. **Crate skeleton:** asset fetch and hash check, key/validation, manifest and
    backup code. Feature wiring; no UI. Feature-off build must be unchanged.
-2. **Installer:** kptools extraction, FD key, patch/verify, flash/readback,
-   manager/key copy. Device-test on one unlocked phone before UI work.
+2. **Installer:** kptools extraction, FD key, patch/verify, flash/readback, key
+   and manifest. Device-test on one unlocked phone before UI work.
 3. **UI/runtime:** Root page, home row, search entry, effect, worker, failure and
    success states, tests.
 4. **Release gate:** device matrix, per-device image size check, license review,
@@ -655,11 +649,12 @@ Manual device matrix:
 
 ## Risks and limits
 
-- The manager adds about 17.2 MiB to the recovery binary. The current 100 MiB
-  bronco image has room, but some recovery partitions may not; the packer's AVB
-  fit check is the hard stop.
+- The tools add about 680 KiB to the recovery binary, and the manager is not
+  carried at all. A recovery partition with room for Skyward has room for this;
+  the packer's AVB fit check is the hard stop.
 - `kptools` is an opaque root-level binary. Pinning its hash and not executing
-  APK scripts limits the trust surface, not the consequences of a bad patch.
+  the package's scripts limits the trust surface, not the consequences of a bad
+  patch.
 - OEM bootloader/AVB behavior varies. A locked bootloader is allowed with a
   warning, but the patched image will not boot until it is unlocked; no vbmeta
   workaround is attempted.

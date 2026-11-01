@@ -1793,10 +1793,13 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
 
 /// Swipe-to-confirm control in the thick-slider style; `progress` (0 to 1)
 /// is how far the knob has been dragged. Returns the track.
+/// The height of a swipe-to-confirm track.
+pub(crate) const CONFIRM_H_DP: f32 = 56.0;
+
 pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, danger: bool, progress: f32) -> Rect {
     let m = &t.m;
     let accent = if danger { t.pal.danger } else { t.pal.accent };
-    let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(CONFIRM_H_DP));
     c.fill_round_rect(x, top, w, h, h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
     c.text_center(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, m.row_title_px, accent);
     let k = h - m.dp(8.0);
@@ -2431,11 +2434,11 @@ pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str,
 }
 
 /// The height of each line on a card of what a program showed.
-const OUTPUT_PITCH_DP: f32 = 19.0;
+pub(crate) const OUTPUT_PITCH_DP: f32 = 19.0;
 /// From the card's top to the ink of its first line.
-const OUTPUT_TOP_DP: f32 = 18.0;
+pub(crate) const OUTPUT_TOP_DP: f32 = 18.0;
 /// From the baseline of the card's last line to its foot.
-const OUTPUT_FOOT_DP: f32 = 20.0;
+pub(crate) const OUTPUT_FOOT_DP: f32 = 20.0;
 
 /// One line a program showed, as its card lays it out: in the monospaced
 /// face where it has every character of the line, so that what is laid out
