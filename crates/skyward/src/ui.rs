@@ -2879,7 +2879,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                                     app.report(&skyward_ui::fmt::transfer_left_on(app.state.lang, &format!("{e:#}")), now);
                                 }
                             }
-                            (on, t) => unreachable!("the switch turned file transfer {on} while it was {}", t.is_some()),
+                            // The switch already stands where it was asked
+                            // to: a second tap before the first took effect,
+                            // or settings read again, is no reason to stop.
+                            (true, Some(t)) => transfer = Some(t),
+                            (false, None) => {}
                         }
                     }
                 }
