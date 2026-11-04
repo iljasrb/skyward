@@ -110,6 +110,8 @@ pub struct RestoreTask {
     /// Which of [`Part::ALL`] to restore.
     pub parts: [bool; 4],
     pub device: String,
+    /// The baseband partitions this phone has, which a backup may name.
+    pub efs: Vec<String>,
     pub skipped: Vec<String>,
     /// What has to happen before the slot's partitions in super are written
     /// over, as before an update.
@@ -498,9 +500,10 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
 fn check(folder: &Path, stored: &Stored, cancel: &AtomicBool, telling: &mut Telling) -> Result<()> {
     let mut reader = Reader::open(folder, stored);
     copy(&mut reader, &mut io::sink(), stored.size, cancel, telling)?;
-    let mut rest = Vec::new();
-    reader.read_to_end(&mut rest).context("read")?;
-    ensure!(rest.is_empty(), "the backup holds more than was stored");
+    // One byte more is enough to know there is more; reading it all would let
+    // a crafted backup fill memory.
+    let mut extra = [0u8; 1];
+    ensure!(reader.read(&mut extra).context("read")? == 0, "the backup holds more than was stored");
     reader.check(stored)
 }
 
@@ -533,6 +536,19 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     let mut items: Vec<&Item> = manifest.items.iter().filter(|i| t.parts[index(i.part)]).collect();
     ensure!(!items.is_empty(), "nothing chosen to restore is in the backup");
     items.sort_by_key(|i| RESTORE_ORDER.iter().position(|&p| p == i.part));
+    // A manifest is a file like any other, and a backup may come from a
+    // computer: nothing it names may reach outside the partitions it says.
+    for item in &items {
+        ensure!(
+            valid_item(item, &t.efs),
+            "the backup names {:?} as a {:?} partition, which this phone does not have",
+            item.name,
+            item.part
+        );
+        for name in &item.stored.files {
+            ensure!(safe_file_name(name), "the backup keeps a file outside its folder: {name:?}");
+        }
+    }
     // All that can be seen before anything is written.
     let system = items.iter().any(|i| i.part == Part::System);
     if system || items.iter().any(|i| i.part == Part::Boot) {
@@ -608,6 +624,24 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     }
     unsafe { libc::sync() };
     Ok(unmade)
+}
+
+/// Whether `name` is one plain file or partition name, not a path.
+fn safe_file_name(name: &str) -> bool {
+    let path = Path::new(name);
+    !name.is_empty()
+        && path.components().count() == 1
+        && matches!(path.components().next(), Some(std::path::Component::Normal(_)))
+}
+
+/// Whether a backup's part names a partition this phone has.
+fn valid_item(item: &Item, efs: &[String]) -> bool {
+    match item.part {
+        Part::Boot => BOOT.contains(&item.name.as_str()),
+        Part::Efs => efs.iter().any(|name| name == &item.name),
+        Part::System => safe_file_name(&item.name),
+        Part::Data => item.name == "data",
+    }
 }
 
 /// The partition a part of a backup goes back to.

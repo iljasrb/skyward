@@ -51,6 +51,36 @@ impl Skipped {
     }
 }
 
+/// Whether `rel` names something inside the archive's folder: not empty, and
+/// every part of it a plain name.
+fn safe_rel(rel: &Path) -> Result<()> {
+    ensure!(!rel.as_os_str().is_empty(), "the archive names an empty path");
+    ensure!(
+        rel.components().all(|c| matches!(c, Component::Normal(_))),
+        "the archive names {} outside its folder",
+        rel.display()
+    );
+    Ok(())
+}
+
+/// Refuse to write through a link the archive made earlier: every folder
+/// above `rel` must be a real folder, not a symbolic link.
+fn check_parents(root: &Path, rel: &Path) -> Result<()> {
+    let Some(parent) = rel.parent() else { return Ok(()) };
+    let mut path = root.to_path_buf();
+    for part in parent.components() {
+        let Component::Normal(name) = part else { bail!("the archive names {} outside its folder", rel.display()) };
+        path.push(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => bail!("the archive writes through the link {}", path.display()),
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("look at {}", path.display())),
+        }
+    }
+    Ok(())
+}
+
 /// How many bytes of file contents `pack` would archive, each file with
 /// more than one name once, and how many entries there are; stopping when
 /// asked to.
@@ -266,7 +296,8 @@ pub fn unpack(input: impl Read, root: &Path, skipped: &Skipped, cancel: &AtomicB
         }
         let mut entry = entry.context("read the archive")?;
         let rel = entry.path().context("read the archive")?.into_owned();
-        ensure!(rel.components().all(|c| matches!(c, Component::Normal(_))), "the archive names {} outside its folder", rel.display());
+        safe_rel(&rel)?;
+        check_parents(root, &rel)?;
         if skipped.covers(&rel) || unpacked.unmade.iter().any(|u| rel.starts_with(u)) {
             continue;
         }
@@ -331,6 +362,8 @@ pub fn unpack(input: impl Read, root: &Path, skipped: &Skipped, cancel: &AtomicB
                 }
                 EntryType::Link => {
                     let first = entry.link_name().context("read what it is another name of")?.context("it names no file")?.into_owned();
+                    safe_rel(&first)?;
+                    check_parents(root, &first)?;
                     remove_any(&path)?;
                     fs::hard_link(root.join(first), &path).context("make it")?;
                 }
@@ -388,9 +421,41 @@ fn sweep(root: &Path, rel: &Path, dev: u64, held: &HashSet<PathBuf>, skipped: &S
             if meta.is_dir() {
                 sweep(root, &rel, dev, held, skipped, own.as_deref())?;
             }
-        } else if !(meta.is_dir() && own.as_deref() != above) {
+        } else if meta.is_dir() {
+            // A folder with a key of its own belongs to another user, and is
+            // left as it is.
+            if own.as_deref() == above {
+                remove_tree(root, &rel, dev, skipped, above)?;
+            }
+        } else {
             remove(&path)?;
         }
+    }
+    Ok(())
+}
+
+/// Take away what is under the folder at `rel`, without crossing into
+/// another filesystem mounted there, into a folder another key encrypts, or
+/// into what is skipped; a folder with any of those left in it stays.
+fn remove_tree(root: &Path, rel: &Path, dev: u64, skipped: &Skipped, above: Option<&[u8]>) -> Result<()> {
+    let path = root.join(rel);
+    for (name, child, meta) in children(&path)? {
+        let child_rel = rel.join(&name);
+        if skipped.covers(&child_rel) || (meta.is_dir() && meta.dev() != dev) {
+            continue;
+        }
+        if meta.is_dir() {
+            let own = key(&child)?;
+            if own.as_deref() != above {
+                continue;
+            }
+            remove_tree(root, &child_rel, dev, skipped, own.as_deref())?;
+        } else {
+            fs::remove_file(&child).with_context(|| format!("take away {}", child.display()))?;
+        }
+    }
+    if fs::read_dir(&path).with_context(|| format!("read {}", path.display()))?.next().is_none() {
+        fs::remove_dir(&path).with_context(|| format!("take away {}", path.display()))?;
     }
     Ok(())
 }
@@ -443,10 +508,16 @@ fn records(entry: &mut tar::Entry<impl Read>) -> Result<Records> {
 
 /// The bytes a hex string stands for; an error where it is not one.
 fn unhex(text: &str) -> Result<Vec<u8>> {
+    ensure!(text.is_ascii(), "a hex string is ASCII");
     ensure!(text.len().is_multiple_of(2), "a hex string is in pairs");
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).with_context(|| format!("read {text} as hex")))
+    text.as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).expect("two ASCII bytes are text");
+            u8::from_str_radix(pair, 16).with_context(|| format!("read {text} as hex"))
+        })
         .collect()
 }
 
@@ -686,8 +757,45 @@ mod tests {
         assert_eq!(unhex("00ff10").unwrap(), [0x00, 0xff, 0x10]);
         assert!(unhex("0f0").is_err(), "half a byte");
         assert!(unhex("zz").is_err(), "not hex at all");
+        assert!(unhex("0é0").is_err(), "a value that is not ASCII");
         // What `security.sehash` holds, which is why any of this exists.
         assert_eq!(unhex("7301b8c83dda7d7040400a2f").unwrap(), b"s\x01\xb8\xc8=\xda}p@@\n/");
+    }
+
+    #[test]
+    fn an_archive_does_not_write_through_a_link_it_made() {
+        let at = scratch("link-through");
+        let root = at.join("root");
+        fs::create_dir_all(&root).unwrap();
+        let outside = at.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let me = fs::metadata(&at).unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut b = Builder::new(&mut bytes);
+            let mut header = Header::new_gnu();
+            header.set_entry_type(EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_uid(u64::from(me.uid()));
+            header.set_gid(u64::from(me.gid()));
+            header.set_mtime(0);
+            b.append_link(&mut header, "link", &outside).unwrap();
+            let mut header = Header::new_gnu();
+            header.set_entry_type(EntryType::Regular);
+            header.set_size(3);
+            header.set_mode(0o644);
+            header.set_uid(u64::from(me.uid()));
+            header.set_gid(u64::from(me.gid()));
+            header.set_mtime(0);
+            b.append_data(&mut header, "link/file", io::Cursor::new(b"bad")).unwrap();
+            b.finish().unwrap();
+        }
+        let err = unpack(io::Cursor::new(bytes), &root, &Skipped::new(&[]), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("a file below a link is not written");
+        assert!(format!("{err:#}").contains("writes through the link"), "{err:#}");
+        assert!(!outside.join("file").exists());
+        fs::remove_dir_all(&at).unwrap();
     }
 
     /// An archive holding an extended header the tar reader cannot parse, of

@@ -20,6 +20,9 @@ pub const FOLDER: &str = "Skyward/backups";
 /// The layout of a backup this recovery writes and reads.
 pub const FORMAT: u32 = 1;
 
+/// The most a manifest can take; a real one is a few kilobytes.
+const MANIFEST_MAX: u64 = 1 << 20;
+
 /// What a backup can hold, in the order the backup page lists it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,6 +77,10 @@ impl Manifest {
     /// The manifest in the backup's `folder`.
     pub fn read(folder: &Path) -> Result<Manifest> {
         let path = folder.join(MANIFEST);
+        let meta = std::fs::symlink_metadata(&path).with_context(|| format!("read {}", path.display()))?;
+        ensure!(!meta.file_type().is_symlink(), "{} is a link, not a manifest", path.display());
+        let size = meta.len();
+        ensure!(size <= MANIFEST_MAX, "{} is {size} bytes, larger than a manifest can be", path.display());
         let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let manifest: Manifest = toml::from_str(&text).with_context(|| format!("read {}", path.display()))?;
         ensure!(manifest.format == FORMAT, "{} is in layout {}, which this recovery does not read", path.display(), manifest.format);
@@ -96,7 +103,7 @@ impl Manifest {
 
     /// The bytes its files take.
     pub fn size(&self) -> u64 {
-        self.items.iter().map(|i| i.stored.stored).sum()
+        self.items.iter().fold(0, |sum, i| sum.saturating_add(i.stored.stored))
     }
 }
 
