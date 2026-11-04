@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - name: Lint what runs on the computer
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --features roots -- -D warnings
       - name: Test
         run: cargo test --locked --workspace --features roots
       - name: Lint what runs on the phone

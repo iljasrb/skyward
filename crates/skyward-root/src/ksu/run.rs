@@ -8,7 +8,7 @@
 
 use super::apk::{self, Ksud};
 use super::{Failure, Installed, Options, Outcome, Refusal, Stage};
-use crate::backup::{self, Backup, Layout};
+use crate::backup::{self, hash_file, hex, partition_size, Backup, Layout};
 use anyhow::{ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_install::image::{self, ImageKind, Ramdisk};
@@ -455,12 +455,6 @@ impl<'a> Run<'a> {
     }
 }
 
-/// Where a boot image ends, which for a block device is the whole partition.
-fn partition_size(device: &Path) -> Result<u64> {
-    let mut file = File::open(device).with_context(|| format!("open {}", device.display()))?;
-    file.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))
-}
-
 /// Whether the last bytes of `file` are the AVB footer a bootloader looks for.
 fn ends_signed(file: &mut File) -> Result<bool> {
     let len = file.seek(SeekFrom::End(0))?;
@@ -503,24 +497,6 @@ fn digits(text: &str, at: usize) -> Option<(u64, usize)> {
         return None;
     }
     text[at..end].parse().ok().map(|n| (n, end))
-}
-
-fn hash_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
-    loop {
-        let read = file.read(&mut buffer).with_context(|| format!("read {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(hex(&digest.finalize()))
-}
-
-fn hex(digest: &[u8]) -> String {
-    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

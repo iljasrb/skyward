@@ -206,6 +206,27 @@ pub(crate) fn hex(digest: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The size of the partition `device` is.
+pub(crate) fn partition_size(device: &Path) -> Result<u64> {
+    let mut file = File::open(device).with_context(|| format!("open {}", device.display()))?;
+    file.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))
+}
+
+/// The SHA-256 of the file at `path`.
+pub(crate) fn hash_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        let read = file.read(&mut buffer).with_context(|| format!("read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

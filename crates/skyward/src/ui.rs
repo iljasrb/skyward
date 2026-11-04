@@ -1146,18 +1146,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let plugins = cfg
             .root_methods
             .iter()
-            .filter_map(|method| match method {
-                skyward_config::RootMethod::Kernel { name, subtitle, repo, asset, folder, note, manager_name } => {
-                    Some(skyward_root::kernel::Plugin {
-                        name: name.clone(),
-                        subtitle: subtitle.clone(),
-                        repo: repo.clone(),
-                        asset: asset.clone(),
-                        folder: folder.clone(),
-                        note: note.clone(),
-                        manager_name: manager_name.clone(),
-                    })
-                }
+            .map(|method| match method {
+                skyward_config::RootMethod::Kernel { name, subtitle, repo, asset, folder, note, manager_name } => skyward_root::kernel::Plugin {
+                    name: name.clone(),
+                    subtitle: subtitle.clone(),
+                    repo: repo.clone(),
+                    asset: asset.clone(),
+                    folder: folder.clone(),
+                    note: note.clone(),
+                    manager_name: manager_name.clone(),
+                },
             })
             .collect();
         app.set_kernel_plugins(plugins);

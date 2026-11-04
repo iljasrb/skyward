@@ -7,7 +7,7 @@
 //! written, and the key reaches it down a pipe rather than on a command line a
 //! `ps` would show.
 
-use crate::backup::{self, Backup, Layout};
+use crate::backup::{self, partition_size, Backup, Layout};
 use crate::BOOT;
 use super::{
     Failure, Installed, Key, Options, Outcome, Refusal, Stage, SuperKey, KPIMG, KPIMG_SHA256, KPIMG_VERSION, KPTOOLS,
@@ -232,7 +232,7 @@ impl<'a> Run<'a> {
         let mut need = MARGIN;
         for slot in &self.slots.clone() {
             let device = image::device(&self.options.partition_dir, BOOT, *slot);
-            need += self.partition_size(&device).map_err(Stop::Why)?;
+            need += partition_size(&device).map_err(Stop::Why)?;
         }
         let have = available(storage).map_err(Stop::Why)?;
         if need > have {
@@ -335,7 +335,7 @@ impl<'a> Run<'a> {
     fn verify(&mut self, slot: Slot, patched: &Path) -> Result<u64, Stop> {
         let size = fs::metadata(patched).with_context(|| format!("find the size of {}", patched.display()))?.len();
         let source = image::device(&self.options.partition_dir, BOOT, slot);
-        let room = self.partition_size(&source)?;
+        let room = partition_size(&source)?;
         if size == 0 || size > room {
             return Err(Stop::Why(anyhow::anyhow!("the patch is {size} bytes, more than the {room} its partition holds")));
         }
@@ -357,11 +357,6 @@ impl<'a> Run<'a> {
             }
         }
         Ok(size)
-    }
-
-    fn partition_size(&self, device: &Path) -> Result<u64> {
-        let mut file = File::open(device).with_context(|| format!("open {}", device.display()))?;
-        file.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))
     }
 
     fn flash(&mut self, slot: Slot, patched: &Path, size: u64) -> Result<(), Stop> {

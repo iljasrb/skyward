@@ -5,6 +5,7 @@
 //! aarch64 program and names the parts of `boot-patch` it uses. The manager's
 //! own JNI library is not taken for it.
 
+use crate::backup::hex;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -73,10 +74,6 @@ fn looks_like_ksud(bytes: &[u8]) -> bool {
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|window| window == needle)
-}
-
-fn hex(digest: &[u8]) -> String {
-    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

@@ -94,9 +94,7 @@ fn run(task: Task, servers: Servers, tell: &mut dyn FnMut(Stage)) -> Outcome {
 fn attempt(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Outcome {
     let got = match acquire(task, servers, tell, private) {
         Ok(got) => got,
-        Err(Outcome::Refused(refusal)) => return Outcome::Refused(refusal),
-        Err(Outcome::Failed(failure)) => return Outcome::Failed(failure),
-        Err(_) => unreachable!("acquiring ends as an outcome"),
+        Err(outcome) => return *outcome,
     };
     let options = ksu::Options {
         device: task.device.clone(),
@@ -118,21 +116,21 @@ fn attempt(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: 
 
 /// Take the manager from where the page said: its release, downloaded and
 /// checked, or the one Android already has.
-fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Result<Got, Outcome> {
+fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Result<Got, Box<Outcome>> {
     if task.source == Source::Installed {
-        let installed = task.installed.clone().ok_or(Outcome::Refused(Refusal::NoManager))?;
+        let installed = task.installed.clone().ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoManager)))?;
         return Ok(Got { apk: installed.path, apk_sha256: None, flavor: installed.flavor, tag: installed.package });
     }
     tell(Stage::Finding);
     let failed = |stage: Stage, why: String| {
-        Outcome::Failed(Failure {
+        Box::new(Outcome::Failed(Failure {
             stage,
             slot: None,
             why,
             backups: Vec::new(),
             written: Vec::new(),
             run_dir: None,
-        })
+        }))
     };
     let agent = http::agent(servers);
     let url = ksu::release::listing(task.flavor);
@@ -150,7 +148,7 @@ fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: 
         .map_err(|e| failed(Stage::Finding, format!("read {url}: {e:#}")))?;
     let release = ksu::release::pick(&body, task.tier)
         .map_err(|e| failed(Stage::Finding, format!("{e:#}")))?
-        .ok_or(Outcome::Refused(Refusal::NoRelease { flavor: task.flavor, tier: task.tier }))?;
+        .ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoRelease { flavor: task.flavor, tier: task.tier })))?;
     let sha256 = release
         .asset
         .sha256()

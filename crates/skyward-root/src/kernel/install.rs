@@ -2,16 +2,15 @@
 //! checked, the partitions from before the write are kept whole, and each
 //! write is read back before the run says it is done.
 
-use crate::backup::{self, Backup, Layout};
+use crate::backup::{self, hash_file, partition_size, Backup, Layout};
 use crate::kernel::{Plugin, Stage};
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
 use skyward_install::image::{self, ImageKind, Ramdisk};
 use skyward_vab::Slot;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// A boot image's header is at most this long before its kernel starts.
 const HEADER: usize = 4096;
@@ -342,30 +341,13 @@ impl<'a> Run<'a> {
     }
 }
 
-fn partition_size(device: &Path) -> Result<u64> {
-    let mut file = File::open(device).with_context(|| format!("open {}", device.display()))?;
-    file.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))
-}
-
-fn hash_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
-    loop {
-        let read = file.read(&mut buffer).with_context(|| format!("read {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(backup::hex(&digest.finalize()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use abootimg_oxide::{Header, HeaderV3, OsVersionPatch};
+    use sha2::{Digest, Sha256};
     use skyward_info::Battery;
+    use std::path::Path;
 
     fn boot_image(kernel: u32) -> Vec<u8> {
         let header = Header::V3(HeaderV3 {

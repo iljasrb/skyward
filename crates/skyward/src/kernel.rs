@@ -140,7 +140,7 @@ fn run(task: Task, servers: Servers, tell: &mut dyn FnMut(Stage)) -> Outcome {
 fn attempt(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Outcome {
     let got = match acquire(task, servers, tell, private) {
         Ok(got) => got,
-        Err(outcome) => return outcome,
+        Err(outcome) => return *outcome,
     };
     let options = kernel::Options {
         device: task.device.clone(),
@@ -163,30 +163,30 @@ fn attempt(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: 
 
 /// Take the newest release of the device's kernel, download its boot image
 /// and check it against the sums file the release carries.
-fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Result<Got, Outcome> {
+fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: &Path) -> Result<Got, Box<Outcome>> {
     tell(Stage::Finding);
     let failed = |stage: Stage, why: String| {
-        Outcome::Failed(Failure {
+        Box::new(Outcome::Failed(Failure {
             stage,
             slot: None,
             why,
             backups: Vec::new(),
             written: Vec::new(),
             run_dir: None,
-        })
+        }))
     };
     let agent = http::agent(servers);
     let sources = fetch_sources(&agent, &task.plugin.repo).map_err(|e| failed(Stage::Finding, format!("{e:#}")))?;
-    let tag = sources.tag().ok_or(Outcome::Refused(Refusal::NoRelease))?;
+    let tag = sources.tag().ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoRelease)))?;
     let image_name = sources
         .image(&task.plugin.asset)
-        .ok_or(Outcome::Refused(Refusal::NoRelease))?;
+        .ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoRelease)))?;
     let image_url = sources
         .image_url(&task.plugin.repo, &task.plugin.asset)
-        .ok_or(Outcome::Refused(Refusal::NoRelease))?;
+        .ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoRelease)))?;
     let sums_url = sources
         .sums_url(&task.plugin.repo, &task.plugin.asset)
-        .ok_or(Outcome::Refused(Refusal::NoRelease))?;
+        .ok_or_else(|| Box::new(Outcome::Refused(Refusal::NoRelease)))?;
     let mut response = agent
         .get(&sums_url)
         .header("User-Agent", "skyward-recovery")
