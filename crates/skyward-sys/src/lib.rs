@@ -173,17 +173,63 @@ pub fn keep_log(path: &Path) -> Result<()> {
     KEPT.set(Mutex::new(file)).map_err(|_| anyhow!("the log is kept in a file already"))
 }
 
+/// How long a line the kernel log takes. The driver refuses anything longer,
+/// and refuses it after having taken the part that fitted, so a write that
+/// runs past this fails with some of the line already in the log.
+const KMSG_LINE: usize = 400;
+
 /// Append a line to the kernel log, where it survives until the next boot
 /// and shows in `dmesg`, and to the file [`keep_log`] opened, stamped with
 /// the seconds since the phone started as the kernel log stamps it.
+///
+/// A line longer than the kernel log takes is written in several, so that no
+/// caller has to know the limit: what is said about a thing is worth having
+/// whole, and the kernel log refusing part of it is no reason for the
+/// recovery to stop saying anything at all.
 pub fn kmsg(line: &str) -> Result<()> {
     let mut f = OpenOptions::new().write(true).open("/dev/kmsg")?;
-    f.write_all(format!("<6>skyward: {line}\n").as_bytes())?;
+    for piece in split_at_words(line, KMSG_LINE) {
+        f.write_all(format!("<6>skyward: {piece}\n").as_bytes())?;
+    }
     if let Some(kept) = KEPT.get() {
         let mut kept = kept.lock().expect("nothing panics while writing the log");
         writeln!(kept, "[{:>12.6}] {line}", since_boot()?.as_secs_f64()).with_context(|| format!("write {LOG}"))?;
     }
     Ok(())
+}
+
+/// `line` cut into pieces of at most `most` bytes, breaking between words
+/// where it can and at a character boundary always.
+fn split_at_words(line: &str, most: usize) -> Vec<&str> {
+    if line.len() <= most || most == 0 {
+        return vec![line];
+    }
+    let mut out = Vec::new();
+    let mut rest = line;
+    while rest.len() > most {
+        let mut at = most;
+        while at > 0 && !rest.is_char_boundary(at) {
+            at -= 1;
+        }
+        if let Some(space) = rest[..at].rfind(' ') {
+            at = space + 1;
+        }
+        // A run of more than `most` bytes with no space in it is cut where
+        // the bytes allow, rather than never ending.
+        if at == 0 {
+            at = most.min(rest.len());
+            while at > 0 && !rest.is_char_boundary(at) {
+                at -= 1;
+            }
+        }
+        let (head, tail) = rest.split_at(at);
+        out.push(head);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
 }
 
 /// How long the phone has been running, on the clock the kernel stamps its
@@ -232,6 +278,47 @@ fn without_levels(log: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_that_fits_is_left_whole() {
+        assert_eq!(split_at_words("short", 40), vec!["short"]);
+        assert_eq!(split_at_words("", 40), vec![""]);
+    }
+
+    #[test]
+    fn a_long_line_is_cut_between_words_and_every_piece_fits() {
+        let line = "plane 97 src 0+0 47185920x209715200 crtc 0+0 720x3200 COLOR_ENCODING=- COLOR_RANGE=- takes [AR24 AB24 RA24]";
+        let pieces = split_at_words(line, 40);
+        assert!(pieces.len() > 1, "it is longer than the limit");
+        for p in &pieces {
+            assert!(p.len() <= 40, "{} is {} bytes", p, p.len());
+        }
+        assert_eq!(pieces.concat(), line, "nothing is lost between the pieces");
+        // Every piece but the last starts where a word did.
+        for p in &pieces[..pieces.len() - 1] {
+            assert!(p.ends_with(' ') || p.len() == 40, "{p:?} cuts a word it need not");
+        }
+    }
+
+    #[test]
+    fn a_run_with_no_space_in_it_still_ends() {
+        let line = "x".repeat(100);
+        let pieces = split_at_words(&line, 30);
+        assert_eq!(pieces.concat(), line);
+        assert!(pieces.iter().all(|p| p.len() <= 30));
+        assert!(pieces.len() >= 4);
+    }
+
+    #[test]
+    fn a_cut_never_splits_a_character() {
+        // Three bytes a character: a limit that lands inside one has to give
+        // way to the boundary before it.
+        let line = "显示器属性显示器属性显示器属性";
+        for p in split_at_words(line, 10) {
+            assert!(std::str::from_utf8(p.as_bytes()).is_ok(), "{p:?} is not whole text");
+        }
+        assert_eq!(split_at_words(line, 10).concat(), line);
+    }
 
     #[test]
     fn kernel_log_lines_lose_their_levels() {

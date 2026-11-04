@@ -61,4 +61,8 @@ state, and never the whole `persist`, `spss_a/b` or `misc`.
 
 [Skyward](https://github.com/kirklin/skyward) is KirKlin's, GPL-3.0-or-later, and
 does the work; this fork adds what one phone needed. The device facts come from
-the AERA project's port of the same phone.
+the AERA project's port of the same phone. Some fixes were ported from
+[huime180/skyward](https://github.com/huime180/skyward) and
+[Rinrroy/skyward](https://github.com/Rinrroy/skyward). The bundled KernelPatch
+and FolkPatch tools keep their GPL-2.0 and GPL-3.0 texts under
+`crates/skyward-root/assets/licenses/`.
