@@ -213,6 +213,8 @@ pub enum RomCheck {
     /// The newest system the ROM publishes; none when the system installed
     /// is as new.
     Answered(Option<rom::Release>),
+    /// The installed system is not the ROM the feed belongs to.
+    Other,
 }
 
 /// The phone's ROM update: the feed's answer, what internal storage holds of
@@ -4145,10 +4147,12 @@ impl App {
 
     /// What the phone's ROM answered, and what internal storage holds of its
     /// package.
-    pub fn rom_checked(&mut self, answer: Result<Option<rom::Release>, Unanswered>, have: Have) {
+    pub fn rom_checked(&mut self, answer: Result<rom::Answer, Unanswered>, have: Have) {
         if let Some(rom) = &mut self.state.rom {
             rom.check = match answer {
-                Ok(newest) => RomCheck::Answered(newest),
+                Ok(rom::Answer::Newer(release)) => RomCheck::Answered(Some(release)),
+                Ok(rom::Answer::Current) => RomCheck::Answered(None),
+                Ok(rom::Answer::Other) => RomCheck::Other,
                 Err(why) => RomCheck::Failed(why),
             };
             rom.have = have;
@@ -11494,7 +11498,7 @@ mod tests {
         app.set_wlan(connected("Skyward"));
         assert_eq!(tap(&mut app, &f, &i, Action::CheckRom), vec![Effect::CheckRom]);
         assert_eq!(app.state.rom.as_ref().unwrap().check, RomCheck::Asking);
-        app.rom_checked(Ok(Some(rom_newest())), Have::Nothing);
+        app.rom_checked(Ok(rom::Answer::Newer(rom_newest())), Have::Nothing);
         app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         app.refresh();
         assert!(tap(&mut app, &f, &i, Action::DownloadRom).is_empty());
@@ -11510,6 +11514,18 @@ mod tests {
         let fx = tap_at(&mut app, &f, &i, Action::InstallRom, 8000);
         assert_eq!(fx, vec![Effect::InstallPath("/sdcard/downloaded_rom/Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into())]);
         assert_eq!(app.screen(), Screen::Installing, "the package installer takes over");
+    }
+
+    #[test]
+    fn a_system_that_is_not_infinity_x_is_not_offered_its_ota() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        app.state.rom = Some(RomState::new("Infinity X".into()));
+        app.rom_checked(Ok(rom::Answer::Other), Have::Nothing);
+        app.act(Action::Open(Screen::Update), 0);
+        let frame = app.frame(&f, &i);
+        assert!(!frame.hits.iter().any(|h| h.action == Action::DownloadRom), "no OTA is offered for another system");
+        assert!(!frame.hits.iter().any(|h| h.action == Action::InstallRom));
     }
 
     #[test]

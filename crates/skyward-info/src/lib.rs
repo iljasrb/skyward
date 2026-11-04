@@ -203,6 +203,12 @@ impl SystemProps {
     }
 }
 
+/// A property of the installed system, or of the running one where Android
+/// is running.
+pub fn current_prop(name: &str) -> Option<String> {
+    SystemProps::current().ok()?.get(name)
+}
+
 /// The order init reads build.prop files in at boot; later files override
 /// earlier ones.
 const PROP_ORDER: [&str; 8] = ["system", "system_ext", "system_dlkm", "vendor", "vendor_dlkm", "odm_dlkm", "odm", "product"];

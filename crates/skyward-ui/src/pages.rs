@@ -2595,6 +2595,14 @@ fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         RomCheck::Asking => {
             return widgets::list(c, t, f, y, &[Row::new(l.pick(["正在检查更新", "正在檢查更新", "Checking for updates"])).trail(Trail::None)]).bottom;
         }
+        RomCheck::Other => {
+            let note = l.pick([
+                "当前系统不是 Infinity X，因此不提供系统更新。",
+                "目前系統不是 Infinity X，因此不提供系統更新。",
+                "The installed system is not Infinity X, so no system update is offered.",
+            ]);
+            return widgets::footnote(c, t, f, y, note);
+        }
         RomCheck::Answered(Some(release)) => release,
         other => {
             let mut row = Row::new(l.pick(["检查更新", "檢查更新", "Check for updates"]));

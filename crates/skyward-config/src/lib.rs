@@ -241,6 +241,11 @@ pub struct Rom {
     /// The manifest the publisher writes, naming the build, its package and
     /// the package's SHA-256.
     pub feed: String,
+    /// The prefix of `ro.build.flavor` the installed system must have for
+    /// this update to be offered, such as `infinity_`; none offers it on any
+    /// system.
+    #[serde(default)]
+    pub flavor: Option<String>,
 }
 
 /// What a backup takes in and leaves out beyond what every Android phone
@@ -679,6 +684,7 @@ impl DeviceConfig {
         if let Some(rom) = &cfg.rom {
             ensure!(!rom.name.is_empty(), "[rom] name is empty");
             ensure!(rom.feed.starts_with("https://"), "[rom] feed: {} is not an HTTPS address", rom.feed);
+            ensure!(rom.flavor.as_ref().is_none_or(|flavor| !flavor.is_empty()), "[rom] flavor is empty");
         }
         if let Some(stock) = &cfg.stock {
             let name = stock.package.rsplit('/').next().unwrap_or_default();
@@ -738,15 +744,20 @@ mod tests {
     #[test]
     fn a_phone_can_name_the_feed_its_rom_publishes() {
         let cfg = DeviceConfig::parse(
-            "[device]\ncodename = \"bronco\"\n[rom]\nname = \"Infinity X\"\nfeed = \"https://rom.flac.moe/bronco/latest/latest.json\"\n",
+            "[device]\ncodename = \"bronco\"\n[rom]\nname = \"Infinity X\"\nfeed = \"https://rom.flac.moe/bronco/latest/latest.json\"\nflavor = \"infinity_\"\n",
         )
         .unwrap();
         assert_eq!(
             cfg.rom,
-            Some(Rom { name: "Infinity X".into(), feed: "https://rom.flac.moe/bronco/latest/latest.json".into() })
+            Some(Rom {
+                name: "Infinity X".into(),
+                feed: "https://rom.flac.moe/bronco/latest/latest.json".into(),
+                flavor: Some("infinity_".into())
+            })
         );
         assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[rom]\nname = \"\"\nfeed = \"https://example.invalid\"\n").is_err());
         assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[rom]\nname = \"X\"\nfeed = \"http://example.invalid\"\n").is_err());
+        assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[rom]\nname = \"X\"\nfeed = \"https://example.invalid\"\nflavor = \"\"\n").is_err());
     }
     #[test]
     fn a_phone_can_add_a_kernel_from_its_own_releases() {

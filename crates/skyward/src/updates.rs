@@ -42,8 +42,9 @@ pub enum Task {
     /// phone runs `active` from, and the other when it holds this recovery.
     Install { path: PathBuf, active: Slot },
     /// Ask the phone's ROM for its newest system, and say whether it is newer
-    /// than the installed one.
-    RomCheck { feed: String, installed: String, probe: String },
+    /// than the installed one. `flavor` is the prefix the installed system's
+    /// `ro.build.flavor` must have, where the update is one ROM's alone.
+    RomCheck { feed: String, installed: String, flavor: Option<String>, probe: String },
     /// Download the ROM's package to `path`, checked against the SHA-256 the
     /// feed publishes.
     RomDownload { release: rom::Release, path: PathBuf },
@@ -61,7 +62,7 @@ pub enum Event {
     Installed(Result<Vec<Slot>, String>),
     /// What the ROM's feed says of its newest system: none while the system
     /// installed is as new.
-    RomChecked(Result<Option<rom::Release>, Unanswered>),
+    RomChecked(Result<rom::Answer, Unanswered>),
     RomEnded(End),
 }
 
@@ -136,18 +137,32 @@ impl Worker {
                     let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
                     say(Event::Installed(written.map_err(|e| format!("{e:#}"))));
                 }
-                Task::RomCheck { feed, installed, probe } => {
-                    let a = http::agent(servers.clone());
-                    *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                    let answer = rom::newest(&a, &feed)
-                        .map_err(|e| unanswered(&e, &feed, &probe, &servers))
-                        .map(|found| found.is_newer_than(&installed).then_some(found));
+                Task::RomCheck { feed, installed, flavor, probe } => {
+                    let on_this_rom = rom::is_this_rom(
+                        skyward_info::current_prop("ro.build.flavor").as_deref(),
+                        flavor.as_deref(),
+                    );
+                    let answer = if on_this_rom {
+                        let a = http::agent(servers.clone());
+                        *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
+                        rom::newest(&a, &feed)
+                            .map_err(|e| unanswered(&e, &feed, &probe, &servers))
+                            .map(|found| match found.is_newer_than(&installed) {
+                                true => rom::Answer::Newer(found),
+                                false => rom::Answer::Current,
+                            })
+                    } else {
+                        Ok(rom::Answer::Other)
+                    };
                     match &answer {
-                        Ok(Some(found)) => {
+                        Ok(rom::Answer::Newer(found)) => {
                             let _ = skyward_sys::kmsg(&format!("a newer system is published: {}", found.build));
                         }
-                        Ok(None) => {
+                        Ok(rom::Answer::Current) => {
                             let _ = skyward_sys::kmsg(&format!("no system is published after {installed}"));
+                        }
+                        Ok(rom::Answer::Other) => {
+                            let _ = skyward_sys::kmsg("the installed system is not the ROM the feed belongs to");
                         }
                         Err(why) => {
                             let _ = skyward_sys::kmsg(&format!("the system's feed {feed} was not read: {why:?}"));

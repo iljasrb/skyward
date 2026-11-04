@@ -29,6 +29,7 @@ use skyward_block::usb::{self, Drive};
 use skyward_net::download;
 use skyward_net::http::Servers;
 use skyward_net::release::Release;
+use skyward_net::rom;
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind,
@@ -1996,7 +1997,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             for ev in c.worker.events() {
                 let updates::Event::RomChecked(answer) = ev else { unreachable!("asking the ROM downloads nothing") };
                 let have = match &answer {
-                    Ok(Some(release)) => rom_have(&app, release),
+                    Ok(rom::Answer::Newer(release)) => rom_have(&app, release),
                     _ => Have::Nothing,
                 };
                 app.rom_checked(answer, have);
@@ -2758,6 +2759,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         let task = updates::Task::RomCheck {
                             feed: rom.feed.clone(),
                             installed: info.os_version.clone().unwrap_or_default(),
+                            flavor: rom.flavor.clone(),
                             probe,
                         };
                         rom_checker = Some(updates::Worker::start(task, servers.clone())?);

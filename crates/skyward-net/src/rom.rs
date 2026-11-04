@@ -29,6 +29,26 @@ impl Release {
     }
 }
 
+/// What a check of the ROM's feed found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// A system newer than the installed one.
+    Newer(Release),
+    /// The installed system is the newest the feed publishes.
+    Current,
+    /// The installed system is not this ROM at all.
+    Other,
+}
+
+/// Whether the installed system's `flavor` is the ROM's, whose prefix is
+/// `want`; a feed with no prefix is offered on any system.
+pub fn is_this_rom(flavor: Option<&str>, want: Option<&str>) -> bool {
+    match want {
+        Some(prefix) => flavor.is_some_and(|found| found.starts_with(prefix)),
+        None => true,
+    }
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     build: String,
@@ -210,6 +230,15 @@ mod tests {
         assert!(!r.is_newer_than("1793491200"), "the same day");
         assert!(!r.is_newer_than("1793556859"), "a build later that day");
         assert!(r.is_newer_than("CP2A.260605.016"), "a system with no date is older than any published");
+    }
+
+    #[test]
+    fn only_the_rom_the_feed_belongs_to_is_offered_it() {
+        assert!(is_this_rom(Some("infinity_bronco-user"), Some("infinity_")));
+        assert!(!is_this_rom(Some("lineage_bronco-userdebug"), Some("infinity_")));
+        assert!(!is_this_rom(Some(""), Some("infinity_")));
+        assert!(!is_this_rom(None, Some("infinity_")), "a system whose flavor cannot be read is not this ROM");
+        assert!(is_this_rom(Some("anything"), None), "a feed with no prefix is offered on any system");
     }
 
     #[test]

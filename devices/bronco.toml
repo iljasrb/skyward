@@ -359,6 +359,7 @@ asset = "skyward-bronco.img"
 [rom]
 name = "Infinity X"
 feed = "https://raw.githubusercontent.com/iljasrb/bronco-infinityx/main/bronco.json"
+flavor = "infinity_"
 
 # The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
 # exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
