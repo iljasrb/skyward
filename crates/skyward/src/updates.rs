@@ -24,8 +24,8 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 /// How long the speed shown is taken over.
 const RATE_OVER: Duration = Duration::from_secs(3);
 
-/// How many tries in a row may fail with nothing more downloaded before
-/// the download gives up, and how long it waits between them.
+/// How many tries may fail before the download gives up, and how long it
+/// waits between them.
 const TRIES: u32 = 5;
 const BETWEEN: Duration = Duration::from_secs(3);
 
@@ -277,17 +277,21 @@ fn fetch(
         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
         let sha256 = match published_sha(&a, &remote) {
             Ok(sha) => sha,
-            Err(e) => return End::Failed(Failure::Other(format!("{e:#}"))),
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("reading the sums of {}: {e:#}", remote.name));
+                failed += 1;
+                if failed >= TRIES {
+                    return End::Failed(Failure::Other(format!("{e:#}")));
+                }
+                if !pause(stop) {
+                    return End::Stopped;
+                }
+                continue;
+            }
         };
-        let mut came = None::<u64>;
-        let mut gained = false;
         let mut progress = |p: Progress| {
             if let Progress::Downloading { done, .. } = p {
                 let now = Instant::now();
-                if came.is_some_and(|before| done > before) {
-                    gained = true;
-                }
-                came = Some(done);
                 samples.push((now, done));
                 samples.retain(|(at, _)| now.duration_since(*at) <= RATE_OVER);
             }
@@ -317,20 +321,33 @@ fn fetch(
         if e.is::<Damaged>() {
             return End::Failed(Failure::Damaged);
         }
-        if e.is::<Refused>() {
-            return End::Failed(Failure::Other(format!("{e:#}")));
+        if let Some(refused) = e.downcast_ref::<Refused>() {
+            // A server that is busy, or asks to try later, is tried again; one
+            // that will not serve the file at all is not.
+            let status = refused.0;
+            if !(status == 408 || status == 416 || status == 429 || (500..=599).contains(&status)) {
+                return End::Failed(Failure::Other(format!("{e:#}")));
+            }
         }
         let _ = skyward_sys::kmsg(&format!("downloading {} from {}: {e:#}", remote.name, remote.url));
-        failed = if gained { 1 } else { failed + 1 };
+        failed += 1;
         if failed >= TRIES {
             return End::Failed(Failure::Other(format!("{e:#}")));
         }
-        let until = Instant::now() + BETWEEN;
-        while Instant::now() < until {
-            if stop.load(Ordering::Relaxed) {
-                return End::Stopped;
-            }
-            thread::sleep(Duration::from_millis(100));
+        if !pause(stop) {
+            return End::Stopped;
         }
     }
+}
+
+/// Wait between two tries, unless the user stopped the download.
+fn pause(stop: &AtomicBool) -> bool {
+    let until = Instant::now() + BETWEEN;
+    while Instant::now() < until {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    true
 }

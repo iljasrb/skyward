@@ -41,7 +41,13 @@ impl Release {
     /// be offered it for ever. A build that was never stamped cannot be
     /// compared with anything, and is taken as older than every release.
     pub fn is_newer_than(&self, build: &str) -> bool {
-        self.tag.as_str() > build || build == "unknown"
+        if build == "unknown" {
+            return true;
+        }
+        match (tag_key(&self.tag), tag_key(build)) {
+            (Some(mine), Some(theirs)) => mine > theirs,
+            _ => self.tag.as_str() > build,
+        }
     }
 
     /// The SHA-256 the image is to be checked against: the release's own,
@@ -51,6 +57,19 @@ impl Release {
             return Some(digest.trim_start_matches("sha256:").to_lowercase());
         }
         sha256_in(sums?, &self.image.name)
+    }
+}
+
+/// A tag's name, day and build number, so that `-10` comes after `-9`; none
+/// for a tag that is not `name-yyyymmdd[-n]`.
+fn tag_key(tag: &str) -> Option<(&str, u32, u32)> {
+    let (head, last) = tag.rsplit_once('-')?;
+    let number: u32 = last.parse().ok()?;
+    if last.len() == 8 {
+        Some((head, number, 0))
+    } else {
+        let (name, day) = head.rsplit_once('-')?;
+        Some((name, day.parse().ok()?, number))
     }
 }
 
@@ -204,6 +223,12 @@ mod tests {
         assert!(r.is_newer_than("2026-10-31T00:00:00Z"));
         // A build that was never stamped is older than anything published.
         assert!(r.is_newer_than("unknown"));
+        // The build number is a number, not the text it is written as.
+        let mut r = r;
+        r.tag = "bronco-20261104-10".into();
+        assert!(r.is_newer_than("bronco-20261104-9"));
+        assert!(!r.is_newer_than("bronco-20261104-10"));
+        assert!(r.is_newer_than("bronco-20261104"));
     }
 
     #[test]
