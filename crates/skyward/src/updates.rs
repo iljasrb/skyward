@@ -269,24 +269,34 @@ fn fetch(
     let mut failed = 0;
     let mut samples: Vec<(Instant, u64)> = Vec::new();
     let mut told = Instant::now() - PROGRESS_EVERY;
+    // One agent for every try, and the sums read once: neither changes while
+    // this download runs.
+    let a = http::agent(servers.clone());
+    *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
+    let mut sums = None::<String>;
     loop {
         if stop.load(Ordering::Relaxed) {
             return End::Stopped;
         }
-        let a = http::agent(servers.clone());
-        *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-        let sha256 = match published_sha(&a, &remote) {
-            Ok(sha) => sha,
-            Err(e) => {
-                let _ = skyward_sys::kmsg(&format!("reading the sums of {}: {e:#}", remote.name));
-                failed += 1;
-                if failed >= TRIES {
-                    return End::Failed(Failure::Other(format!("{e:#}")));
+        let sha256 = if let Some(sha) = &sums {
+            sha.clone()
+        } else {
+            match published_sha(&a, &remote) {
+                Ok(sha) => {
+                    sums = Some(sha.clone());
+                    sha
                 }
-                if !pause(stop) {
-                    return End::Stopped;
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("reading the sums of {}: {e:#}", remote.name));
+                    failed += 1;
+                    if failed >= TRIES {
+                        return End::Failed(Failure::Other(format!("{e:#}")));
+                    }
+                    if !pause(stop) {
+                        return End::Stopped;
+                    }
+                    continue;
                 }
-                continue;
             }
         };
         let mut progress = |p: Progress| {

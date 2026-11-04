@@ -290,6 +290,8 @@ pub fn unpack(input: impl Read, root: &Path, skipped: &Skipped, cancel: &AtomicB
     let mut folders: Vec<(PathBuf, (i64, u32))> = Vec::new();
     let mut unpacked = Unpacked::default();
     let mut done = 0u64;
+    // One buffer for every file, not one for each.
+    let mut buf = vec![0u8; 1 << 20];
     for entry in archive.entries().context("read the archive")? {
         if cancel.load(Ordering::Relaxed) {
             return Err(Cancelled.into());
@@ -329,7 +331,6 @@ pub fn unpack(input: impl Read, root: &Path, skipped: &Skipped, cancel: &AtomicB
                     // One a restore that stopped left behind goes first.
                     remove_any(&temp)?;
                     let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp).context("make it")?;
-                    let mut buf = vec![0u8; 1 << 20];
                     loop {
                         if cancel.load(Ordering::Relaxed) {
                             drop(file);
@@ -344,7 +345,6 @@ pub fn unpack(input: impl Read, root: &Path, skipped: &Skipped, cancel: &AtomicB
                         done += n as u64;
                         progress(done);
                     }
-                    file.sync_all().context("write it")?;
                     drop(file);
                     give(&temp, &header, &records, false)?;
                     times(&temp, mtime)?;
