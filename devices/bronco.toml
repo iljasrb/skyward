@@ -351,16 +351,14 @@ logs = [
 repo = "iljasrb/skyward"
 asset = "skyward-bronco.img"
 
-# The Infinity X system this phone runs. The feed is the one the ROM's
-# publisher writes beside the OTA, naming the build, its full package and the
-# package's SHA-256; the update page compares the build's day with
-# `ro.build.version.incremental` and installs a newer one to the other slot.
-# The OTA feed the system's own updater reads (bronco.json in
-# iljasrb/bronco-infinityx) is read too, but carries only an MD5, so the sums
-# beside the package are fetched for it.
+# The Infinity X system this phone runs. The feed is the OTA feed the system's
+# own updater reads, which carries the exact build timestamp that
+# `ro.build.version.incremental` counts; the mirror's latest.json only carries
+# the day, so a build later the same day would look no newer. The package's
+# SHA-256 is read from the SHA256SUMS beside it.
 [rom]
 name = "Infinity X"
-feed = "https://rom.flac.moe/bronco/latest/latest.json"
+feed = "https://raw.githubusercontent.com/iljasrb/bronco-infinityx/main/bronco.json"
 
 # The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
 # exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
