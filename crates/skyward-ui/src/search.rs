@@ -65,12 +65,19 @@ pub const ENTRIES: &[Entry] = &[
         Screen::Update,
         &["recoverygengxin", "rcgx", "gengxin", "gx", "skyward", "recovery", "update", "xiazai", "xz", "download"],
     ),
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     entry(
         ["KernelPatch（FolkPatch）", "KernelPatch（FolkPatch）", "KernelPatch (FolkPatch)"],
         HOME,
         Screen::Apatch,
         &["root", "folkpatch", "apatch", "kpatch", "kernelpatch", "tiquan", "superkey"],
+    ),
+    #[cfg(feature = "roots")]
+    entry(
+        ["KernelSU 系列", "KernelSU 系列", "KernelSU family"],
+        HOME,
+        Screen::Ksu,
+        &["root", "kernelsu", "ksu", "sukisu", "bakasu", "resukisu", "kernelsunext", "manager", "tiquan"],
     ),
     entry(SETTINGS, HOME, Screen::Settings, &["shezhi", "sz", "settings"]),
     entry(["深色模式", "深色模式", "Dark mode"], SETTINGS, Screen::Settings, &["shensemoshi", "ssms", "dark", "theme"]),

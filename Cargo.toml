@@ -11,7 +11,7 @@ members = [
     "crates/skyward-ui",
     "crates/skyward-crypto",
     "crates/skyward-files",
-    "crates/skyward-folkpatch",
+    "crates/skyward-root",
     "crates/skyward-info",
     "crates/skyward-install",
     "crates/skyward-mtp",

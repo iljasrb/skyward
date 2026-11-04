@@ -76,6 +76,64 @@ pub struct DeviceConfig {
     /// The stock build the recovery is made on.
     #[serde(default)]
     pub stock: Option<Stock>,
+    /// What the KernelSU-family page needs to know about this phone's kernel.
+    #[serde(default)]
+    pub ksu: Ksu,
+    /// Root methods this phone adds to the two built in, from its own plugin
+    /// releases.
+    #[serde(default, rename = "root")]
+    pub root_methods: Vec<RootMethod>,
+}
+
+/// A root method a device adds to the recovery: a kernel of its own, taken
+/// from a GitHub release and written whole to the boot partition.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RootMethod {
+    Kernel {
+        /// The name the root page shows, such as `Shinobu kernel`.
+        name: String,
+        /// The line under it, where the phone's configuration has one.
+        #[serde(default)]
+        subtitle: Option<String>,
+        /// The GitHub repository the releases are published in, as
+        /// `owner/name`.
+        repo: String,
+        /// The boot image's name in a release, with `{version}` standing for
+        /// the project version in the repository's `sources.env`.
+        #[serde(default = "kernel_asset")]
+        asset: String,
+        /// The folder under `Download/Skyward` the run's backups are kept in.
+        #[serde(default = "kernel_folder")]
+        folder: String,
+        /// What the page says after the image is written, where the kernel
+        /// carries its own manager.
+        #[serde(default)]
+        note: Option<String>,
+        /// The manager's name, as the page shows it.
+        #[serde(default)]
+        manager_name: Option<String>,
+    },
+}
+
+fn kernel_folder() -> String {
+    "Kernel".into()
+}
+
+fn kernel_asset() -> String {
+    "kernel-{version}.img".into()
+}
+
+/// What the KernelSU-family page needs to know about a phone's kernel.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Ksu {
+    /// The KMI whose kernel module the phone's kernel loads, where the
+    /// version the kernel announces names a different one. A kernel can be
+    /// built from one GKI branch and carry the version string of another;
+    /// the manager chooses its module by that string, and the wrong module
+    /// does not load.
+    #[serde(default)]
+    pub kmi: Option<String>,
 }
 
 /// The stock build a recovery is made on: the phone maker's full update
@@ -531,6 +589,20 @@ impl DeviceConfig {
         for name in &cfg.partitions.mounted {
             ensure!(!name.is_empty() && !name.contains('/'), "[partitions] mounted: {name} is not a partition's name");
         }
+        for method in &cfg.root_methods {
+            match method {
+                RootMethod::Kernel { name, repo, asset, folder, .. } => {
+                    ensure!(!name.is_empty(), "[root] name is empty");
+                    let parts: Vec<&str> = repo.split('/').collect();
+                    ensure!(
+                        parts.len() == 2 && parts.iter().all(|part| !part.is_empty()),
+                        "[root] repo: {repo} is not an owner and a repository"
+                    );
+                    ensure!(asset.contains("{version}") && asset.ends_with(".img"), "[root] asset: {asset} is not a kernel image pattern");
+                    ensure!(!folder.is_empty() && !folder.contains('/'), "[root] folder: {folder} is not a folder's name");
+                }
+            }
+        }
         for s in cfg.services.iter().filter(|s| s.oneshot) {
             let waits = s.ready_property.is_some() || s.ready_service.is_some() || s.ready_hardware_service.is_some();
             ensure!(
@@ -643,6 +715,37 @@ mod tests {
         assert_eq!((cfg.firmware, cfg.wlan, cfg.update), (None, None, None), "a phone may have none of them");
         assert_eq!(cfg.logd, None, "a recovery's own logd usually has all it needs");
     }
+    #[test]
+    fn a_phone_can_add_a_kernel_from_its_own_releases() {
+        let cfg = DeviceConfig::parse(
+            "[device]\ncodename = \"bronco\"\n[[root]]\nkind = \"kernel\"\nname = \"Shinobu kernel\"\nrepo = \"iljasrb/bronco-shinobu-kernel\"\nnote = \"BakaSU manager\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.root_methods,
+            [RootMethod::Kernel {
+                name: "Shinobu kernel".into(),
+                subtitle: None,
+                repo: "iljasrb/bronco-shinobu-kernel".into(),
+                asset: "kernel-{version}.img".into(),
+                folder: "Kernel".into(),
+                note: Some("BakaSU manager".into()),
+                manager_name: None,
+            }]
+        );
+        let bad = |body: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[[root]]\nkind = \"kernel\"\n{body}\n"));
+        assert!(bad("name = \"K\"\nrepo = \"owner/repo/extra\"").is_err(), "not a repository");
+        assert!(bad("name = \"K\"\nrepo = \"owner/repo\"\nfolder = \"a/b\"").is_err(), "not a folder");
+        assert!(bad("name = \"\"\nrepo = \"owner/repo\"").is_err(), "no name");
+    }
+
+    #[test]
+    fn a_phone_can_name_the_kmi_its_kernel_loads() {
+        let cfg = DeviceConfig::parse("[device]\ncodename = \"bronco\"\n[ksu]\nkmi = \"android12-5.10\"\n").unwrap();
+        assert_eq!(cfg.ksu.kmi.as_deref(), Some("android12-5.10"));
+        assert_eq!(DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap().ksu.kmi, None, "the kernel's own version is used unless the phone says otherwise");
+    }
+
     #[test]
     fn a_click_is_kept_made_or_held_and_its_strengths_rise() {
         let with = |body: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[haptics]\n{body}\n"));

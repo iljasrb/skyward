@@ -5,7 +5,7 @@
 //! The copies are of the partitions rather than of the images in them, so
 //! `fastboot flash boot_a boot_a.img` puts back exactly what was there.
 
-use crate::Stage;
+use crate::folkpatch::Stage;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
@@ -20,6 +20,8 @@ const CHUNK: usize = 1 << 20;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Backup {
     pub slot: Slot,
+    /// The partition the copy is of, such as `boot` or `init_boot`.
+    pub partition: String,
     pub path: PathBuf,
     pub size: u64,
     pub sha256: String,
@@ -28,6 +30,11 @@ pub struct Backup {
 /// The file a slot's copy is kept in.
 pub fn name(slot: Slot) -> String {
     format!("boot{}.img", slot.suffix())
+}
+
+/// The file a slot's copy of `partition` is kept in.
+pub fn partition_name(partition: &str, slot: Slot) -> String {
+    format!("{partition}{}.img", slot.suffix())
 }
 
 /// Where a run keeps what it makes: a folder of its own, never one an earlier
@@ -44,7 +51,14 @@ impl Layout {
     /// Make a run's folder under `storage` for `stamp`, or the next name that
     /// is free when an earlier run already has that one.
     pub fn make(storage: &Path, stamp: &str) -> Result<Layout> {
-        let runs = storage.join("Download").join("Skyward").join("FolkPatch");
+        Layout::make_in(storage, "FolkPatch", stamp)
+    }
+
+    /// Make a run's folder under `storage` for `stamp` in `folder`, the
+    /// folder of the root method it belongs to, or the next name that is free
+    /// when an earlier run already has that one.
+    pub fn make_in(storage: &Path, folder: &str, stamp: &str) -> Result<Layout> {
+        let runs = storage.join("Download").join("Skyward").join(folder);
         fs::create_dir_all(&runs).with_context(|| format!("make {}", runs.display()))?;
         for n in 1.. {
             let name = match n {
@@ -66,12 +80,32 @@ impl Layout {
     }
 }
 
-/// Save the whole of `source` as `slot`'s copy in `into`, reading it back
-/// before saying it is there. Nothing is left in the copy's name until it is
-/// known good, so an interrupted run leaves a `.part` file and no copy to
-/// mistake for one.
+/// Save the whole of `source` as `slot`'s copy of `partition` in `into`,
+/// reading it back before saying it is there. Nothing is left in the copy's
+/// name until it is known good, so an interrupted run leaves a `.part` file
+/// and no copy to mistake for one.
 pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage)) -> Result<Backup> {
-    let path = into.join(name(slot));
+    save_as(source, into, slot, crate::BOOT, &name(slot), tell)
+}
+
+/// Save the whole of `source` as `slot`'s copy of `partition` in `into`,
+/// under `file`, reading it back before saying it is there.
+pub fn save_as(source: &Path, into: &Path, slot: Slot, partition: &str, file: &str, tell: &mut dyn FnMut(Stage)) -> Result<Backup> {
+    save_with(source, into, slot, partition, file, &mut |done, total| tell(Stage::BackingUp { slot, done, total }))
+}
+
+/// Save the whole of `source` as `slot`'s copy of `partition` in `into`,
+/// under `file`, telling how far it has come in bytes; shared by the root
+/// methods, whose runs say their progress in their own words.
+pub fn save_with(
+    source: &Path,
+    into: &Path,
+    slot: Slot,
+    partition: &str,
+    file: &str,
+    tell: &mut dyn FnMut(u64, u64),
+) -> Result<Backup> {
+    let path = into.join(file);
     let part = path.with_extension("img.part");
     let mut reading = File::open(source).with_context(|| format!("open {}", source.display()))?;
     // A block device tells no size to metadata; it does say where its end is,
@@ -94,7 +128,7 @@ pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage))
         digest.update(&buffer[..read]);
         written.write_all(&buffer[..read]).with_context(|| format!("write {}", part.display()))?;
         done += read as u64;
-        tell(Stage::BackingUp { slot, done, total });
+        tell(done, total);
     }
     written.sync_all().with_context(|| format!("flush {}", part.display()))?;
     drop(written);
@@ -120,7 +154,7 @@ pub fn save(source: &Path, into: &Path, slot: Slot, tell: &mut dyn FnMut(Stage))
     if let Some(dir) = path.parent() {
         let _ = File::open(dir).and_then(|d| d.sync_all());
     }
-    Ok(Backup { slot, path, size: total, sha256 })
+    Ok(Backup { slot, partition: partition.to_string(), path, size: total, sha256 })
 }
 
 /// What a run's manifest says: the phone, the slots, the pinned files it wrote
@@ -227,7 +261,7 @@ mod tests {
             device: "nezha",
             current: Slot::A,
             slots: &[Slot::A, Slot::B],
-            kpimg_version: crate::KPIMG_VERSION,
+            kpimg_version: crate::folkpatch::KPIMG_VERSION,
             kpimg_sha256: "7a7a",
             kptools_sha256: "ea06",
             backups: std::slice::from_ref(&backup),
@@ -238,14 +272,14 @@ mod tests {
             "device = nezha",
             "current_slot = A",
             "slots = A, B",
-            crate::KPIMG_VERSION,
+            crate::folkpatch::KPIMG_VERSION,
             "backup_a = backup/boot_a.img 12 ",
             &backup.sha256,
         ] {
             assert!(text.contains(wanted), "{wanted} is not in:\n{text}");
         }
         assert!(text.contains(&key_path.display().to_string()), "the key file is pointed at");
-        let key = crate::SuperKey::validate("hidden123").unwrap();
+        let key = crate::folkpatch::SuperKey::validate("hidden123").unwrap();
         assert!(!text.contains(key.expose()), "and the key itself is not in it");
         write(&facts, &dir.path().join("run")).unwrap();
         assert_eq!(fs::read_to_string(dir.path().join("run/manifest.txt")).unwrap(), text);

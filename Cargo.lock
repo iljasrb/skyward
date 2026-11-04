@@ -2216,13 +2216,13 @@ dependencies = [
  "skyward-config",
  "skyward-crypto",
  "skyward-files",
- "skyward-folkpatch",
  "skyward-info",
  "skyward-install",
  "skyward-lp",
  "skyward-modules",
  "skyward-mtp",
  "skyward-net",
+ "skyward-root",
  "skyward-sys",
  "skyward-ui",
  "skyward-vab",
@@ -2294,19 +2294,6 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "libc",
-]
-
-[[package]]
-name = "skyward-folkpatch"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "libc",
- "sha2 0.10.9",
- "skyward-info",
- "skyward-install",
- "skyward-vab",
- "tempfile",
 ]
 
 [[package]]
@@ -2429,6 +2416,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyward-root"
+version = "0.3.2"
+dependencies = [
+ "abootimg-oxide",
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "skyward-info",
+ "skyward-install",
+ "skyward-vab",
+ "tempfile",
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "skyward-sys"
 version = "0.3.2"
 dependencies = [
@@ -2452,10 +2456,10 @@ dependencies = [
  "libc",
  "png",
  "proc-macro2",
- "skyward-folkpatch",
  "skyward-info",
  "skyward-install",
  "skyward-net",
+ "skyward-root",
  "skyward-vab",
  "svgtypes",
  "syn 2.0.119",

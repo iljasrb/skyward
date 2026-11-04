@@ -1130,6 +1130,29 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     };
     let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
     app.set_screen_corners(cfg.display.corner_radius as f32);
+    // The kernels this phone's own configuration adds to the root page; a
+    // phone without any keeps the two methods every build carries.
+    #[cfg(feature = "roots")]
+    {
+        let plugins = cfg
+            .root_methods
+            .iter()
+            .filter_map(|method| match method {
+                skyward_config::RootMethod::Kernel { name, subtitle, repo, asset, folder, note, manager_name } => {
+                    Some(skyward_root::kernel::Plugin {
+                        name: name.clone(),
+                        subtitle: subtitle.clone(),
+                        repo: repo.clone(),
+                        asset: asset.clone(),
+                        folder: folder.clone(),
+                        note: note.clone(),
+                        manager_name: manager_name.clone(),
+                    })
+                }
+            })
+            .collect();
+        app.set_kernel_plugins(plugins);
+    }
     // The pages speak the language the system named with the work it asks
     // for, or else the one the installed system is built to start in, or else
     // English.
@@ -1171,9 +1194,23 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let readings = Readings::start(cfg)?;
     let mut read_at = Instant::now();
     let mut installer: Option<Installer> = None;
-    // FolkPatch's root, whose run writes boot partitions of its own.
-    #[cfg(feature = "folkpatch")]
-    let mut root_worker: Option<crate::root::Worker> = None;
+    // APatch's root, whose run writes boot partitions of its own.
+    #[cfg(feature = "roots")]
+    let mut apatch_worker: Option<crate::apatch::Worker> = None;
+    // A KernelSU-family manager's run, which downloads its APK and writes
+    // boot partitions of its own.
+    #[cfg(feature = "roots")]
+    let mut ksu_worker: Option<crate::ksu::Worker> = None;
+    // A device's own kernel, whose release is downloaded and written whole.
+    #[cfg(feature = "roots")]
+    let mut kernel_worker: Option<crate::kernel::Worker> = None;
+    // The newest kernel release's version, read for its page.
+    #[cfg(feature = "roots")]
+    let mut kernel_checker: Option<crate::kernel::Checker> = None;
+    #[cfg(feature = "roots")]
+    let mut kernel_checker_at = 0;
+    #[cfg(feature = "roots")]
+    let mut kernel_checker_expired = false;
     // Whether the panel's frame memory has been blacked out for an off
     // panel; cleared once a real frame is shown again.
     let mut blanked = false;
@@ -1473,9 +1510,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let floor = if shown { 0 } else { 1 };
         let until_due = app.deadline(now).map(|d| d.saturating_sub(now) as i32);
         // Coming up, the page is stepped rather than waited on.
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         let rooting = app.rooting();
-        #[cfg(not(feature = "folkpatch"))]
+        #[cfg(not(feature = "roots"))]
         let rooting = false;
         // A run says how far it has come without a pipe of its own, so the
         // page is drawn again often enough for its card to move.
@@ -1517,6 +1554,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(c) = &checker {
             fds.push(c.worker.fd());
+        }
+        #[cfg(feature = "roots")]
+        if let Some(c) = &kernel_checker {
+            fds.push(c.fd());
         }
         if let Some(d) = &downloader {
             fds.push(d.worker.fd());
@@ -1694,27 +1735,84 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if relabeled {
             relabeler = None;
         }
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         {
             let mut ended = false;
-            if let Some(worker) = &root_worker {
+            if let Some(worker) = &apatch_worker {
                 for told in worker.events() {
                     match told {
-                        crate::root::Told::Stage(stage) => app.root_stage(stage),
-                        crate::root::Told::Ended(outcome) => {
+                        crate::apatch::Told::Stage(stage) => app.apatch_stage(stage),
+                        crate::apatch::Told::Ended(outcome) => {
                             let _ = skyward_sys::kmsg(match &outcome {
-                                skyward_folkpatch::Outcome::Installed(_) => "folkpatch: the boot partitions are patched",
-                                skyward_folkpatch::Outcome::Refused(_) => "folkpatch: nothing was written",
-                                skyward_folkpatch::Outcome::Failed(_) => "folkpatch: the run did not finish",
+                                skyward_root::folkpatch::Outcome::Installed(_) => "apatch: the boot partitions are patched",
+                                skyward_root::folkpatch::Outcome::Refused(_) => "apatch: nothing was written",
+                                skyward_root::folkpatch::Outcome::Failed(_) => "apatch: the run did not finish",
                             });
-                            app.root_finished(outcome, now);
+                            app.apatch_finished(outcome, now);
                             ended = true;
                         }
                     }
                 }
             }
             if ended {
-                root_worker = None;
+                apatch_worker = None;
+            }
+        }
+        #[cfg(feature = "roots")]
+        {
+            let mut ended = false;
+            if let Some(worker) = &ksu_worker {
+                for told in worker.events() {
+                    match told {
+                        crate::ksu::Told::Stage(stage) => app.ksu_stage(stage),
+                        crate::ksu::Told::Ended(outcome) => {
+                            app.ksu_finished(outcome, now);
+                            ended = true;
+                        }
+                    }
+                }
+            }
+            if ended {
+                ksu_worker = None;
+            }
+        }
+        #[cfg(feature = "roots")]
+        {
+            let mut ended = false;
+            if let Some(worker) = &kernel_worker {
+                for told in worker.events() {
+                    match told {
+                        crate::kernel::Told::Stage(stage) => app.kernel_stage(stage),
+                        crate::kernel::Told::Ended(outcome) => {
+                            app.kernel_finished(outcome, now);
+                            ended = true;
+                        }
+                    }
+                }
+            }
+            if ended {
+                kernel_worker = None;
+            }
+        }
+        #[cfg(feature = "roots")]
+        {
+            let mut ended = false;
+            if let Some(checker) = &kernel_checker {
+                for checked in checker.events() {
+                    match checked {
+                        crate::kernel::Checked::Done(details) => {
+                            app.set_kernel_details(details);
+                            ended = true;
+                        }
+                    }
+                }
+            }
+            if ended {
+                kernel_checker = None;
+                kernel_checker_expired = false;
+            } else if kernel_checker.is_some() && !kernel_checker_expired && now.saturating_sub(kernel_checker_at) >= 10_000 {
+                app.kernel_details_timed_out();
+                kernel_checker_expired = true;
             }
         }
         let mut parted = false;
@@ -2143,13 +2241,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // not the ones this recovery runs from. Whatever stops
                     // it from starting is said on the page, which would
                     // otherwise wait on a run that never began.
-                    #[cfg(feature = "folkpatch")]
-                    Effect::Root { pick, key, repatch } => {
-                        ensure!(installer.is_none() && root_worker.is_none(), "a run is under way already");
+                    #[cfg(feature = "roots")]
+                    Effect::Apatch { pick, key, repatch } => {
+                        ensure!(installer.is_none() && apatch_worker.is_none(), "a run is under way already");
                         let refused = |app: &mut App, why: String| {
-                            app.root_finished(
-                                skyward_folkpatch::Outcome::Failed(skyward_folkpatch::Failure {
-                                    stage: skyward_folkpatch::Stage::Checking,
+                            app.apatch_finished(
+                                skyward_root::folkpatch::Outcome::Failed(skyward_root::folkpatch::Failure {
+                                    stage: skyward_root::folkpatch::Stage::Checking,
                                     slot: None,
                                     why,
                                     backups: Vec::new(),
@@ -2163,10 +2261,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             refused(&mut app, "file transfer kept internal storage".into());
                             continue;
                         }
-                        let started = (|| -> Result<crate::root::Worker> {
+                        let started = (|| -> Result<crate::apatch::Worker> {
                             let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
                             let battery = info.battery.clone().context("the battery was not read")?;
-                            let options = skyward_folkpatch::Options {
+                            let options = skyward_root::folkpatch::Options {
                                 device: cfg.device.codename.clone(),
                                 current,
                                 slots: pick.slots(current),
@@ -2175,57 +2273,172 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                                 repatch,
                                 partition_dir: PathBuf::from("/dev/block/by-name"),
                                 storage: PathBuf::from(skyward_crypto::data::SDCARD),
-                                private: PathBuf::from("/data/local/tmp/skyward-folkpatch"),
+                                private: PathBuf::from("/data/local/tmp/skyward-root"),
                                 stamp: skyward_ui::fmt::stamp(unix_now()?, app.state.time_zone),
                             };
-                            skyward_sys::kmsg(&format!("folkpatch: patching {} slot(s)", options.slots.len()))?;
-                            crate::root::Worker::start(options)
+                            skyward_sys::kmsg(&format!("apatch: patching {} slot(s)", options.slots.len()))?;
+                            crate::apatch::Worker::start(options)
                         })();
                         match started {
-                            Ok(worker) => root_worker = Some(worker),
+                            Ok(worker) => apatch_worker = Some(worker),
                             Err(e) => refused(&mut app, format!("{e:#}")),
                         }
                     }
                     // The key of the newest run still on this phone, so that
                     // patching after an update can keep it.
-                    #[cfg(feature = "folkpatch")]
-                    Effect::ReadRootKey => {
-                        let key = skyward_folkpatch::last_key(
-                            Path::new("/data/local/tmp/skyward-folkpatch"),
+                    #[cfg(feature = "roots")]
+                    Effect::ReadApatchKey => {
+                        let key = skyward_root::folkpatch::last_key(
+                            Path::new("/data/local/tmp/skyward-root"),
                             Path::new(skyward_crypto::data::SDCARD),
                         );
-                        app.set_root_last_key(key);
+                        app.set_apatch_last_key(key);
                     }
                     // Whether the slots the page would write carry the patch
                     // already, said on the page before anything is written.
-                    #[cfg(feature = "folkpatch")]
-                    Effect::ReadRootPatched { pick } => {
+                    #[cfg(feature = "roots")]
+                    Effect::ReadApatchPatched { pick } => {
                         let mut slots = [None, None];
                         let mut any = false;
                         if let Some(current) = info.slot {
                             for slot in pick.slots(current) {
-                                let patched = skyward_folkpatch::patched_slot(
+                                let patched = skyward_root::folkpatch::patched_slot(
                                     Path::new("/dev/block/by-name"),
                                     slot,
-                                    Path::new("/data/local/tmp/skyward-folkpatch"),
+                                    Path::new("/data/local/tmp/skyward-root"),
                                 )
                                 .unwrap_or(false);
                                 slots[slot.number() as usize] = Some(patched);
                                 any |= patched;
                             }
                         }
-                        app.set_root_patched(any, slots);
+                        app.set_apatch_patched(any, slots);
                     }
                     // A copy beside the manager, which the user asked for and
                     // was told the cost of.
-                    #[cfg(feature = "folkpatch")]
-                    Effect::ShareRootKey { run, key } => {
-                        let kept = skyward_folkpatch::share_key(&run, &key)
+                    #[cfg(feature = "roots")]
+                    Effect::ShareApatchKey { run, key } => {
+                        let kept = skyward_root::folkpatch::share_key(&run, &key)
                             .inspect(|path| {
-                                let _ = skyward_sys::kmsg(&format!("folkpatch: the key is copied to {}", path.display()));
+                                let _ = skyward_sys::kmsg(&format!("apatch: the key is copied to {}", path.display()));
                             })
                             .map_err(|e| format!("{e:#}"));
                         app.root_key_shared(kept, now);
+                    }
+                    // A KernelSU-family manager's run: its release is read and
+                    // its APK downloaded off this thread, then its ksud writes
+                    // the boot partitions.
+                    #[cfg(feature = "roots")]
+                    Effect::Ksu { flavor, tier, source, installed, pick } => {
+                        ensure!(
+                            installer.is_none() && apatch_worker.is_none() && ksu_worker.is_none() && kernel_worker.is_none(),
+                            "a run is under way already"
+                        );
+                        let refused = |app: &mut App, why: String| {
+                            app.ksu_finished(
+                                skyward_root::ksu::Outcome::Failed(skyward_root::ksu::Failure {
+                                    stage: skyward_root::ksu::Stage::Checking,
+                                    slot: None,
+                                    why,
+                                    backups: Vec::new(),
+                                    written: Vec::new(),
+                                    run_dir: None,
+                                }),
+                                now,
+                            );
+                        };
+                        if !withhold(&mut transfer, &mut app, now)? {
+                            refused(&mut app, "file transfer kept internal storage".into());
+                            continue;
+                        }
+                        let started = (|| -> Result<crate::ksu::Worker> {
+                            let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                            let battery = info.battery.clone().context("the battery was not read")?;
+                            let task = crate::ksu::Task {
+                                device: cfg.device.codename.clone(),
+                                current,
+                                slots: pick.slots(current),
+                                battery,
+                                flavor,
+                                tier,
+                                source,
+                                installed,
+                                kmi: cfg.ksu.kmi.clone(),
+                                stamp: skyward_ui::fmt::stamp(unix_now()?, app.state.time_zone),
+                            };
+                            skyward_sys::kmsg(&format!("ksu: patching {} slot(s) with {}", task.slots.len(), task.flavor.id()))?;
+                            crate::ksu::Worker::start(task, servers.clone())
+                        })();
+                        match started {
+                            Ok(worker) => ksu_worker = Some(worker),
+                            Err(e) => refused(&mut app, format!("{e:#}")),
+                        }
+                    }
+                    // A device's own kernel: its release is read and its
+                    // image downloaded off this thread, then written whole to
+                    // the boot partitions.
+                    #[cfg(feature = "roots")]
+                    Effect::Kernel { plugin, pick } => {
+                        ensure!(
+                            installer.is_none() && apatch_worker.is_none() && ksu_worker.is_none() && kernel_worker.is_none(),
+                            "a run is under way already"
+                        );
+                        let refused = |app: &mut App, why: String| {
+                            app.kernel_finished(
+                                skyward_root::kernel::Outcome::Failed(skyward_root::kernel::Failure {
+                                    stage: skyward_root::kernel::Stage::Checking,
+                                    slot: None,
+                                    why,
+                                    backups: Vec::new(),
+                                    written: Vec::new(),
+                                    run_dir: None,
+                                }),
+                                now,
+                            );
+                        };
+                        if !withhold(&mut transfer, &mut app, now)? {
+                            refused(&mut app, "file transfer kept internal storage".into());
+                            continue;
+                        }
+                        let started = (|| -> Result<crate::kernel::Worker> {
+                            let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                            let battery = info.battery.clone().context("the battery was not read")?;
+                            let task = crate::kernel::Task {
+                                device: cfg.device.codename.clone(),
+                                current,
+                                slots: pick.slots(current),
+                                battery,
+                                plugin,
+                                stamp: skyward_ui::fmt::stamp(unix_now()?, app.state.time_zone),
+                            };
+                            skyward_sys::kmsg(&format!("kernel: installing {} slot(s)", task.slots.len()))?;
+                            crate::kernel::Worker::start(task, servers.clone())
+                        })();
+                        match started {
+                            Ok(worker) => kernel_worker = Some(worker),
+                            Err(e) => refused(&mut app, format!("{e:#}")),
+                        }
+                    }
+                    // The newest release's version, read for the kernel page.
+                    #[cfg(feature = "roots")]
+                    Effect::ReadKernelDetails { plugin } => {
+                        if kernel_checker.is_none() {
+                            match crate::kernel::Checker::start(plugin, servers.clone()) {
+                                Ok(checker) => {
+                                    kernel_checker = Some(checker);
+                                    kernel_checker_at = now;
+                                    kernel_checker_expired = false;
+                                }
+                                Err(e) => app.report(&format!("{e:#}"), now),
+                            }
+                        }
+                    }
+                    // The manager of the family installed in Android, so the
+                    // page can offer its APK instead of a download.
+                    #[cfg(feature = "roots")]
+                    Effect::ReadKsuInstalled => {
+                        let installed = skyward_root::ksu::installed::find_all(Path::new("/data/app"));
+                        app.set_ksu_installed(installed);
                     }
                     Effect::Cancel => match &installer {
                         Some(i) => i.cancel()?,

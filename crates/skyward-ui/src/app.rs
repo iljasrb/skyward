@@ -126,18 +126,36 @@ pub enum Screen {
     /// password, typed on the screen's keyboard.
     WlanAdd,
     /// Root: the ways this recovery can put root on the boot image.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     Root,
     /// APatch, patched in by FolkPatch: its slots and its key.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     Apatch,
     /// A run of APatch, on a page of its own: how far it came, and how it
     /// ended.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     ApatchJob,
+    /// KernelSU-family root: the manager, the release it comes from, and the
+    /// slots it patches.
+    #[cfg(feature = "roots")]
+    Ksu,
+    /// A run of a KernelSU-family manager, on a page of its own: how far it
+    /// came, and how it ended.
+    #[cfg(feature = "roots")]
+    KsuJob,
+    /// The KernelSU-family manager, its release and where it comes from.
+    #[cfg(feature = "roots")]
+    KsuManager,
+    /// A kernel the phone's own configuration offers, and the slots it goes
+    /// to.
+    #[cfg(feature = "roots")]
+    Kernel,
+    /// Installing that kernel: how far it came, and how it ended.
+    #[cfg(feature = "roots")]
+    KernelJob,
     /// The SuperKey a patch is made with, typed on the screen's keyboard.
-    #[cfg(feature = "folkpatch")]
-    RootKey,
+    #[cfg(feature = "roots")]
+    ApatchKey,
 }
 
 /// How far asking the update server for the newest system has come.
@@ -392,7 +410,7 @@ pub struct RelabelJob {
 }
 
 /// Where the key a patch is made with comes from.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum KeyMode {
     #[default]
@@ -403,21 +421,21 @@ pub enum KeyMode {
 }
 
 /// How a FolkPatch run stands.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RootJob {
+pub enum ApatchJob {
     /// Nothing has run: the page says what it will do.
     Idle,
     /// Under way, at this stage once the tools have said which.
-    Running(Option<skyward_folkpatch::Stage>),
+    Running(Option<skyward_root::folkpatch::Stage>),
     /// It ended, and the page says how.
-    Finished(Box<skyward_folkpatch::Outcome>),
+    Finished(Box<skyward_root::folkpatch::Outcome>),
 }
 
 /// What the root page asks of a run.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RootAction {
+pub enum ApatchAction {
     Pick(Pick),
     KeyMode(KeyMode),
     /// Type a key, on the key page.
@@ -426,17 +444,17 @@ pub enum RootAction {
     KeepKey,
 }
 
-/// FolkPatch's root page: the slots it patches, the key it makes the patch
+/// APatch page: the slots it patches, the key it makes the patch
 /// with, how a run of it goes and what it has printed.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RootState {
+pub struct ApatchState {
     pub pick: Pick,
     pub key_mode: KeyMode,
     /// The key typed on the key page, once it was one the manager takes.
     pub entered: String,
     /// The key the newest earlier run left on this phone, where one did.
-    pub last: Option<skyward_folkpatch::SuperKey>,
+    pub last: Option<skyward_root::folkpatch::SuperKey>,
     /// Whether any slot chosen carries the patch already.
     pub patched: bool,
     /// The patch each slot's image carries, as it was last read; none where
@@ -450,13 +468,13 @@ pub struct RootState {
     /// Where a copy of a run's key was kept beside the manager, once the user
     /// asked for one.
     pub copied: Option<String>,
-    pub job: RootJob,
+    pub job: ApatchJob,
 }
 
-#[cfg(feature = "folkpatch")]
-impl Default for RootState {
-    fn default() -> RootState {
-        RootState {
+#[cfg(feature = "roots")]
+impl Default for ApatchState {
+    fn default() -> ApatchState {
+        ApatchState {
             pick: Pick::Current,
             key_mode: KeyMode::Generate,
             entered: String::new(),
@@ -466,7 +484,133 @@ impl Default for RootState {
             chosen: false,
             log: Vec::new(),
             copied: None,
-            job: RootJob::Idle,
+            job: ApatchJob::Idle,
+        }
+    }
+}
+
+#[cfg(feature = "roots")]
+pub use skyward_root::ksu::{Flavor as KsuFlavor, Source as KsuSource, Tier as KsuTier};
+
+/// A kernel a device's own configuration offers, as the root page shows it.
+#[cfg(feature = "roots")]
+pub use skyward_root::kernel::Plugin as KernelPlugin;
+#[cfg(feature = "roots")]
+pub use skyward_root::kernel::Stage as KernelStage;
+
+/// How a kernel install stands.
+#[cfg(feature = "roots")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum KernelJob {
+    /// Nothing has run: the page says what it will do.
+    #[default]
+    Idle,
+    /// Under way, at this stage once the worker has said which.
+    Running(Option<KernelStage>),
+    /// It ended, and the page says how.
+    Finished(Box<skyward_root::kernel::Outcome>),
+}
+
+/// The kernel a device's configuration offers, the slots it goes to, and how
+/// a run goes.
+#[cfg(feature = "roots")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelState {
+    pub plugin: KernelPlugin,
+    pub pick: Pick,
+    /// The newest release's version, once the page has asked GitHub.
+    pub details: Option<Result<skyward_root::kernel::Details, String>>,
+    /// The steps the run has printed, as the page shows them.
+    pub log: Vec<String>,
+    pub job: KernelJob,
+}
+
+#[cfg(feature = "roots")]
+impl KernelState {
+    pub fn new(plugin: KernelPlugin) -> KernelState {
+        KernelState { plugin, pick: Pick::Current, details: None, log: Vec::new(), job: KernelJob::Idle }
+    }
+}
+
+/// What the kernel's page asks of a run.
+#[cfg(feature = "roots")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelAction {
+    Pick(Pick),
+}
+
+/// How a KernelSU-family run stands.
+#[cfg(feature = "roots")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum KsuJob {
+    /// Nothing has run: the page says what it will do.
+    #[default]
+    Idle,
+    /// Under way, at this stage once the worker has said which.
+    Running(Option<skyward_root::ksu::Stage>),
+    /// It ended, and the page says how.
+    Finished(Box<skyward_root::ksu::Outcome>),
+}
+
+/// What the KernelSU-family page asks of a run.
+#[cfg(feature = "roots")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KsuAction {
+    Flavor(KsuFlavor),
+    Tier(KsuTier),
+    Source(KsuSource),
+    /// The installed manager whose APK a run takes, by its place in the list
+    /// the manager page shows.
+    Installed(usize),
+    Pick(Pick),
+}
+
+/// The KernelSU-family page: the manager, the release it is taken from,
+/// where it comes from, the slots it patches, and how a run goes.
+#[cfg(feature = "roots")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KsuState {
+    pub flavor: KsuFlavor,
+    pub tier: KsuTier,
+    pub source: KsuSource,
+    /// Every manager of the family installed in Android, newest first.
+    pub installed: Vec<skyward_root::ksu::InstalledManager>,
+    /// The installed APK a run takes when the source is Installed.
+    pub installed_choice: Option<std::path::PathBuf>,
+    /// Whether the user chose the manager, release or source, which a scan
+    /// of the installed apps must not answer for them.
+    pub chosen: bool,
+    pub pick: Pick,
+    /// The steps the run has printed, as the page shows them.
+    pub log: Vec<String>,
+    pub job: KsuJob,
+}
+
+#[cfg(feature = "roots")]
+impl KsuState {
+    /// The installed manager whose APK a run takes: the one chosen, or the
+    /// newest one where none was.
+    pub fn installed_manager(&self) -> Option<&skyward_root::ksu::InstalledManager> {
+        self.installed_choice
+            .as_ref()
+            .and_then(|path| self.installed.iter().find(|manager| &manager.path == path))
+            .or_else(|| self.installed.first())
+    }
+}
+
+#[cfg(feature = "roots")]
+impl Default for KsuState {
+    fn default() -> KsuState {
+        KsuState {
+            flavor: KsuFlavor::KernelSu,
+            tier: KsuTier::Stable,
+            source: KsuSource::Download,
+            installed: Vec::new(),
+            installed_choice: None,
+            chosen: false,
+            pick: Pick::Current,
+            log: Vec::new(),
+            job: KsuJob::Idle,
         }
     }
 }
@@ -927,15 +1071,29 @@ pub enum Confirm {
     Relabel,
     /// Do to the partition the filesystem page shows what it chose.
     Filesystem,
-    /// Patch the boot partitions FolkPatch's root page chose.
-    #[cfg(feature = "folkpatch")]
-    RootPatch,
+    /// Patch the boot partitions APatch page chose.
+    #[cfg(feature = "roots")]
+    ApatchPatch,
     /// Leave the run's page, the swipe having said the reading is done.
-    #[cfg(feature = "folkpatch")]
-    RootDone,
+    #[cfg(feature = "roots")]
+    ApatchDone,
     /// Patch an image that carries the patch already, swiped on purpose.
-    #[cfg(feature = "folkpatch")]
-    RootRepatch,
+    #[cfg(feature = "roots")]
+    ApatchRepatch,
+    /// Patch the boot partitions the KernelSU-family page chose.
+    #[cfg(feature = "roots")]
+    KsuPatch,
+    /// Leave the KernelSU-family run's page, the swipe having said the
+    /// reading is done.
+    #[cfg(feature = "roots")]
+    KsuDone,
+    /// Install the kernel the page chose.
+    #[cfg(feature = "roots")]
+    KernelInstall,
+    /// Leave the kernel run's page, the swipe having said the reading is
+    /// done.
+    #[cfg(feature = "roots")]
+    KernelDone,
 }
 
 /// What the wipe page erases: everything a factory reset erases, or any of
@@ -1327,10 +1485,21 @@ pub enum Action {
     StopDownload,
     /// Write the downloaded recovery image over this recovery.
     InstallRecovery,
-    /// Choose what FolkPatch's root page patches, or where its key comes
+    /// Choose what APatch page patches, or where its key comes
     /// from.
-    #[cfg(feature = "folkpatch")]
-    Root(RootAction),
+    #[cfg(feature = "roots")]
+    Apatch(ApatchAction),
+    /// Choose what the KernelSU-family page patches, and from where.
+    #[cfg(feature = "roots")]
+    Ksu(KsuAction),
+    /// Open the kernel this phone's configuration offers at this place in
+    /// the root page's list.
+    #[cfg(feature = "roots")]
+    KernelPlugin(usize),
+
+    /// Choose the slots the kernel page writes.
+    #[cfg(feature = "roots")]
+    Kernel(KernelAction),
     /// A control whose work is not wired up yet; touching it says so.
     Unavailable(&'static str),
 }
@@ -1744,9 +1913,18 @@ pub struct State {
     /// Giving the data partition's files their SELinux labels under way, or
     /// how it last ended.
     pub relabel: Option<RelabelJob>,
-    /// FolkPatch's root page, on a build that carries it.
-    #[cfg(feature = "folkpatch")]
-    pub root: Option<RootState>,
+    /// FolkPatch's APatch page, on a build that carries it.
+    #[cfg(feature = "roots")]
+    pub apatch: Option<ApatchState>,
+    /// The KernelSU-family root page, on a build that carries it.
+    #[cfg(feature = "roots")]
+    pub ksu: Option<KsuState>,
+    /// The kernels this phone's own configuration adds to the root page.
+    #[cfg(feature = "roots")]
+    pub kernel_plugins: Vec<KernelPlugin>,
+    /// The kernel page, and how its run stands.
+    #[cfg(feature = "roots")]
+    pub kernel: Option<KernelState>,
     /// The filesystem page's partitions, as the runtime last read them, or
     /// why it could not; none until it has.
     pub filesystems: Option<Result<Vec<FsRow>, String>>,
@@ -1851,8 +2029,14 @@ impl Default for State {
             clash: None,
             job: None,
             relabel: None,
-            #[cfg(feature = "folkpatch")]
-            root: None,
+            #[cfg(feature = "roots")]
+            apatch: None,
+            #[cfg(feature = "roots")]
+            ksu: None,
+            #[cfg(feature = "roots")]
+            kernel_plugins: Vec::new(),
+            #[cfg(feature = "roots")]
+            kernel: None,
             filesystems: None,
             fs_chosen: 0,
             fs_action: FsAction::Repair,
@@ -2119,20 +2303,37 @@ pub enum Effect {
     /// telling how it goes with [`App::set_update`].
     Merge,
     /// Patch the boot partitions `pick` means with FolkPatch, telling how it
-    /// goes with [`App::root_stage`] and [`App::root_finished`].
-    #[cfg(feature = "folkpatch")]
-    Root { pick: Pick, key: skyward_folkpatch::Key, repatch: bool },
+    /// goes with [`App::apatch_stage`] and [`App::apatch_finished`].
+    #[cfg(feature = "roots")]
+    Apatch { pick: Pick, key: skyward_root::folkpatch::Key, repatch: bool },
     /// Read the newest key an earlier run left on this phone, telling it with
-    /// [`App::set_root_last_key`].
-    #[cfg(feature = "folkpatch")]
-    ReadRootKey,
+    /// [`App::set_apatch_last_key`].
+    #[cfg(feature = "roots")]
+    ReadApatchKey,
     /// Look at the boot partition `pick` means, for the patch, telling what it
-    /// finds with [`App::set_root_patched`].
-    #[cfg(feature = "folkpatch")]
-    ReadRootPatched { pick: Pick },
+    /// finds with [`App::set_apatch_patched`].
+    #[cfg(feature = "roots")]
+    ReadApatchPatched { pick: Pick },
     /// Keep a copy of `key` in `run`, beside the manager.
-    #[cfg(feature = "folkpatch")]
-    ShareRootKey { run: std::path::PathBuf, key: skyward_folkpatch::SuperKey },
+    #[cfg(feature = "roots")]
+    ShareApatchKey { run: std::path::PathBuf, key: skyward_root::folkpatch::SuperKey },
+    /// Patch the boot partitions `pick` means with a KernelSU-family
+    /// manager, telling how it goes with [`App::ksu_stage`] and
+    /// [`App::ksu_finished`].
+    #[cfg(feature = "roots")]
+    Ksu { flavor: KsuFlavor, tier: KsuTier, source: KsuSource, installed: Option<skyward_root::ksu::InstalledManager>, pick: Pick },
+    /// Find the manager of the KernelSU family installed in Android, telling
+    /// it with [`App::set_ksu_installed`].
+    #[cfg(feature = "roots")]
+    ReadKsuInstalled,
+    /// Install the kernel `plugin` to the boot partitions `pick` means,
+    /// telling how it goes with [`App::kernel_stage`] and
+    /// [`App::kernel_finished`].
+    #[cfg(feature = "roots")]
+    Kernel { plugin: KernelPlugin, pick: Pick },
+    /// Read the newest release's version for the kernel page.
+    #[cfg(feature = "roots")]
+    ReadKernelDetails { plugin: KernelPlugin },
 }
 
 enum Drag {
@@ -3426,36 +3627,36 @@ impl App {
         self.refresh();
     }
 
-    /// A FolkPatch run has started: its page follows how far it comes.
-    #[cfg(feature = "folkpatch")]
-    pub fn root_started(&mut self) {
-        let root = self.state.root.get_or_insert_with(RootState::default);
+    /// An APatch run has started: its page follows how far it comes.
+    #[cfg(feature = "roots")]
+    pub fn apatch_started(&mut self) {
+        let root = self.state.apatch.get_or_insert_with(ApatchState::default);
         root.log.clear();
         root.copied = None;
-        root.job = RootJob::Running(None);
+        root.job = ApatchJob::Running(None);
         self.refresh();
     }
 
-    /// How far a FolkPatch run has come, as the tools said it.
-    #[cfg(feature = "folkpatch")]
-    pub fn root_stage(&mut self, stage: skyward_folkpatch::Stage) {
-        let root = self.state.root.as_mut().expect("only a run under way moves on");
+    /// How far an APatch run has come, as the tools said it.
+    #[cfg(feature = "roots")]
+    pub fn apatch_stage(&mut self, stage: skyward_root::folkpatch::Stage) {
+        let root = self.state.apatch.as_mut().expect("only a run under way moves on");
         // One line a step, however often the step says how far it has come.
-        let (line, _) = crate::pages::root_stage(self.state.lang, Some(&stage));
+        let (line, _) = crate::pages::apatch_stage(self.state.lang, Some(&stage));
         if root.log.last() != Some(&line) {
             root.log.push(line);
         }
-        root.job = RootJob::Running(Some(stage));
+        root.job = ApatchJob::Running(Some(stage));
         // The run's own page shows the lines as they come.
         self.refresh();
     }
 
-    /// A FolkPatch run has ended, and its page says how, lit for the user to
+    /// An APatch run has ended, and its page says how, lit for the user to
     /// read.
-    #[cfg(feature = "folkpatch")]
-    pub fn root_finished(&mut self, outcome: skyward_folkpatch::Outcome, now: u64) {
-        let root = self.state.root.as_mut().expect("only a run under way ends");
-        root.job = RootJob::Finished(Box::new(outcome));
+    #[cfg(feature = "roots")]
+    pub fn apatch_finished(&mut self, outcome: skyward_root::folkpatch::Outcome, now: u64) {
+        let root = self.state.apatch.as_mut().expect("only a run under way ends");
+        root.job = ApatchJob::Finished(Box::new(outcome));
         self.wake(now);
         self.refresh();
     }
@@ -3463,9 +3664,9 @@ impl App {
     /// The newest key an earlier run left on this phone, as the runtime found
     /// it: offered again, so that patching after an update keeps the key the
     /// phone had.
-    #[cfg(feature = "folkpatch")]
-    pub fn set_root_last_key(&mut self, key: Option<skyward_folkpatch::SuperKey>) {
-        let root = self.state.root.get_or_insert_with(RootState::default);
+    #[cfg(feature = "roots")]
+    pub fn set_apatch_last_key(&mut self, key: Option<skyward_root::folkpatch::SuperKey>) {
+        let root = self.state.apatch.get_or_insert_with(ApatchState::default);
         // A key on file is the one to go on with, unless the user has said
         // otherwise: patching again keeps what the manager was given.
         if !root.chosen {
@@ -3485,9 +3686,9 @@ impl App {
 
     /// Whether any slot the page would write carries the patch already, and
     /// which ones do, as the runtime found them.
-    #[cfg(feature = "folkpatch")]
-    pub fn set_root_patched(&mut self, patched: bool, slots: [Option<bool>; 2]) {
-        let root = self.state.root.get_or_insert_with(RootState::default);
+    #[cfg(feature = "roots")]
+    pub fn set_apatch_patched(&mut self, patched: bool, slots: [Option<bool>; 2]) {
+        let root = self.state.apatch.get_or_insert_with(ApatchState::default);
         root.patched = patched;
         root.patched_slots = slots;
         if self.screen() == Screen::Apatch {
@@ -3496,9 +3697,9 @@ impl App {
     }
 
     /// A copy of the run's key was kept beside the manager, or could not be.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     pub fn root_key_shared(&mut self, outcome: Result<std::path::PathBuf, String>, now: u64) {
-        let root = self.state.root.as_mut().expect("only a run that ended has a key to keep");
+        let root = self.state.apatch.as_mut().expect("only a run that ended has a key to keep");
         match outcome {
             Ok(path) => {
                 let shown = path.display().to_string();
@@ -3511,11 +3712,161 @@ impl App {
         self.refresh();
     }
 
-    /// Whether a FolkPatch run is under way, which nothing else may start
+    /// A KernelSU-family run has started: its page follows how far it comes.
+    #[cfg(feature = "roots")]
+    pub fn ksu_started(&mut self) {
+        let ksu = self.state.ksu.get_or_insert_with(KsuState::default);
+        ksu.log.clear();
+        ksu.job = KsuJob::Running(None);
+        self.refresh();
+    }
+
+    /// How far a KernelSU-family run has come, as the worker said it.
+    #[cfg(feature = "roots")]
+    pub fn ksu_stage(&mut self, stage: skyward_root::ksu::Stage) {
+        let ksu = self.state.ksu.as_mut().expect("only a run under way moves on");
+        // One line a step, however often the step says how far it has come.
+        let (line, _) = crate::pages::ksu_stage(self.state.lang, Some(&stage));
+        if ksu.log.last() != Some(&line) {
+            ksu.log.push(line);
+        }
+        ksu.job = KsuJob::Running(Some(stage));
+        // The run's own page shows the lines as they come.
+        self.refresh();
+    }
+
+    /// A KernelSU-family run has ended, and its page says how, lit for the
+    /// user to read.
+    #[cfg(feature = "roots")]
+    pub fn ksu_finished(&mut self, outcome: skyward_root::ksu::Outcome, now: u64) {
+        let ksu = self.state.ksu.as_mut().expect("only a run under way ends");
+        ksu.job = KsuJob::Finished(Box::new(outcome));
+        self.wake(now);
+        self.refresh();
+    }
+
+    /// The managers of the KernelSU family installed in Android, as the
+    /// runtime found them: the one to use and the one to keep when nothing
+    /// was chosen yet.
+    #[cfg(feature = "roots")]
+    pub fn set_ksu_installed(&mut self, installed: Vec<skyward_root::ksu::InstalledManager>) {
+        let ksu = self.state.ksu.get_or_insert_with(KsuState::default);
+        ksu.installed = installed;
+        // Keep the chosen APK while it is still installed.
+        ksu.installed_choice = ksu
+            .installed_choice
+            .clone()
+            .filter(|path| ksu.installed.iter().any(|manager| &manager.path == path));
+        if ksu.installed.is_empty() {
+            ksu.installed_choice = None;
+            if ksu.source == KsuSource::Installed {
+                ksu.source = KsuSource::Download;
+            }
+        } else {
+            if ksu.installed_choice.is_none() {
+                let manager = ksu
+                    .installed
+                    .iter()
+                    .find(|manager| manager.flavor == ksu.flavor)
+                    .unwrap_or(&ksu.installed[0]);
+                ksu.installed_choice = Some(manager.path.clone());
+            }
+            if !ksu.chosen {
+                let manager = ksu.installed_manager().expect("an installed manager was chosen");
+                ksu.flavor = manager.flavor;
+                ksu.source = KsuSource::Installed;
+            }
+        }
+        if matches!(self.screen(), Screen::Ksu | Screen::KsuManager) {
+            self.refresh();
+        }
+    }
+
+    /// Whether a KernelSU-family run is under way, which nothing else may
+    /// start over.
+    #[cfg(feature = "roots")]
+    pub fn ksu_running(&self) -> bool {
+        self.state.ksu.as_ref().is_some_and(|k| matches!(k.job, KsuJob::Running(_)))
+    }
+
+    /// The kernels this phone's configuration adds to the root page.
+    #[cfg(feature = "roots")]
+    pub fn set_kernel_plugins(&mut self, plugins: Vec<KernelPlugin>) {
+        self.state.kernel_plugins = plugins;
+        self.refresh();
+    }
+
+    /// The newest release's version, as the release check found it.
+    #[cfg(feature = "roots")]
+    pub fn set_kernel_details(&mut self, details: Result<skyward_root::kernel::Details, String>) {
+        if let Some(kernel) = self.state.kernel.as_mut() {
+            kernel.details = Some(details);
+        }
+        if self.screen() == Screen::Kernel {
+            self.refresh();
+        }
+    }
+
+    /// The release check has taken too long, so the page stops saying it is
+    /// still checking; a late answer still replaces this.
+    #[cfg(feature = "roots")]
+    pub fn kernel_details_timed_out(&mut self) {
+        let text = self.state.lang.pick([
+            "GitHub 未在 10 秒内回应。",
+            "GitHub 未在 10 秒內回應。",
+            "GitHub did not answer within 10 seconds.",
+        ]);
+        if let Some(kernel) = self.state.kernel.as_mut() {
+            kernel.details = Some(Err(text.to_string()));
+        }
+        if self.screen() == Screen::Kernel {
+            self.refresh();
+        }
+    }
+
+    /// A kernel install has started: its page follows how far it comes.
+    #[cfg(feature = "roots")]
+    pub fn kernel_started(&mut self) {
+        let kernel = self.state.kernel.as_mut().expect("the kernel page shows it");
+        kernel.log.clear();
+        kernel.job = KernelJob::Running(None);
+        self.refresh();
+    }
+
+    /// How far a kernel install has come, as the worker said it.
+    #[cfg(feature = "roots")]
+    pub fn kernel_stage(&mut self, stage: KernelStage) {
+        let kernel = self.state.kernel.as_mut().expect("only a run under way moves on");
+        let (line, _) = crate::pages::kernel_stage(self.state.lang, Some(&stage));
+        if kernel.log.last() != Some(&line) {
+            kernel.log.push(line);
+        }
+        kernel.job = KernelJob::Running(Some(stage));
+        self.refresh();
+    }
+
+    /// A kernel install has ended, and its page says how, lit for the user to
+    /// read.
+    #[cfg(feature = "roots")]
+    pub fn kernel_finished(&mut self, outcome: skyward_root::kernel::Outcome, now: u64) {
+        let kernel = self.state.kernel.as_mut().expect("only a run under way ends");
+        kernel.job = KernelJob::Finished(Box::new(outcome));
+        self.wake(now);
+        self.refresh();
+    }
+
+    /// Whether a kernel install is under way, which nothing else may start
     /// over.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
+    pub fn kernel_running(&self) -> bool {
+        self.state.kernel.as_ref().is_some_and(|k| matches!(k.job, KernelJob::Running(_)))
+    }
+
+    /// Whether an APatch run is under way, which nothing else may start
+    /// over.
+    #[cfg(feature = "roots")]
     pub fn rooting(&self) -> bool {
-        self.state.root.as_ref().is_some_and(|r| matches!(r.job, RootJob::Running(_)))
+        self.state.apatch.as_ref().is_some_and(|r| matches!(r.job, ApatchJob::Running(_)))
     }
 
     /// The partitions for the filesystem page, as the runtime read them,
@@ -4717,9 +5068,13 @@ impl App {
         self.leave(false);
         // The root page starts on the slot the phone runs from, with a key
         // of its own, until the user chooses otherwise.
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         if screen == Screen::Apatch {
-            self.state.root.get_or_insert_with(RootState::default);
+            self.state.apatch.get_or_insert_with(ApatchState::default);
+        }
+        #[cfg(feature = "roots")]
+        if matches!(screen, Screen::Ksu | Screen::KsuManager) {
+            self.state.ksu.get_or_insert_with(KsuState::default);
         }
         self.push(screen);
     }
@@ -4865,14 +5220,31 @@ impl App {
             }
             // A run writes boot partitions one at a time, and nothing stops
             // it halfway: the page cannot be left until it ends.
-            #[cfg(feature = "folkpatch")]
+            #[cfg(feature = "roots")]
             Screen::ApatchJob => {
                 if self.rooting() {
                     self.say(l.pick(["请等待完成后再返回", "請等待完成後再返回", "Wait for it to finish before going back"]), now);
                     return fx;
                 }
-                self.state.root = None;
+                self.state.apatch = None;
             }
+            #[cfg(feature = "roots")]
+            Screen::KsuJob => {
+                if self.ksu_running() {
+                    self.say(l.pick(["请等待完成后再返回", "請等待完成後再返回", "Wait for it to finish before going back"]), now);
+                    return fx;
+                }
+                self.state.ksu = None;
+            }
+            #[cfg(feature = "roots")]
+            Screen::KernelJob => {
+                if self.kernel_running() {
+                    self.say(l.pick(["请等待完成后再返回", "請等待完成後再返回", "Wait for it to finish before going back"]), now);
+                    return fx;
+                }
+            }
+            #[cfg(feature = "roots")]
+            Screen::Kernel => self.state.kernel = None,
             // Work on a partition cannot be stopped halfway. Done, the
             // partition may hold another filesystem, and what is to be done
             // to it is chosen afresh.
@@ -4963,8 +5335,8 @@ impl App {
             Screen::Restore => fx.push(self.find_backups()),
             // Coming back to APatch looks at the phone again: a run may have
             // patched a slot, and the key it made is the one to go on with.
-            #[cfg(feature = "folkpatch")]
-            Screen::Apatch => fx.push(Effect::ReadRootKey),
+            #[cfg(feature = "roots")]
+            Screen::Apatch => fx.push(Effect::ReadApatchKey),
             Screen::Filesystem | Screen::Filesystems if left == Screen::PartWork => fx.push(Effect::ReadFilesystems),
             _ => {}
         }
@@ -5055,14 +5427,23 @@ impl App {
             Screen::Mount => vec![Effect::ReadMounts],
             Screen::Filesystems => vec![Effect::ReadFilesystems],
             Screen::Slot | Screen::Reboot => vec![Effect::ReadSlots],
-            #[cfg(feature = "folkpatch")]
+            #[cfg(feature = "roots")]
             Screen::Apatch => {
                 // The page opens on the key the phone has, whatever was chosen
                 // the last time it was open.
-                let root = self.state.root.get_or_insert_with(RootState::default);
+                let root = self.state.apatch.get_or_insert_with(ApatchState::default);
                 root.chosen = false;
-                vec![Effect::ReadRootKey, Effect::ReadRootPatched { pick: root.pick }]
+                vec![Effect::ReadApatchKey, Effect::ReadApatchPatched { pick: root.pick }]
             }
+            #[cfg(feature = "roots")]
+            Screen::Ksu | Screen::KsuManager => vec![Effect::ReadKsuInstalled],
+            #[cfg(feature = "roots")]
+            Screen::Kernel => match self.state.kernel.as_ref() {
+                Some(kernel) if self.state.online() => {
+                    vec![Effect::ReadKernelDetails { plugin: kernel.plugin.clone() }]
+                }
+                _ => Vec::new(),
+            },
             Screen::Restore => vec![self.find_backups()],
             Screen::Files => vec![Effect::ReadDir(self.state.files.path.clone())],
             Screen::Choose(place) if self.state.place_open(place) => vec![Effect::ReadPlace(place, self.state.folder(s).path.clone())],
@@ -5319,29 +5700,81 @@ impl App {
                     return vec![Effect::StopJob];
                 }
             }
-            #[cfg(feature = "folkpatch")]
-            Action::Root(action) => {
-                let root = self.state.root.get_or_insert_with(RootState::default);
+            #[cfg(feature = "roots")]
+            Action::Apatch(action) => {
+                let root = self.state.apatch.get_or_insert_with(ApatchState::default);
                 match action {
-                    RootAction::Pick(pick) => {
+                    ApatchAction::Pick(pick) => {
                         root.pick = pick;
-                        return vec![Effect::ReadRootPatched { pick }];
+                        return vec![Effect::ReadApatchPatched { pick }];
                     }
-                    RootAction::KeyMode(mode) => {
+                    ApatchAction::KeyMode(mode) => {
                         root.key_mode = mode;
                         root.chosen = true;
                     }
-                    RootAction::EditKey => self.open(Screen::RootKey),
+                    ApatchAction::EditKey => self.open(Screen::ApatchKey),
                     // A copy of the key the run made, in the run's own folder.
-                    RootAction::KeepKey => {
-                        if let Some(RootJob::Finished(outcome)) = self.state.root.as_ref().map(|root| root.job.clone()) {
-                            if let skyward_folkpatch::Outcome::Installed(installed) = *outcome {
+                    ApatchAction::KeepKey => {
+                        if let Some(ApatchJob::Finished(outcome)) = self.state.apatch.as_ref().map(|root| root.job.clone()) {
+                            if let skyward_root::folkpatch::Outcome::Installed(installed) = *outcome {
                                 let run = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.clone(), std::path::Path::to_path_buf);
-                                return vec![Effect::ShareRootKey { run, key: installed.key }];
+                                return vec![Effect::ShareApatchKey { run, key: installed.key }];
                             }
                         }
                         return Vec::new();
                     }
+                }
+                self.refresh();
+            }
+            #[cfg(feature = "roots")]
+            Action::Ksu(action) => {
+                let ksu = self.state.ksu.get_or_insert_with(KsuState::default);
+                match action {
+                    KsuAction::Pick(pick) => ksu.pick = pick,
+                    KsuAction::Flavor(flavor) => {
+                        ksu.flavor = flavor;
+                        ksu.chosen = true;
+                    }
+                    KsuAction::Tier(tier) => {
+                        ksu.tier = tier;
+                        ksu.chosen = true;
+                    }
+                    KsuAction::Source(source) => {
+                        if source == KsuSource::Download || !ksu.installed.is_empty() {
+                            ksu.source = source;
+                            ksu.chosen = true;
+                            if source == KsuSource::Installed && ksu.installed_choice.is_none() {
+                                let manager = ksu
+                                    .installed
+                                    .iter()
+                                    .find(|manager| manager.flavor == ksu.flavor)
+                                    .unwrap_or(&ksu.installed[0]);
+                                ksu.installed_choice = Some(manager.path.clone());
+                            }
+                        }
+                    }
+                    KsuAction::Installed(index) => {
+                        if let Some(manager) = ksu.installed.get(index) {
+                            ksu.installed_choice = Some(manager.path.clone());
+                            ksu.source = KsuSource::Installed;
+                            ksu.chosen = true;
+                        }
+                    }
+                }
+                self.refresh();
+            }
+            #[cfg(feature = "roots")]
+            Action::KernelPlugin(index) => {
+                let Some(plugin) = self.state.kernel_plugins.get(index).cloned() else { return Vec::new() };
+                self.state.kernel = Some(KernelState::new(plugin));
+                self.open(Screen::Kernel);
+                return self.arrive_at(Screen::Kernel);
+            }
+
+            #[cfg(feature = "roots")]
+            Action::Kernel(KernelAction::Pick(pick)) => {
+                if let Some(kernel) = self.state.kernel.as_mut() {
+                    kernel.pick = pick;
                 }
                 self.refresh();
             }
@@ -5664,8 +6097,8 @@ impl App {
             Screen::Search => &mut self.state.search,
             Screen::Decrypt => &mut self.state.code,
             Screen::Rename => &mut self.state.new_name,
-            #[cfg(feature = "folkpatch")]
-            Screen::RootKey => &mut self.state.root.as_mut().expect("the key page types a key").entered,
+            #[cfg(feature = "roots")]
+            Screen::ApatchKey => &mut self.state.apatch.as_mut().expect("the key page types a key").entered,
             Screen::WlanPassword => &mut self.state.password,
             Screen::WlanAdd => {
                 let a = self.state.adding.as_mut().expect("the page adds a network");
@@ -5857,12 +6290,12 @@ impl App {
                 }
                 // A key the manager would not take stays here, said why; one
                 // it takes goes back to the root page with it.
-                #[cfg(feature = "folkpatch")]
-                Screen::RootKey => {
-                    let typed = self.state.root.as_ref().expect("the key page types a key").entered.clone();
-                    match skyward_folkpatch::SuperKey::validate(&typed) {
+                #[cfg(feature = "roots")]
+                Screen::ApatchKey => {
+                    let typed = self.state.apatch.as_ref().expect("the key page types a key").entered.clone();
+                    match skyward_root::folkpatch::SuperKey::validate(&typed) {
                         Ok(_) => {
-                            if let Some(root) = self.state.root.as_mut() {
+                            if let Some(root) = self.state.apatch.as_mut() {
                                 root.entered = typed;
                                 root.key_mode = KeyMode::Enter;
                             }
@@ -6496,13 +6929,13 @@ impl App {
             }
             // The key is the user's to choose; one the manager would not
             // take is turned down before anything is written.
-            #[cfg(feature = "folkpatch")]
-            Confirm::RootPatch => {
-                let root = self.state.root.clone().expect("the root page shows it");
+            #[cfg(feature = "roots")]
+            Confirm::ApatchPatch => {
+                let root = self.state.apatch.clone().expect("the root page shows it");
                 let key = match root.key_mode {
-                    KeyMode::Generate => skyward_folkpatch::Key::Generate,
-                    KeyMode::Enter => match skyward_folkpatch::SuperKey::validate(&root.entered) {
-                        Ok(key) => skyward_folkpatch::Key::Enter(key),
+                    KeyMode::Generate => skyward_root::folkpatch::Key::Generate,
+                    KeyMode::Enter => match skyward_root::folkpatch::SuperKey::validate(&root.entered) {
+                        Ok(key) => skyward_root::folkpatch::Key::Enter(key),
                         Err(fault) => {
                             self.say(fault.why(), now);
                             return fx;
@@ -6512,7 +6945,7 @@ impl App {
                     // back, keeps the key the phone had, so that what the
                     // manager installed goes on working.
                     KeyMode::Last => match root.last.clone() {
-                        Some(key) => skyward_folkpatch::Key::Enter(key),
+                        Some(key) => skyward_root::folkpatch::Key::Enter(key),
                         None => {
                             self.say(l.pick(["上次的密钥已不在手机上", "上次的金鑰已不在手機上", "The last key is no longer on this phone"]), now);
                             return fx;
@@ -6520,40 +6953,62 @@ impl App {
                     },
                 };
                 self.open(Screen::ApatchJob);
-                self.root_started();
+                self.apatch_started();
                 // An image that carries the patch already is written again
                 // only because the swipe said so, where the page found it.
-                fx.push(Effect::Root { pick: root.pick, key, repatch: root.patched });
+                fx.push(Effect::Apatch { pick: root.pick, key, repatch: root.patched });
             }
             // A run that stopped at an image already patched goes on once the
             // user swipes for it, with the key that is chosen.
-            #[cfg(feature = "folkpatch")]
-            Confirm::RootRepatch => {
-                let root = self.state.root.clone().expect("the root page shows it");
+            #[cfg(feature = "roots")]
+            Confirm::ApatchRepatch => {
+                let root = self.state.apatch.clone().expect("the root page shows it");
                 let key = match root.key_mode {
-                    KeyMode::Generate => skyward_folkpatch::Key::Generate,
-                    KeyMode::Enter => match skyward_folkpatch::SuperKey::validate(&root.entered) {
-                        Ok(key) => skyward_folkpatch::Key::Enter(key),
+                    KeyMode::Generate => skyward_root::folkpatch::Key::Generate,
+                    KeyMode::Enter => match skyward_root::folkpatch::SuperKey::validate(&root.entered) {
+                        Ok(key) => skyward_root::folkpatch::Key::Enter(key),
                         Err(fault) => {
                             self.say(fault.why(), now);
                             return fx;
                         }
                     },
                     KeyMode::Last => match root.last.clone() {
-                        Some(key) => skyward_folkpatch::Key::Enter(key),
+                        Some(key) => skyward_root::folkpatch::Key::Enter(key),
                         None => {
                             self.say(l.pick(["上次的密钥已不在手机上", "上次的金鑰已不在手機上", "The last key is no longer on this phone"]), now);
                             return fx;
                         }
                     },
                 };
-                self.root_started();
-                fx.push(Effect::Root { pick: root.pick, key, repatch: true });
+                self.apatch_started();
+                fx.push(Effect::Apatch { pick: root.pick, key, repatch: true });
+            }
+            // The KernelSU-family page's choices are already made; the run
+            // downloads its manager or reads the installed one on its own.
+            #[cfg(feature = "roots")]
+            Confirm::KsuPatch => {
+                let ksu = self.state.ksu.clone().expect("the KernelSU page shows it");
+                let installed =
+                    if ksu.source == KsuSource::Installed { ksu.installed_manager().cloned() } else { None };
+                self.open(Screen::KsuJob);
+                self.ksu_started();
+                fx.push(Effect::Ksu { flavor: ksu.flavor, tier: ksu.tier, source: ksu.source, installed, pick: ksu.pick });
             }
             // The run's page is left by a swipe of its own, which says the
             // reading is done.
-            #[cfg(feature = "folkpatch")]
-            Confirm::RootDone => return self.back(now),
+            #[cfg(feature = "roots")]
+            Confirm::ApatchDone => return self.back(now),
+            #[cfg(feature = "roots")]
+            Confirm::KsuDone => return self.back(now),
+            #[cfg(feature = "roots")]
+            Confirm::KernelInstall => {
+                let kernel = self.state.kernel.clone().expect("the kernel page shows it");
+                self.open(Screen::KernelJob);
+                self.kernel_started();
+                fx.push(Effect::Kernel { plugin: kernel.plugin, pick: kernel.pick });
+            }
+            #[cfg(feature = "roots")]
+            Confirm::KernelDone => return self.back(now),
             Confirm::DeleteEntry => fx.push(Effect::Delete(self.entry_path())),
             // The partition has to be open; whether its users have unlocked
             // their own files makes no difference.
@@ -7121,6 +7576,16 @@ mod tests {
             Screen::Erase,
             Screen::CantStart,
             Screen::Unhandled,
+            #[cfg(feature = "roots")]
+            Screen::Ksu,
+            #[cfg(feature = "roots")]
+            Screen::KsuJob,
+            #[cfg(feature = "roots")]
+            Screen::KsuManager,
+            #[cfg(feature = "roots")]
+            Screen::Kernel,
+            #[cfg(feature = "roots")]
+            Screen::KernelJob,
         ];
         for t in [Theme::light(W, H, PPD), Theme::dark(W, H, PPD).pressed()] {
             for screen in screens {
@@ -11330,7 +11795,7 @@ mod tests {
 
     /// A phone of the pages' own size, running from slot A, with its data
     /// partition open.
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn rooted(slot: Option<Slot>) -> (App, DeviceInfo) {
         let mut i = info();
         i.slot = slot;
@@ -11341,13 +11806,13 @@ mod tests {
         (app, i)
     }
 
-    #[cfg(feature = "folkpatch")]
-    fn root_hits(app: &mut App, f: &Fonts, i: &DeviceInfo) -> Vec<Action> {
+    #[cfg(feature = "roots")]
+    fn apatch_hits(app: &mut App, f: &Fonts, i: &DeviceInfo) -> Vec<Action> {
         app.open(Screen::Apatch);
         app.frame(f, i).hits.iter().map(|h| h.action).collect()
     }
 
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn typed(app: &mut App, f: &Fonts, i: &DeviceInfo, text: &str) {
         for c in text.chars() {
             tap(app, f, i, Action::Type(Cap::Char(c)));
@@ -11355,7 +11820,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn the_home_page_opens_the_root_page_which_opens_apatch() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::B));
@@ -11366,76 +11831,177 @@ mod tests {
         assert_eq!(app.screen(), Screen::Apatch, "and APatch is the way under it");
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
         for pick in Pick::ALL {
-            assert!(hits.contains(&Action::Root(RootAction::Pick(pick))), "each slot is offered");
+            assert!(hits.contains(&Action::Apatch(ApatchAction::Pick(pick))), "each slot is offered");
         }
-        assert_eq!(app.state.root.as_ref().unwrap().pick, Pick::Current, "starting on the current slot");
-        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Generate, "and with a key made here");
+        assert_eq!(app.state.apatch.as_ref().unwrap().pick, Pick::Current, "starting on the current slot");
+        assert_eq!(app.state.apatch.as_ref().unwrap().key_mode, KeyMode::Generate, "and with a key made here");
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
+    fn the_root_page_opens_the_kernelsu_family_and_uses_the_manager_installed() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        app.open(Screen::Root);
+        assert!(
+            app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::Ksu)),
+            "the root page offers the family beside FolkPatch"
+        );
+        assert_eq!(app.act(Action::Open(Screen::Ksu), 0), vec![Effect::ReadKsuInstalled], "opening it looks for the manager Android has");
+        assert_eq!(app.screen(), Screen::Ksu);
+        assert_eq!(app.state.ksu.as_ref().unwrap().source, KsuSource::Download, "nothing installed yet, so it downloads");
+        let installed = skyward_root::ksu::InstalledManager {
+            flavor: KsuFlavor::SukiSu,
+            package: "com.sukisu.ultra".into(),
+            path: "/data/app/com.sukisu.ultra/base.apk".into(),
+        };
+        app.set_ksu_installed(vec![installed]);
+        let ksu = app.state.ksu.as_ref().unwrap();
+        assert_eq!(ksu.source, KsuSource::Installed, "the manager Android has is used at first");
+        assert_eq!(ksu.flavor, KsuFlavor::SukiSu, "and named as it is");
+        app.act(Action::Ksu(KsuAction::Flavor(KsuFlavor::KernelSu)), 0);
+        assert_eq!(app.state.ksu.as_ref().unwrap().flavor, KsuFlavor::KernelSu);
+        assert_eq!(app.state.ksu.as_ref().unwrap().source, KsuSource::Installed, "the installed APK and the selected manager may differ");
+    }
+
+    #[test]
+    #[cfg(feature = "roots")]
+    fn the_manager_page_chooses_the_manager_release_source_and_installed_apk() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        app.open(Screen::Root);
+        app.act(Action::Open(Screen::Ksu), 0);
+        let first = skyward_root::ksu::InstalledManager {
+            flavor: KsuFlavor::SukiSu,
+            package: "com.sukisu.ultra".into(),
+            path: "/data/app/com.sukisu.ultra/base.apk".into(),
+        };
+        let second = skyward_root::ksu::InstalledManager {
+            flavor: KsuFlavor::KernelSu,
+            package: "me.weishu.kernelsu".into(),
+            path: "/data/app/me.weishu.kernelsu/base.apk".into(),
+        };
+        app.set_ksu_installed(vec![first.clone(), second.clone()]);
+        tap(&mut app, &f, &i, Action::Open(Screen::KsuManager));
+        assert_eq!(app.screen(), Screen::KsuManager, "the manager is chosen on its own page");
+        tap(&mut app, &f, &i, Action::Ksu(KsuAction::Flavor(KsuFlavor::KernelSu)));
+        tap(&mut app, &f, &i, Action::Ksu(KsuAction::Source(KsuSource::Download)));
+        tap(&mut app, &f, &i, Action::Ksu(KsuAction::Tier(KsuTier::Latest)));
+        tap(&mut app, &f, &i, Action::Ksu(KsuAction::Source(KsuSource::Installed)));
+        tap(&mut app, &f, &i, Action::Ksu(KsuAction::Installed(1)));
+        let ksu = app.state.ksu.as_ref().unwrap();
+        assert_eq!(ksu.flavor, KsuFlavor::KernelSu);
+        assert_eq!(ksu.tier, KsuTier::Latest);
+        assert_eq!(ksu.source, KsuSource::Installed);
+        assert_eq!(ksu.installed_manager().unwrap().path, second.path);
+    }
+
+    #[test]
+    #[cfg(feature = "roots")]
+    fn the_root_page_offers_the_phones_own_kernel() {
+        let (f, _) = (fonts(), ());
+        let (mut app, i) = rooted(Some(Slot::A));
+        let plugin = KernelPlugin {
+            name: "Shinobu kernel".into(),
+            subtitle: Some("BakaSU + SUSFS".into()),
+            repo: "iljasrb/bronco-shinobu-kernel".into(),
+            asset: "shinobu-kernel-{version}.img".into(),
+            folder: "Shinobu".into(),
+            note: Some("Install the BakaSU manager in Android.".into()),
+            manager_name: Some("BakaSU".into()),
+        };
+        app.set_kernel_plugins(vec![plugin.clone()]);
+        app.state.wlan = Some(connected("Skyward"));
+        app.open(Screen::Root);
+        assert!(
+            app.frame(&f, &i).hits.iter().any(|hit| hit.action == Action::KernelPlugin(0)),
+            "the phone's own kernel sits beside the built-in methods"
+        );
+
+        assert_eq!(
+            tap(&mut app, &f, &i, Action::KernelPlugin(0)),
+            vec![Effect::ReadKernelDetails { plugin: plugin.clone() }],
+            "opening the page asks GitHub for the newest release"
+        );
+        assert_eq!(app.screen(), Screen::Kernel);
+        assert_eq!(app.state.kernel.as_ref().unwrap().plugin, plugin);
+        tap(&mut app, &f, &i, Action::Kernel(KernelAction::Pick(Pick::Both)));
+        assert_eq!(app.state.kernel.as_ref().unwrap().pick, Pick::Both);
+        assert!(
+            app.frame(&f, &i).hits.iter().any(|hit| hit.action == Action::Confirm(Confirm::KernelInstall)),
+            "the kernel can be installed once its release can be fetched"
+        );
+        assert_eq!(
+            app.confirmed(Confirm::KernelInstall, 0),
+            vec![Effect::Kernel { plugin: plugin.clone(), pick: Pick::Both }]
+        );
+        assert_eq!(app.screen(), Screen::KernelJob);
+    }
+
+    #[test]
+    #[cfg(feature = "roots")]
     fn a_root_run_is_offered_only_with_the_storage_and_a_slot_to_write() {
         let (f, _) = (fonts(), ());
-        let want = Confirm::RootPatch;
+        let want = Confirm::ApatchPatch;
         let (mut app, i) = rooted(Some(Slot::A));
-        assert!(root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "everything in place");
+        assert!(apatch_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "everything in place");
         // A slot missing.
         let (mut app, i) = rooted(None);
-        assert!(!root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no slot to write");
+        assert!(!apatch_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no slot to write");
         // The data partition closed.
         let (mut app, i) = rooted(Some(Slot::B));
         app.state.data = Data::Closed;
-        assert!(!root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no storage for the manager");
+        assert!(!apatch_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "no storage for the manager");
         // An update in flight warns without refusing.
         let (mut app, mut i) = rooted(Some(Slot::A));
         i.snapshot = SnapshotState::Snapshotted;
-        assert!(root_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "a warning keeps the swipe");
+        assert!(apatch_hits(&mut app, &f, &i).contains(&Action::Confirm(want)), "a warning keeps the swipe");
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_key_the_manager_would_not_take_stays_on_the_key_page() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
-        tap(&mut app, &f, &i, Action::Root(RootAction::KeyMode(KeyMode::Enter)));
-        tap(&mut app, &f, &i, Action::Root(RootAction::EditKey));
-        assert_eq!(app.screen(), Screen::RootKey);
+        apatch_hits(&mut app, &f, &i);
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::KeyMode(KeyMode::Enter)));
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::EditKey));
+        assert_eq!(app.screen(), Screen::ApatchKey);
         typed(&mut app, &f, &i, "abcdefgh");
         tap(&mut app, &f, &i, Action::Type(Cap::Enter));
-        assert_eq!(app.screen(), Screen::RootKey, "no digit is turned down here");
+        assert_eq!(app.screen(), Screen::ApatchKey, "no digit is turned down here");
         assert!(toast(&app).is_some_and(|t| t.contains("数字") || t.contains("digit")), "{:?}", toast(&app));
         tap(&mut app, &f, &i, Action::Type(Cap::Show(Layer::Digits)));
         tap(&mut app, &f, &i, Action::Type(Cap::Char('1')));
         tap(&mut app, &f, &i, Action::Type(Cap::Enter));
         assert_eq!(app.screen(), Screen::Apatch, "taken, it goes back with the key");
-        let root = app.state.root.as_ref().unwrap();
+        let root = app.state.apatch.as_ref().unwrap();
         assert_eq!((root.key_mode, root.entered.as_str()), (KeyMode::Enter, "abcdefgh1"));
         assert_eq!(
-            swipe(&mut app, &f, &i, Confirm::RootPatch),
-            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Enter(skyward_folkpatch::SuperKey::validate("abcdefgh1").unwrap()), repatch: false }]
+            swipe(&mut app, &f, &i, Confirm::ApatchPatch),
+            vec![Effect::Apatch { pick: Pick::Current, key: skyward_root::folkpatch::Key::Enter(skyward_root::folkpatch::SuperKey::validate("abcdefgh1").unwrap()), repatch: false }]
         );
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_key_the_run_would_use_is_there_to_read_without_being_typed() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        let last = skyward_folkpatch::SuperKey::validate("lastkey1").unwrap();
-        app.set_root_last_key(Some(last.clone()));
-        root_hits(&mut app, &f, &i);
-        tap(&mut app, &f, &i, Action::Root(RootAction::EditKey));
-        assert_eq!(app.screen(), Screen::RootKey);
+        let last = skyward_root::folkpatch::SuperKey::validate("lastkey1").unwrap();
+        app.set_apatch_last_key(Some(last.clone()));
+        apatch_hits(&mut app, &f, &i);
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::EditKey));
+        assert_eq!(app.screen(), Screen::ApatchKey);
         let frame = app.frame(&f, &i);
         assert!(frame.caret.is_none(), "nothing is being typed");
         assert!(frame.hits.iter().all(|h| !matches!(h.action, Action::Type(_))), "and there is no keyboard");
-        assert!(frame.hits.iter().all(|h| !matches!(h.action, Action::Root(_))), "the only way to switch is the page behind it");
+        assert!(frame.hits.iter().all(|h| !matches!(h.action, Action::Apatch(_))), "the only way to switch is the page behind it");
         // Chosen there, the same page types the key.
         tap_back(&mut app, &f, &i, 0);
-        tap(&mut app, &f, &i, Action::Root(RootAction::KeyMode(KeyMode::Enter)));
-        tap(&mut app, &f, &i, Action::Root(RootAction::EditKey));
-        assert_eq!(app.screen(), Screen::RootKey);
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::KeyMode(KeyMode::Enter)));
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::EditKey));
+        assert_eq!(app.screen(), Screen::ApatchKey);
         let (caret, keys) = {
             let frame = app.frame(&f, &i);
             (frame.caret.is_some(), frame.hits.iter().any(|h| matches!(h.action, Action::Type(_))))
@@ -11445,179 +12011,179 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_root_run_says_how_far_it_has_come_and_cannot_be_left_before_it_ends() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
+        apatch_hits(&mut app, &f, &i);
         assert_eq!(
-            swipe(&mut app, &f, &i, Confirm::RootPatch),
-            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Generate, repatch: false }],
+            swipe(&mut app, &f, &i, Confirm::ApatchPatch),
+            vec![Effect::Apatch { pick: Pick::Current, key: skyward_root::folkpatch::Key::Generate, repatch: false }],
             "the current slot, with a key made here"
         );
-        app.root_started();
-        app.root_stage(skyward_folkpatch::Stage::Patching { slot: Slot::A });
-        assert!(matches!(app.state.root.as_ref().unwrap().job, RootJob::Running(Some(_))));
+        app.apatch_started();
+        app.apatch_stage(skyward_root::folkpatch::Stage::Patching { slot: Slot::A });
+        assert!(matches!(app.state.apatch.as_ref().unwrap().job, ApatchJob::Running(Some(_))));
         // The bar carries no back while it runs; a gesture that goes back
         // anyway is turned down, and the page says why.
         assert!(!app.frame(&f, &i).back, "no back button while it runs");
         assert!(app.act(Action::Back, 1000).is_empty());
         assert_eq!(app.screen(), Screen::ApatchJob, "the run has a page of its own, and is not left halfway");
         assert!(toast(&app).is_some(), "and the page says why not");
-        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
-        app.root_finished(
-            skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+        let key = skyward_root::folkpatch::SuperKey::validate("abcd1234").unwrap();
+        app.apatch_finished(
+            skyward_root::folkpatch::Outcome::Installed(skyward_root::folkpatch::Installed {
                 slots: vec![Slot::A],
                 key,
-                key_path: "/data/local/tmp/skyward-folkpatch/x/superkey.txt".into(),
+                key_path: "/data/local/tmp/skyward-root/x/superkey.txt".into(),
                 backup_dir: "/sdcard/Download/Skyward/FolkPatch/x/backup".into(),
                 kallsyms_all: true,
             }),
             2000,
         );
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(hits.contains(&Action::Confirm(Confirm::RootDone)), "the page is done, and says so with a slider");
-        app.confirmed(Confirm::RootDone, 3000);
+        assert!(hits.contains(&Action::Confirm(Confirm::ApatchDone)), "the page is done, and says so with a slider");
+        app.confirmed(Confirm::ApatchDone, 3000);
         assert_eq!(app.screen(), Screen::Apatch, "and can be left for the page it started from");
         tap_back(&mut app, &f, &i, 3100);
         assert_eq!(app.screen(), Screen::Home, "and that page for the home page");
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn the_key_of_the_last_run_is_the_one_defaulted_to_and_used() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        let last = skyward_folkpatch::SuperKey::validate("lastkey1").unwrap();
-        app.set_root_last_key(Some(last.clone()));
-        let hits = root_hits(&mut app, &f, &i);
-        assert!(hits.contains(&Action::Root(RootAction::KeyMode(KeyMode::Last))), "the last key can be kept");
-        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Last, "and is what the page starts on");
+        let last = skyward_root::folkpatch::SuperKey::validate("lastkey1").unwrap();
+        app.set_apatch_last_key(Some(last.clone()));
+        let hits = apatch_hits(&mut app, &f, &i);
+        assert!(hits.contains(&Action::Apatch(ApatchAction::KeyMode(KeyMode::Last))), "the last key can be kept");
+        assert_eq!(app.state.apatch.as_ref().unwrap().key_mode, KeyMode::Last, "and is what the page starts on");
         assert_eq!(
-            swipe(&mut app, &f, &i, Confirm::RootPatch),
-            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Enter(last), repatch: false }],
+            swipe(&mut app, &f, &i, Confirm::ApatchPatch),
+            vec![Effect::Apatch { pick: Pick::Current, key: skyward_root::folkpatch::Key::Enter(last), repatch: false }],
             "patching again keeps the key the phone had"
         );
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn the_page_opens_on_the_key_on_file_even_after_another_was_chosen() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        let last = skyward_folkpatch::SuperKey::validate("lastkey1").unwrap();
-        app.set_root_last_key(Some(last));
-        root_hits(&mut app, &f, &i);
-        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Last, "the key on file, first");
-        tap(&mut app, &f, &i, Action::Root(RootAction::KeyMode(KeyMode::Generate)));
-        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Generate, "and what the user chose");
+        let last = skyward_root::folkpatch::SuperKey::validate("lastkey1").unwrap();
+        app.set_apatch_last_key(Some(last));
+        apatch_hits(&mut app, &f, &i);
+        assert_eq!(app.state.apatch.as_ref().unwrap().key_mode, KeyMode::Last, "the key on file, first");
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::KeyMode(KeyMode::Generate)));
+        assert_eq!(app.state.apatch.as_ref().unwrap().key_mode, KeyMode::Generate, "and what the user chose");
         // Opened again, it is the key on file that is waited for.
         tap_back(&mut app, &f, &i, 0);
-        assert_eq!(app.act(Action::Open(Screen::Apatch), 0), vec![Effect::ReadRootKey, Effect::ReadRootPatched { pick: Pick::Current }]);
-        app.set_root_last_key(Some(skyward_folkpatch::SuperKey::validate("lastkey1").unwrap()));
-        assert_eq!(app.state.root.as_ref().unwrap().key_mode, KeyMode::Last);
+        assert_eq!(app.act(Action::Open(Screen::Apatch), 0), vec![Effect::ReadApatchKey, Effect::ReadApatchPatched { pick: Pick::Current }]);
+        app.set_apatch_last_key(Some(skyward_root::folkpatch::SuperKey::validate("lastkey1").unwrap()));
+        assert_eq!(app.state.apatch.as_ref().unwrap().key_mode, KeyMode::Last);
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn the_run_prints_its_steps_once_each_as_the_page_scrolls_by() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
-        app.root_started();
-        assert!(app.state.root.as_ref().unwrap().log.is_empty(), "nothing before it starts");
-        app.root_stage(skyward_folkpatch::Stage::BackingUp { slot: Slot::A, done: 10, total: 100 });
-        app.root_stage(skyward_folkpatch::Stage::BackingUp { slot: Slot::A, done: 90, total: 100 });
-        app.root_stage(skyward_folkpatch::Stage::Patching { slot: Slot::A });
-        app.root_stage(skyward_folkpatch::Stage::Patching { slot: Slot::B });
+        apatch_hits(&mut app, &f, &i);
+        app.apatch_started();
+        assert!(app.state.apatch.as_ref().unwrap().log.is_empty(), "nothing before it starts");
+        app.apatch_stage(skyward_root::folkpatch::Stage::BackingUp { slot: Slot::A, done: 10, total: 100 });
+        app.apatch_stage(skyward_root::folkpatch::Stage::BackingUp { slot: Slot::A, done: 90, total: 100 });
+        app.apatch_stage(skyward_root::folkpatch::Stage::Patching { slot: Slot::A });
+        app.apatch_stage(skyward_root::folkpatch::Stage::Patching { slot: Slot::B });
         assert_eq!(
-            app.state.root.as_ref().unwrap().log,
+            app.state.apatch.as_ref().unwrap().log,
             vec!["正在备份槽位 A 的 boot 分区", "正在为槽位 A 打补丁", "正在为槽位 B 打补丁"],
             "a step says it once, however far it has come"
         );
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn an_image_that_carries_the_patch_is_written_again_only_by_a_swipe_of_its_own() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        app.set_root_patched(true, [Some(true), None]);
-        root_hits(&mut app, &f, &i);
+        app.set_apatch_patched(true, [Some(true), None]);
+        apatch_hits(&mut app, &f, &i);
         assert_eq!(
-            swipe(&mut app, &f, &i, Confirm::RootPatch),
-            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Generate, repatch: true }],
+            swipe(&mut app, &f, &i, Confirm::ApatchPatch),
+            vec![Effect::Apatch { pick: Pick::Current, key: skyward_root::folkpatch::Key::Generate, repatch: true }],
             "the page found the patch, and the swipe says to write anyway"
         );
         // A run that stopped at the check offers the same swipe on its own page.
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
-        swipe(&mut app, &f, &i, Confirm::RootPatch);
-        app.root_finished(skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
+        apatch_hits(&mut app, &f, &i);
+        swipe(&mut app, &f, &i, Confirm::ApatchPatch);
+        app.apatch_finished(skyward_root::folkpatch::Outcome::Refused(skyward_root::folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(hits.contains(&Action::Confirm(Confirm::RootRepatch)), "and is offered there too");
+        assert!(hits.contains(&Action::Confirm(Confirm::ApatchRepatch)), "and is offered there too");
         assert_eq!(
-            app.confirmed(Confirm::RootRepatch, 1000),
-            vec![Effect::Root { pick: Pick::Current, key: skyward_folkpatch::Key::Generate, repatch: true }]
+            app.confirmed(Confirm::ApatchRepatch, 1000),
+            vec![Effect::Apatch { pick: Pick::Current, key: skyward_root::folkpatch::Key::Generate, repatch: true }]
         );
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_patch_in_the_other_slot_is_written_again_when_both_are_chosen() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        app.set_root_patched(true, [Some(false), Some(true)]);
-        root_hits(&mut app, &f, &i);
-        tap(&mut app, &f, &i, Action::Root(RootAction::Pick(Pick::Both)));
+        app.set_apatch_patched(true, [Some(false), Some(true)]);
+        apatch_hits(&mut app, &f, &i);
+        tap(&mut app, &f, &i, Action::Apatch(ApatchAction::Pick(Pick::Both)));
         assert_eq!(
-            swipe(&mut app, &f, &i, Confirm::RootPatch),
-            vec![Effect::Root { pick: Pick::Both, key: skyward_folkpatch::Key::Generate, repatch: true }],
+            swipe(&mut app, &f, &i, Confirm::ApatchPatch),
+            vec![Effect::Apatch { pick: Pick::Both, key: skyward_root::folkpatch::Key::Generate, repatch: true }],
             "the patch in B is seen even though the phone runs from A"
         );
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_run_that_installed_offers_to_keep_a_copy_of_the_key_where_android_reads_it() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
-        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
+        apatch_hits(&mut app, &f, &i);
+        let key = skyward_root::folkpatch::SuperKey::validate("abcd1234").unwrap();
         app.open(Screen::ApatchJob);
-        app.root_started();
-        app.root_finished(
-            skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+        app.apatch_started();
+        app.apatch_finished(
+            skyward_root::folkpatch::Outcome::Installed(skyward_root::folkpatch::Installed {
                 slots: vec![Slot::A],
                 key: key.clone(),
-                key_path: "/data/local/tmp/skyward-folkpatch/x/superkey.txt".into(),
+                key_path: "/data/local/tmp/skyward-root/x/superkey.txt".into(),
                 backup_dir: "/sdcard/Download/Skyward/FolkPatch/x/backup".into(),
                 kallsyms_all: true,
             }),
             0,
         );
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(hits.contains(&Action::Root(RootAction::KeepKey)), "the copy is offered as a button");
-        assert!(hits.contains(&Action::Confirm(Confirm::RootDone)), "and the way out is the slider");
+        assert!(hits.contains(&Action::Apatch(ApatchAction::KeepKey)), "the copy is offered as a button");
+        assert!(hits.contains(&Action::Confirm(Confirm::ApatchDone)), "and the way out is the slider");
         assert_eq!(
-            app.act(Action::Root(RootAction::KeepKey), 1000),
-            vec![Effect::ShareRootKey { run: "/sdcard/Download/Skyward/FolkPatch/x".into(), key }],
+            app.act(Action::Apatch(ApatchAction::KeepKey), 1000),
+            vec![Effect::ShareApatchKey { run: "/sdcard/Download/Skyward/FolkPatch/x".into(), key }],
             "in the run's own folder"
         );
         app.root_key_shared(Ok("/sdcard/Download/Skyward/FolkPatch/x/superkey.txt".into()), 1000);
         let hits = app.frame(&f, &i).hits.iter().map(|h| h.action).collect::<Vec<_>>();
-        assert!(!hits.contains(&Action::Root(RootAction::KeepKey)), "kept once");
-        assert!(app.state.root.as_ref().unwrap().log.iter().any(|line| line.contains("superkey.txt")), "and the log says where");
+        assert!(!hits.contains(&Action::Apatch(ApatchAction::KeepKey)), "kept once");
+        assert!(app.state.apatch.as_ref().unwrap().log.iter().any(|line| line.contains("superkey.txt")), "and the log says where");
     }
 
     #[test]
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     fn a_refused_root_run_says_nothing_was_written() {
         let (f, _) = (fonts(), ());
         let (mut app, i) = rooted(Some(Slot::A));
-        root_hits(&mut app, &f, &i);
-        app.root_started();
-        app.root_finished(skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
-        assert!(matches!(app.state.root.as_ref().unwrap().job, RootJob::Finished(_)));
+        apatch_hits(&mut app, &f, &i);
+        app.apatch_started();
+        app.apatch_finished(skyward_root::folkpatch::Outcome::Refused(skyward_root::folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
+        assert!(matches!(app.state.apatch.as_ref().unwrap().job, ApatchJob::Finished(_)));
     }
 }

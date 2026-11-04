@@ -8,8 +8,9 @@
 //! `ps` would show.
 
 use crate::backup::{self, Backup, Layout};
-use crate::{
-    Failure, Installed, Key, Options, Outcome, Refusal, Stage, SuperKey, BOOT, KPIMG, KPIMG_SHA256, KPIMG_VERSION, KPTOOLS,
+use crate::BOOT;
+use super::{
+    Failure, Installed, Key, Options, Outcome, Refusal, Stage, SuperKey, KPIMG, KPIMG_SHA256, KPIMG_VERSION, KPTOOLS,
     KPTOOLS_SHA256,
 };
 use anyhow::{ensure, Context, Result};
@@ -463,7 +464,7 @@ fn kernel_of(file: &mut File) -> Result<Vec<u8>> {
 }
 
 /// Whether the last bytes of `file` are the AVB footer a bootloader looks for.
-fn ends_signed(file: &mut File) -> Result<bool> {
+pub(crate) fn ends_signed(file: &mut File) -> Result<bool> {
     let len = file.seek(SeekFrom::End(0))?;
     if len < FOOTER_LEN {
         return Ok(false);
@@ -531,7 +532,7 @@ pub fn patched_slot(partition_dir: &Path, slot: Slot, private: &Path) -> Result<
 }
 
 /// The bytes left on the filesystem `dir` is on.
-fn available(dir: &Path) -> Result<u64> {
+pub(crate) fn available(dir: &Path) -> Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).context("the storage path")?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();

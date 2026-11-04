@@ -105,14 +105,24 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::WlanPassword => wlan_password(cx),
         Screen::WlanNetwork => wlan_network(cx),
         Screen::WlanAdd => wlan_add(cx),
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         Screen::Root => root(cx),
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         Screen::Apatch => apatch(cx),
-        #[cfg(feature = "folkpatch")]
+        #[cfg(feature = "roots")]
         Screen::ApatchJob => apatch_job(cx),
-        #[cfg(feature = "folkpatch")]
-        Screen::RootKey => root_key(cx),
+        #[cfg(feature = "roots")]
+        Screen::Ksu => ksu(cx),
+        #[cfg(feature = "roots")]
+        Screen::KsuJob => ksu_job(cx),
+        #[cfg(feature = "roots")]
+        Screen::KsuManager => ksu_manager(cx),
+        #[cfg(feature = "roots")]
+        Screen::Kernel => kernel(cx),
+        #[cfg(feature = "roots")]
+        Screen::KernelJob => kernel_job(cx),
+        #[cfg(feature = "roots")]
+        Screen::ApatchKey => apatch_key(cx),
     }
 }
 
@@ -138,15 +148,21 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::RunScript => (INSTALL, true),
         Confirm::Merge => (["滑动以合并", "滑動以合併", "Slide to merge"], true),
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
-        #[cfg(feature = "folkpatch")]
-        Confirm::RootPatch => match s.root.as_ref().is_some_and(|root| root.patched) {
+        #[cfg(feature = "roots")]
+        Confirm::ApatchPatch => match s.apatch.as_ref().is_some_and(|root| root.patched) {
             true => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
             false => (["滑动以安装 KernelPatch", "滑動以安裝 KernelPatch", "Slide to install KernelPatch"], true),
         },
-        #[cfg(feature = "folkpatch")]
-        Confirm::RootRepatch => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
-        #[cfg(feature = "folkpatch")]
-        Confirm::RootDone => (["滑动以完成", "滑動以完成", "Slide when done"], false),
+        #[cfg(feature = "roots")]
+        Confirm::ApatchRepatch => (["滑动以再次打补丁", "滑動以再次打修補", "Slide to patch it again"], true),
+        #[cfg(feature = "roots")]
+        Confirm::KsuPatch => (["滑动以打补丁", "滑動以打修補", "Slide to patch the boot image"], true),
+        #[cfg(feature = "roots")]
+        Confirm::KernelInstall => (["滑动以安装内核", "滑動以安裝核心", "Slide to install the kernel"], true),
+        #[cfg(feature = "roots")]
+        Confirm::ApatchDone | Confirm::KsuDone | Confirm::KernelDone => {
+            (["滑动以完成", "滑動以完成", "Slide when done"], false)
+        }
     };
     (s.lang.pick(label), danger)
 }
@@ -288,7 +304,7 @@ pub fn home(cx: &Ctx) -> Frame {
         Action::Open(Screen::Decrypt),
     ]));
     y = tools.bottom + t.m.card_gap;
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     {
         let root = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(ROOT)).icon(GREEN, Icon::Shield)]);
         out.extend(hits(&root.rows, &[Action::Open(Screen::Root)]));
@@ -3635,81 +3651,159 @@ pub fn unhandled(cx: &Ctx) -> Frame {
 }
 
 
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 const ROOT: Text = ["Root（beta）", "Root（beta）", "Root (beta)"];
-#[cfg(feature = "folkpatch")]
-const ROOT_SUBTITLE: Text = ["内核补丁与超级密钥", "核心修補與超級金鑰", "Kernel patch and SuperKey"];
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
+const APATCH_SUBTITLE: Text = ["内核补丁与超级密钥", "核心修補與超級金鑰", "Kernel patch and SuperKey"];
+#[cfg(feature = "roots")]
 const BUNDLED: Text = ["内置的补丁工具", "內建的修補工具", "Bundled"];
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 const FOLKPATCH_BUILD: Text = ["FolkPatch 构建", "FolkPatch 建置", "FolkPatch build"];
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 const APATCH: Text = ["KernelPatch（FolkPatch）", "KernelPatch（FolkPatch）", "KernelPatch (FolkPatch)"];
-#[cfg(feature = "folkpatch")]
-const ROOT_SLOTS: Text = ["分区", "分割區", "Partitions"];
-#[cfg(feature = "folkpatch")]
-const ROOT_KEY: Text = ["密钥", "金鑰", "Key"];
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
+const KSU: Text = ["KernelSU 系列", "KernelSU 系列", "KernelSU family"];
+#[cfg(feature = "roots")]
+const KSU_SUBTITLE: Text = ["KernelSU、Next、SukiSU 与 BakaSU", "KernelSU、Next、SukiSU 與 BakaSU", "KernelSU, Next, SukiSU and BakaSU"];
+#[cfg(feature = "roots")]
+const APATCH_SLOTS: Text = ["分区", "分割區", "Partitions"];
+#[cfg(feature = "roots")]
+const APATCH_KEY: Text = ["密钥", "金鑰", "Key"];
+#[cfg(feature = "roots")]
 const LOG: Text = ["日志", "記錄", "Log"];
-#[cfg(feature = "folkpatch")]
-const ROOT_KEY_TITLE: Text = ["超级密钥", "超級金鑰", "SuperKey"];
-#[cfg(feature = "folkpatch")]
-const ROOT_TYPED: Text = ["已输入", "已輸入", "Set"];
-#[cfg(feature = "folkpatch")]
-const ROOT_NOT_TYPED: Text = ["未输入", "未輸入", "Not set"];
-#[cfg(feature = "folkpatch")]
-const ROOT_NEW: Text = ["运行时生成", "執行時產生", "Made when it runs"];
-#[cfg(feature = "folkpatch")]
-const ROOT_LAST: Text = ["沿用上次的", "沿用上次的", "The last run's"];
+#[cfg(feature = "roots")]
+const APATCH_KEY_TITLE: Text = ["超级密钥", "超級金鑰", "SuperKey"];
+#[cfg(feature = "roots")]
+const APATCH_TYPED: Text = ["已输入", "已輸入", "Set"];
+#[cfg(feature = "roots")]
+const APATCH_NOT_TYPED: Text = ["未输入", "未輸入", "Not set"];
+#[cfg(feature = "roots")]
+const APATCH_NEW: Text = ["运行时生成", "執行時產生", "Made when it runs"];
+#[cfg(feature = "roots")]
+const APATCH_LAST: Text = ["沿用上次的", "沿用上次的", "The last run's"];
+#[cfg(feature = "roots")]
+const KSU_TITLE: Text = ["KernelSU 管理器", "KernelSU 管理器", "KernelSU manager"];
+#[cfg(feature = "roots")]
+const KSU_MANAGER: Text = ["管理器", "管理器", "Manager"];
+#[cfg(feature = "roots")]
+const KSU_RELEASE: Text = ["版本", "版本", "Release"];
+#[cfg(feature = "roots")]
+const KSU_SOURCE: Text = ["来源", "來源", "Source"];
+#[cfg(feature = "roots")]
+const KSU_DOWNLOAD: Text = ["从 GitHub 下载", "從 GitHub 下載", "Download from GitHub"];
+#[cfg(feature = "roots")]
+const KSU_INSTALLED: Text = ["已安装的管理器", "已安裝的管理器", "Installed manager"];
+#[cfg(feature = "roots")]
+const KSU_INSTALLED_MANAGERS: Text = ["已安装的管理器", "已安裝的管理器", "Installed managers"];
+#[cfg(feature = "roots")]
+const KSU_INSTALLED_VALUE: Text = ["已安装", "已安裝", "Installed"];
+#[cfg(feature = "roots")]
+const KSU_NOT_FOUND: Text = ["未找到", "未找到", "Not found"];
+#[cfg(feature = "roots")]
+const KSU_STABLE: Text = ["稳定版", "穩定版", "Stable"];
+#[cfg(feature = "roots")]
+const KSU_LATEST: Text = ["最新版（含预发布）", "最新版（含預發布）", "Latest (prereleases too)"];
+#[cfg(feature = "roots")]
+const KSU_SLOTS: Text = ["分区", "分割區", "Partitions"];
+#[cfg(feature = "roots")]
+const KERNEL_TITLE: Text = ["安装内核", "安裝核心", "Install kernel"];
+#[cfg(feature = "roots")]
+const KERNEL_KERNEL: Text = ["内核", "核心", "Kernel"];
+#[cfg(feature = "roots")]
+const KERNEL_RELEASE: Text = ["发布", "發布", "Release"];
+#[cfg(feature = "roots")]
+const KERNEL_GITHUB: Text = ["GitHub", "GitHub", "GitHub"];
+#[cfg(feature = "roots")]
+const KERNEL_VERSION: Text = ["内核版本", "核心版本", "Kernel version"];
+#[cfg(feature = "roots")]
+const KERNEL_CHECKING: Text = ["正在查询", "正在查詢", "Checking"];
+#[cfg(feature = "roots")]
+const KERNEL_UNAVAILABLE: Text = ["未查询到", "未查詢到", "Not found"];
+#[cfg(feature = "roots")]
+const ROOT_PATCHING: Text = ["打补丁", "打修補", "Patching"];
+#[cfg(feature = "roots")]
+const ROOT_KERNELS: Text = ["预置内核", "預置核心", "Pre-built kernels"];
+
 
 /// Root: what this recovery can do to the boot image, one page to each way of
-/// doing it. APatch, patched in by FolkPatch, is the one there is.
-#[cfg(feature = "folkpatch")]
+/// doing it. APatch, the KernelSU family and the phone's own kernels share
+/// the page.
+#[cfg(feature = "roots")]
 pub fn root(cx: &Ctx) -> Frame {
-    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let mut c = page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
-    // What this page holds: the root methods this build carries, not ones
-    // that have to be flashed from somewhere else.
+    // What this page holds: the root methods this build offers, and the
+    // kernels this phone's own configuration adds to them.
     let y = widgets::footnote(&mut c, t, f, top, l.pick([
-        "以下是编入这个恢复模式构建中的 root 方式。",
-        "以下是編入這個復原模式建置中的 root 方式。",
-        "These are the root methods built into this recovery.",
+        "以下是这个恢复模式提供的 root 方式与内核。",
+        "以下是這個復原模式提供的 root 方式與核心。",
+        "These are the root methods and kernels this recovery offers.",
     ]));
-    let ways = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(APATCH)).subtitle(l.pick(ROOT_SUBTITLE))]);
-    out.extend(hits(&ways.rows, &[Action::Open(Screen::Apatch)]));
+    // Patching: the methods that write a patch into an image the phone
+    // already has.
+    let mut y = widgets::section(&mut c, t, f, y, l.pick(ROOT_PATCHING));
+    let ways = widgets::list(
+        &mut c,
+        t,
+        f,
+        y,
+        &[
+            Row::new(l.pick(APATCH)).subtitle(l.pick(APATCH_SUBTITLE)),
+            Row::new(l.pick(KSU)).subtitle(l.pick(KSU_SUBTITLE)),
+        ],
+    );
+    out.extend(hits(&ways.rows, &[Action::Open(Screen::Apatch), Action::Open(Screen::Ksu)]));
+
+    // Pre-built kernels: complete images a device's configuration offers.
+    y = ways.bottom;
+    if !s.kernel_plugins.is_empty() {
+        y = widgets::section(&mut c, t, f, y, l.pick(ROOT_KERNELS));
+        let rows: Vec<Row> = s
+            .kernel_plugins
+            .iter()
+            .map(|plugin| match &plugin.subtitle {
+                Some(subtitle) => Row::new(&plugin.name).subtitle(subtitle),
+                None => Row::new(&plugin.name),
+            })
+            .collect();
+        let kernels = widgets::list(&mut c, t, f, y, &rows);
+        let acts: Vec<Action> = (0..s.kernel_plugins.len()).map(Action::KernelPlugin).collect();
+        out.extend(hits(&kernels.rows, &acts));
+    }
+
     Frame::new(t, c, out, l.pick(ROOT), top)
 }
 
 /// APatch's own page: the slots, the key and the superkey card, what the page
 /// found when it opened, and a swipe to start. The run itself is a page of its
 /// own, so none of this stays under it.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 pub fn apatch(cx: &Ctx) -> Frame {
-    use crate::app::{KeyMode, RootAction};
+    use crate::app::{KeyMode, ApatchAction};
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let m = &t.m;
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = m.content_top;
-    let root = s.root.clone().unwrap_or_default();
+    let root = s.apatch.clone().unwrap_or_default();
 
     // What this recovery patches with, first: the release as FolkPatch builds
     // it, with the hashes of both tools under it, so they can be checked.
     let short = |hash: &str| hash.chars().take(16).collect::<String>();
     let bundled = format!(
         "KernelPatch {} ({})\nkptools {}\nkpimg {}",
-        skyward_folkpatch::KPIMG_VERSION,
+        skyward_root::folkpatch::KPIMG_VERSION,
         l.pick(FOLKPATCH_BUILD),
-        short(skyward_folkpatch::KPTOOLS_SHA256),
-        short(skyward_folkpatch::KPIMG_SHA256)
+        short(skyward_root::folkpatch::KPTOOLS_SHA256),
+        short(skyward_root::folkpatch::KPIMG_SHA256)
     );
     let y = widgets::section_first(&mut c, t, f, top, l.pick(BUNDLED));
     let y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["版本", "版本", "Version"]), bundled)]);
 
     // The slots: the one the phone starts from, the other, or both.
-    let mut y = widgets::section(&mut c, t, f, y, l.pick(ROOT_SLOTS));
+    let mut y = widgets::section(&mut c, t, f, y, l.pick(APATCH_SLOTS));
     let titles = Pick::ALL.map(|pick| pick_title(l, pick, cx.info.slot));
     let picks: Vec<Row> = Pick::ALL
         .iter()
@@ -3717,10 +3811,10 @@ pub fn apatch(cx: &Ctx) -> Frame {
         .map(|(pick, title)| Row::new(title).trail(Trail::Check(*pick == root.pick)))
         .collect();
     let slots = widgets::list(&mut c, t, f, y, &picks);
-    out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Root(RootAction::Pick(pick)))));
+    out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Apatch(ApatchAction::Pick(pick)))));
 
     // The key: one of three ways to come by it.
-    y = widgets::section(&mut c, t, f, slots.bottom, l.pick(ROOT_KEY));
+    y = widgets::section(&mut c, t, f, slots.bottom, l.pick(APATCH_KEY));
     let last = root.last.is_some();
     let ways: [(&'static str, bool); 3] = [
         (l.pick(["生成密钥", "產生金鑰", "Generate a key"]), true),
@@ -3740,13 +3834,13 @@ pub fn apatch(cx: &Ctx) -> Frame {
         .collect();
     let ways = widgets::list(&mut c, t, f, y, &modes);
     let mut acts = vec![
-        Action::Root(RootAction::KeyMode(KeyMode::Generate)),
-        Action::Root(RootAction::KeyMode(KeyMode::Enter)),
-        Action::Root(RootAction::KeyMode(KeyMode::Last)),
+        Action::Apatch(ApatchAction::KeyMode(KeyMode::Generate)),
+        Action::Apatch(ApatchAction::KeyMode(KeyMode::Enter)),
+        Action::Apatch(ApatchAction::KeyMode(KeyMode::Last)),
     ];
     // A key of one's own is typed on the key page once it is chosen.
     if root.key_mode == KeyMode::Enter {
-        acts[1] = Action::Root(RootAction::EditKey);
+        acts[1] = Action::Apatch(ApatchAction::EditKey);
     }
     let applies = [true, true, last];
     let rows: Vec<Rect> = ways.rows.iter().zip(applies).filter(|(_, on)| *on).map(|(r, _)| *r).collect();
@@ -3757,29 +3851,29 @@ pub fn apatch(cx: &Ctx) -> Frame {
     // it stands, dim while it is not one being typed, and it opens the page
     // that shows it and, with typing chosen, takes it.
     let held = match root.key_mode {
-        KeyMode::Enter => l.pick(if root.entered.is_empty() { ROOT_NOT_TYPED } else { ROOT_TYPED }).to_string(),
-        KeyMode::Last => l.pick(ROOT_LAST).to_string(),
-        KeyMode::Generate => l.pick(ROOT_NEW).to_string(),
+        KeyMode::Enter => l.pick(if root.entered.is_empty() { APATCH_NOT_TYPED } else { APATCH_TYPED }).to_string(),
+        KeyMode::Last => l.pick(APATCH_LAST).to_string(),
+        KeyMode::Generate => l.pick(APATCH_NEW).to_string(),
     };
-    let card = Row::new(l.pick(ROOT_KEY_TITLE)).trail(Trail::Value(&held));
+    let card = Row::new(l.pick(APATCH_KEY_TITLE)).trail(Trail::Value(&held));
     let card = match root.key_mode {
         KeyMode::Enter => card,
         _ => card.tint(t.pal.subtitle),
     };
     let key_card = widgets::list(&mut c, t, f, ways.bottom + m.card_gap, &[card]);
-    out.extend(hits(&key_card.rows, &[Action::Root(RootAction::EditKey)]));
+    out.extend(hits(&key_card.rows, &[Action::Apatch(ApatchAction::EditKey)]));
 
     // What the page found when it opened: what stands in the way, or that
     // nothing does, and whether the image carries the patch already.
     let mut y = key_card.bottom;
-    for note in root_notes(l, cx, &root) {
+    for note in apatch_notes(l, cx, &root) {
         y = widgets::footnote(&mut c, t, f, y, &note);
     }
 
-    if ready_to_root(cx) {
-        let (label, danger) = confirm_label(Confirm::RootPatch, cx.state);
+    if ready_to_apatch(cx) {
+        let (label, danger) = confirm_label(Confirm::ApatchPatch, cx.state);
         let track = widgets::confirm(&mut c, t, f, y + m.card_gap, label, danger, s.confirm);
-        out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootPatch) });
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::ApatchPatch) });
         y = track.y + track.h;
     }
 
@@ -3789,22 +3883,22 @@ pub fn apatch(cx: &Ctx) -> Frame {
 /// The run's own page: its log, the key it made once it has ended, and the
 /// swipe that ends it. Nothing of the page it was started from, and no card
 /// over the log.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 pub fn apatch_job(cx: &Ctx) -> Frame {
-    use crate::app::RootJob;
+    use crate::app::ApatchJob;
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let m = &t.m;
     let mut c = page(cx);
     let mut out = Vec::new();
     let top = m.content_top;
-    let root = s.root.clone().unwrap_or_default();
-    let finished = matches!(root.job, RootJob::Finished(_));
+    let root = s.apatch.clone().unwrap_or_default();
+    let finished = matches!(root.job, ApatchJob::Finished(_));
 
     // The log is what the run printed; once it has ended, how it ended and
     // what it left behind are its last lines.
     let (lines, key) = match &root.job {
-        RootJob::Finished(outcome) => {
-            let (summary, key, notes) = root_result(l, outcome);
+        ApatchJob::Finished(outcome) => {
+            let (summary, key, notes) = apatch_result(l, outcome);
             let mut lines = root.log.clone();
             lines.push(summary);
             lines.extend(notes);
@@ -3827,43 +3921,873 @@ pub fn apatch_job(cx: &Ctx) -> Frame {
         None => 0.0,
     };
     let room = copy_top - m.card_gap - log_top - key_room;
-    let y = root_window(&mut c, t, f, log_top, room, &lines);
+    let y = log_window(&mut c, t, f, log_top, room, &lines);
     if let Some(key) = &key {
-        let y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(ROOT_KEY));
+        let y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(APATCH_KEY));
         key_card(&mut c, t, f, y, key);
     }
 
-    if let RootJob::Finished(outcome) = &root.job {
+    if let ApatchJob::Finished(outcome) = &root.job {
         // A run that made a key offers to keep a copy of it, once; one that
         // stopped at an image carrying the patch already offers to write it
         // again. Either way, the way out is the slider under them.
-        let again = matches!(**outcome, skyward_folkpatch::Outcome::Refused(skyward_folkpatch::Refusal::AlreadyPatched(_)));
+        let again = matches!(**outcome, skyward_root::folkpatch::Outcome::Refused(skyward_root::folkpatch::Refusal::AlreadyPatched(_)));
         if key.is_some() && root.copied.is_none() {
             let label = l.pick(["保存密钥副本", "儲存金鑰副本", "Keep a copy of the key"]);
             let button = widgets::button(&mut c, t, f, copy_top, label);
-            out.push(Hit { rect: button, action: Action::Root(crate::app::RootAction::KeepKey) });
+            out.push(Hit { rect: button, action: Action::Apatch(crate::app::ApatchAction::KeepKey) });
         } else if again {
-            let (label, danger) = confirm_label(Confirm::RootRepatch, cx.state);
+            let (label, danger) = confirm_label(Confirm::ApatchRepatch, cx.state);
             let track = widgets::confirm(&mut c, t, f, copy_top, label, danger, s.confirm);
-            out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootRepatch) });
+            out.push(Hit { rect: track, action: Action::Confirm(Confirm::ApatchRepatch) });
         }
         // The way out, in the accent the rest of the pages give a plain step.
-        let (label, danger) = confirm_label(Confirm::RootDone, cx.state);
+        let (label, danger) = confirm_label(Confirm::ApatchDone, cx.state);
         let track = widgets::confirm(&mut c, t, f, done_top, label, danger, s.confirm);
-        out.push(Hit { rect: track, action: Action::Confirm(Confirm::RootDone) });
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::ApatchDone) });
     }
     Frame { back: finished, ..Frame::new(t, c, out, l.pick(APATCH), top) }
 }
 
+/// The KernelSU-family page: what a run would use, the slots it patches and
+/// a swipe to start. The manager is chosen on a page of its own, and the run
+/// on another.
+#[cfg(feature = "roots")]
+pub fn ksu(cx: &Ctx) -> Frame {
+    use crate::app::KsuAction;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let ksu = s.ksu.clone().unwrap_or_default();
+
+    // The manager, its release and where it comes from are chosen on their
+    // own page; the card here says what a run would use.
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(KSU_MANAGER));
+    let summary = ksu_summary(l, &ksu);
+    let managers =
+        widgets::list(&mut c, t, f, y, &[Row::new(ksu.flavor.name()).trail(Trail::Value(&summary))]);
+    out.extend(hits(&managers.rows, &[Action::Open(Screen::KsuManager)]));
+
+    // The slots, as the APatch page has them.
+    let y = widgets::section(&mut c, t, f, managers.bottom, l.pick(KSU_SLOTS));
+    let titles = Pick::ALL.map(|pick| pick_title(l, pick, cx.info.slot));
+    let picks: Vec<Row> = Pick::ALL
+        .iter()
+        .zip(&titles)
+        .map(|(pick, title)| Row::new(title).trail(Trail::Check(*pick == ksu.pick)))
+        .collect();
+    let slots = widgets::list(&mut c, t, f, y, &picks);
+    out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Ksu(KsuAction::Pick(pick)))));
+
+    // What the page found when it opened, and what a run would do.
+    let mut y = slots.bottom;
+    for note in ksu_notes(l, cx, &ksu) {
+        y = widgets::footnote(&mut c, t, f, y, &note);
+    }
+
+    if ready_to_ksu(cx) {
+        let (label, danger) = confirm_label(Confirm::KsuPatch, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + m.card_gap, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::KsuPatch) });
+        y = track.y + track.h;
+    }
+
+    Frame::new(t, fit(c, t, y), out, l.pick(KSU_TITLE), top)
+}
+
+/// What the manager card on the family's page says a run would use.
+#[cfg(feature = "roots")]
+fn ksu_summary(l: Lang, ksu: &crate::app::KsuState) -> String {
+    use crate::app::KsuSource;
+    use skyward_root::ksu::Tier;
+    match ksu.source {
+        KsuSource::Download => l.pick(if ksu.tier == Tier::Stable { KSU_STABLE } else { KSU_LATEST }).to_string(),
+        KsuSource::Installed => match ksu.installed_manager() {
+            None => l.pick(KSU_NOT_FOUND).to_string(),
+            Some(manager) if manager.flavor == ksu.flavor => l.pick(KSU_INSTALLED_VALUE).to_string(),
+            Some(manager) => format!("{} · {}", l.pick(KSU_INSTALLED_VALUE), manager.flavor.name()),
+        },
+    }
+}
+
+/// The manager, its release and where it comes from, chosen on a page of
+/// their own.
+#[cfg(feature = "roots")]
+pub fn ksu_manager(cx: &Ctx) -> Frame {
+    use crate::app::{KsuAction, KsuSource, KsuTier};
+    use skyward_root::ksu::Flavor;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let ksu = s.ksu.clone().unwrap_or_default();
+
+    // The manager whose `ksud` patches the image.
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(KSU_MANAGER));
+    let rows: Vec<Row> = Flavor::ALL
+        .iter()
+        .map(|flavor| Row::new(flavor.name()).trail(Trail::Check(*flavor == ksu.flavor)))
+        .collect();
+    let managers = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&managers.rows, &Flavor::ALL.map(|flavor| Action::Ksu(KsuAction::Flavor(flavor)))));
+
+    // Where the APK comes from: its own release, or one already in Android.
+    let mut y = widgets::section(&mut c, t, f, managers.bottom, l.pick(KSU_SOURCE));
+    let no_manager = ksu.installed.is_empty();
+    let sources = [
+        Row::new(l.pick(KSU_DOWNLOAD)).trail(Trail::Check(ksu.source == KsuSource::Download)),
+        Row::new(l.pick(KSU_INSTALLED))
+            .trail(Trail::Check(ksu.source == KsuSource::Installed))
+            .tint(if no_manager { t.pal.subtitle } else { t.pal.text }),
+    ];
+    let from = widgets::list(&mut c, t, f, y, &sources);
+    out.push(Hit { rect: from.rows[0], action: Action::Ksu(KsuAction::Source(KsuSource::Download)) });
+    if !no_manager {
+        out.push(Hit { rect: from.rows[1], action: Action::Ksu(KsuAction::Source(KsuSource::Installed)) });
+    }
+
+    // Which installed APK, where more than one of the family is installed.
+    y = from.bottom;
+    if ksu.source == KsuSource::Installed && !no_manager {
+        y = widgets::section(&mut c, t, f, y, l.pick(KSU_INSTALLED_MANAGERS));
+        let current = ksu.installed_manager().map(|manager| &manager.path);
+        let repeated = |flavor| ksu.installed.iter().filter(|manager| manager.flavor == flavor).count() > 1;
+        let rows: Vec<Row> = ksu
+            .installed
+            .iter()
+            .map(|manager| {
+                let row = Row::new(manager.flavor.name()).trail(Trail::Check(current == Some(&manager.path)));
+                if repeated(manager.flavor) { row.subtitle(&manager.package) } else { row }
+            })
+            .collect();
+        let installed = widgets::list(&mut c, t, f, y, &rows);
+        let acts: Vec<Action> = (0..ksu.installed.len())
+            .map(|index| Action::Ksu(KsuAction::Installed(index)))
+            .collect();
+        out.extend(hits(&installed.rows, &acts));
+        y = installed.bottom;
+    }
+
+    // The release, when the APK comes from it: the newest stable one, or the
+    // newest one even while it is a prerelease.
+    if ksu.source == KsuSource::Download {
+        y = widgets::section(&mut c, t, f, y, l.pick(KSU_RELEASE));
+        let releases = [
+            (l.pick(KSU_STABLE), KsuTier::Stable),
+            (l.pick(KSU_LATEST), KsuTier::Latest),
+        ];
+        let rows: Vec<Row> = releases
+            .into_iter()
+            .map(|(title, tier)| Row::new(title).trail(Trail::Check(tier == ksu.tier)))
+            .collect();
+        let tiers = widgets::list(&mut c, t, f, y, &rows);
+        out.extend(hits(
+            &tiers.rows,
+            &[Action::Ksu(KsuAction::Tier(KsuTier::Stable)), Action::Ksu(KsuAction::Tier(KsuTier::Latest))],
+        ));
+        y = tiers.bottom;
+    }
+
+    for note in ksu_manager_notes(l, cx, &ksu) {
+        y = widgets::footnote(&mut c, t, f, y, &note);
+    }
+
+    Frame::new(t, fit(c, t, y), out, l.pick(KSU_MANAGER), top)
+}
+
+/// What the manager page says about the choices it offers.
+#[cfg(feature = "roots")]
+fn ksu_manager_notes(l: Lang, cx: &Ctx, ksu: &crate::app::KsuState) -> Vec<String> {
+    use crate::app::KsuSource;
+    use skyward_root::ksu::{Flavor, Tier};
+    let mut notes = Vec::new();
+    if ksu.flavor == Flavor::BakaSu && ksu.tier == Tier::Stable && ksu.source == KsuSource::Download {
+        notes.push(l.pick(["BakaSU 只发布预发布版：稳定版为空，请选择最新版。", "BakaSU 只發布預發布版：穩定版為空，請選擇最新版。", "BakaSU publishes only prereleases: Stable has none, so choose Latest."]).to_string());
+    }
+    if ksu.source == KsuSource::Download && !cx.state.online() {
+        notes.push(l.pick(["需先加入网络：管理器要从 GitHub 下载。", "需先加入網路：管理器要從 GitHub 下載。", "Join a network first: the manager is downloaded from GitHub."]).to_string());
+    }
+    if ksu.source == KsuSource::Installed && ksu.installed_manager().is_none() {
+        notes.push(l.pick(["Android 中未找到该系列的管理器。", "Android 中未找到該系列的管理器。", "No manager of the family is installed in Android."]).to_string());
+    }
+    if ksu.source == KsuSource::Installed {
+        if let Some(manager) = ksu.installed_manager() {
+            if manager.flavor != ksu.flavor {
+                let selected = ksu.flavor.name();
+                let installed = manager.flavor.name();
+                notes.push(tr!(
+                    l,
+                    "补丁使用已安装的 {installed} APK，而不是选中的 {selected}。",
+                    "修補使用已安裝的 {installed} APK，而不是選中的 {selected}。",
+                    "The patch uses the installed {installed} APK, not the selected {selected}."
+                ));
+            }
+        }
+    }
+    notes
+}
+
+/// The kernel a device's configuration offers: what it is, the slots it goes
+/// to and a swipe to start. The run is a page of its own.
+#[cfg(feature = "roots")]
+pub fn kernel(cx: &Ctx) -> Frame {
+    use crate::app::KernelAction;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let top = m.content_top;
+    let Some(kernel) = s.kernel.as_ref() else {
+        return Frame::new(t, page(cx), Vec::new(), l.pick(KERNEL_TITLE), top);
+    };
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+
+    // The kernel the release is of, as the device's configuration names it.
+    let mut y = widgets::section_first(&mut c, t, f, top, l.pick(KERNEL_KERNEL));
+    let row = match &kernel.plugin.subtitle {
+        Some(subtitle) => Row::new(&kernel.plugin.name).subtitle(subtitle),
+        None => Row::new(&kernel.plugin.name),
+    };
+    let card = widgets::list(&mut c, t, f, y, &[row]);
+
+    // The newest release, its kernel version and the manager it carries.
+    y = widgets::section(&mut c, t, f, card.bottom, l.pick(KERNEL_RELEASE));
+    let rows: Vec<Row> = match &kernel.details {
+        None if !cx.state.online() => {
+            vec![Row::new(l.pick(KERNEL_GITHUB)).trail(Trail::Text(l.pick(KERNEL_UNAVAILABLE)))]
+        }
+        None => vec![Row::new(l.pick(KERNEL_GITHUB)).trail(Trail::Text(l.pick(KERNEL_CHECKING)))],
+        Some(Err(why)) => vec![Row::new(l.pick(KERNEL_GITHUB)).subtitle(why).trail(Trail::Text(l.pick(KERNEL_UNAVAILABLE)))],
+        Some(Ok(details)) => {
+            let mut rows = vec![Row::new(l.pick(KERNEL_GITHUB)).trail(Trail::Text(&details.tag))];
+            if let Some(version) = &details.kernel {
+                rows.push(Row::new(l.pick(KERNEL_VERSION)).trail(Trail::Text(version)));
+            }
+            if let Some(manager) = &details.manager {
+                rows.push(Row::new(l.pick(KSU_MANAGER)).trail(Trail::Text(manager)));
+            }
+            rows
+        }
+    };
+    let release = widgets::list(&mut c, t, f, y, &rows);
+
+    // The slots, as the root method pages have them.
+    let y = widgets::section(&mut c, t, f, release.bottom, l.pick(KSU_SLOTS));
+    let titles = Pick::ALL.map(|pick| pick_title(l, pick, cx.info.slot));
+    let picks: Vec<Row> = Pick::ALL
+        .iter()
+        .zip(&titles)
+        .map(|(pick, title)| Row::new(title).trail(Trail::Check(*pick == kernel.pick)))
+        .collect();
+    let slots = widgets::list(&mut c, t, f, y, &picks);
+    out.extend(hits(&slots.rows, &Pick::ALL.map(|pick| Action::Kernel(KernelAction::Pick(pick)))));
+
+    // What the page found when it opened, and what a run would do.
+    let mut y = slots.bottom;
+    for note in kernel_notes(l, cx, kernel) {
+        y = widgets::footnote(&mut c, t, f, y, &note);
+    }
+
+    if ready_to_kernel(cx) {
+        let (label, danger) = confirm_label(Confirm::KernelInstall, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + m.card_gap, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::KernelInstall) });
+        y = track.y + track.h;
+    }
+
+    Frame::new(t, fit(c, t, y), out, l.pick(KERNEL_TITLE), top)
+}
+
+/// Whether nothing stands between the kernel page and a run: a slot to write,
+/// the owner's storage, charge enough, and a network to fetch the release.
+#[cfg(feature = "roots")]
+fn ready_to_kernel(cx: &Ctx) -> bool {
+    let enough_charge = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal).is_none();
+    cx.state.kernel.is_some() && cx.info.slot.is_some() && cx.state.data.storage_open() && enough_charge && cx.state.online()
+}
+
+/// What the kernel page says before a run: what stands in the way, or what it
+/// will do.
+#[cfg(feature = "roots")]
+fn kernel_notes(l: Lang, cx: &Ctx, kernel: &crate::app::KernelState) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !cx.state.online() {
+        notes.push(l.pick(["需先加入网络：内核要从 GitHub 下载。", "需先加入網路：核心要從 GitHub 下載。", "Join a network first: the kernel is downloaded from GitHub."]).to_string());
+    }
+    if cx.info.slot.is_none() {
+        notes.push(l.pick(["这台手机只有一个槽位，没有可写入的 boot 分区。", "這台手機只有一個槽位，沒有可寫入的 boot 分割區。", "This phone has one slot, so there are no boot partitions to write."]).to_string());
+    }
+    if !cx.state.data.storage_open() {
+        notes.push(l.pick(["需先在「解密」中打开 data 分区：备份要保存到内部存储。", "需先在「解密」中開啟 data 分割區：備份要儲存到內部儲存空間。", "Open the data partition in Decrypt first: the backups are saved to internal storage."]).to_string());
+    }
+    if let Some(skyward_install::Refusal::Battery { level, .. }) = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal) {
+        notes.push(tr!(l, "电量仅剩 {level}%：充电后再试。", "電量僅剩 {level}%：充電後再試。", "Only {level}% charge: charge the phone first."));
+    }
+    notes.push(l.pick([
+        "会下载最新的稳定发布，校验 SHA-256 后才写入；写入前先备份 boot 分区。",
+        "會下載最新的穩定發布，校驗 SHA-256 後才寫入；寫入前先備份 boot 分割區。",
+        "The newest stable release is downloaded and checked against its SHA-256; the boot partition is backed up first.",
+    ]).to_string());
+    notes.push(l.pick([
+        "内核未签名：强制校验启动映像的引导程序可能拒绝启动；无法启动时用备份恢复。",
+        "核心未簽名：強制校驗啟動映像的引導程式可能拒絕啟動；無法啟動時用備份還原。",
+        "The kernel is unsigned: a bootloader that enforces AVB may refuse to start it. Restore the backup if it does not.",
+    ]).to_string());
+    if let Some(note) = &kernel.plugin.note {
+        notes.push(note.clone());
+    }
+    notes
+}
+
+/// The kernel install's page: what it has done, and how it ended.
+#[cfg(feature = "roots")]
+pub fn kernel_job(cx: &Ctx) -> Frame {
+    use crate::app::KernelJob;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let Some(kernel) = s.kernel.as_ref() else {
+        return Frame::new(t, page(cx), Vec::new(), l.pick(KERNEL_TITLE), m.content_top);
+    };
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let finished = matches!(kernel.job, KernelJob::Finished(_));
+
+    let lines = match &kernel.job {
+        KernelJob::Finished(outcome) => {
+            let (summary, notes) = kernel_result(l, kernel, outcome);
+            let mut lines = kernel.log.clone();
+            lines.push(summary);
+            lines.extend(notes);
+            lines
+        }
+        _ => kernel.log.clone(),
+    };
+
+    let swipe_h = m.dp(widgets::CONFIRM_H_DP);
+    let done_top = m.h as f32 - m.margin - swipe_h;
+    let log_top = widgets::section_first(&mut c, t, f, top, l.pick(LOG));
+    let room = done_top - m.card_gap - log_top;
+    log_window(&mut c, t, f, log_top, room, &lines);
+
+    if finished {
+        let (label, danger) = confirm_label(Confirm::KernelDone, cx.state);
+        let track = widgets::confirm(&mut c, t, f, done_top, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::KernelDone) });
+    }
+    Frame { back: finished, ..Frame::new(t, c, out, l.pick(KERNEL_TITLE), top) }
+}
+
+/// The heading and the line under it a kernel run's stage says.
+#[cfg(feature = "roots")]
+pub(crate) fn kernel_stage(l: Lang, stage: Option<&skyward_root::kernel::Stage>) -> (String, String) {
+    use skyward_root::kernel::Stage;
+    let bytes = |done: u64, total: u64| tr!(l, "{done} / {total} 字节", "{done} / {total} 位元組", "{done} of {total} bytes");
+    match stage {
+        None => (l.pick(["正在准备", "正在準備", "Getting ready"]).into(), String::new()),
+        Some(Stage::Finding) => (l.pick(["正在查找内核的发布", "正在尋找核心的發布", "Looking for the kernel's release"]).into(), String::new()),
+        Some(Stage::Downloading { done, total }) => {
+            (l.pick(["正在下载内核", "正在下載核心", "Downloading the kernel"]).into(), bytes(*done, *total))
+        }
+        Some(Stage::DownloadingManager { done, total }) => {
+            (l.pick(["正在下载管理器", "正在下載管理器", "Downloading the manager"]).into(), bytes(*done, *total))
+        }
+        Some(Stage::Checking) => (l.pick(["正在检查内核映像", "正在檢查核心映像", "Checking the kernel image"]).into(), String::new()),
+        Some(Stage::BackingUp { slot, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在备份槽位 {slot} 的 boot 分区", "正在備份槽位 {slot} 的 boot 分割區", "Saving slot {slot}'s boot partition"),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::Flashing { slot, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在写入槽位 {slot} 的 boot 分区", "正在寫入槽位 {slot} 的 boot 分割區", "Writing slot {slot}'s boot partition"),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::Saving) => (l.pick(["正在保存清单", "正在儲存清單", "Saving the manifest"]).into(), String::new()),
+    }
+}
+
+/// How a kernel run ended: the line the window ends with, and what else the
+/// page has to say.
+#[cfg(feature = "roots")]
+fn kernel_result(l: Lang, kernel: &crate::app::KernelState, outcome: &skyward_root::kernel::Outcome) -> (String, Vec<String>) {
+    match outcome {
+        skyward_root::kernel::Outcome::Installed(installed) => {
+            let slots: Vec<&str> = installed.slots.iter().map(|slot| slot.letter()).collect();
+            let slots = slots.join(", ");
+            let folder = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.display().to_string(), |path| path.display().to_string());
+            let tag = &installed.tag;
+            let image = &installed.image;
+            let name = &kernel.plugin.name;
+            let mut notes = vec![
+                tr!(
+                    l,
+                    "写入前的 boot 分区在 {folder} 的 backup 文件夹。",
+                    "寫入前的 boot 分割區在 {folder} 的 backup 資料夾。",
+                    "The boot partitions from before the write are in {folder}, in its backup folder."
+                ),
+                l.pick([
+                    "内核未签名：强制校验启动映像的引导程序可能拒绝启动；无法启动时用备份恢复。",
+                    "核心未簽名：強制校驗啟動映像的引導程式可能拒絕啟動；無法啟動時用備份還原。",
+                    "The kernel is unsigned: a bootloader that enforces AVB may refuse to start it. Restore the backup if it does not.",
+                ])
+                .to_string(),
+            ];
+            if let Some(note) = &kernel.plugin.note {
+                notes.push(note.clone());
+            }
+            if let Some(manager) = &installed.manager {
+                let manager = manager.display().to_string();
+                notes.push(tr!(
+                    l,
+                    "管理器副本：{manager}。重启后在 Android 中安装并打开它。",
+                    "管理器副本：{manager}。重新啟動後在 Android 中安裝並開啟它。",
+                    "The manager is kept at {manager}. Install and open it in Android after the phone starts."
+                ));
+            } else if let Some(why) = &installed.manager_note {
+                notes.push(tr!(
+                    l,
+                    "管理器未能下载：{why}",
+                    "管理器未能下載：{why}",
+                    "The manager was not downloaded: {why}"
+                ));
+            }
+            let summary = tr!(
+                l,
+                "{name} {tag} 已安装到槽位 {slots}（{image}）。",
+                "{name} {tag} 已安裝到槽位 {slots}（{image}）。",
+                "{name} {tag} installed to slot {slots} ({image})."
+            );
+            (summary, notes)
+        }
+        skyward_root::kernel::Outcome::Refused(refusal) => {
+            let why = kernel_refusal(l, refusal);
+            let summary = tr!(l, "未安装：{why}", "未安裝：{why}", "Not installed: {why}");
+            (summary, vec![l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string()])
+        }
+        skyward_root::kernel::Outcome::Failed(failure) => {
+            let (heading, _) = kernel_stage(l, Some(&failure.stage));
+            let why = &failure.why;
+            let mut notes = Vec::new();
+            if !failure.written.is_empty() {
+                let slots: Vec<&str> = failure.written.iter().map(|slot| slot.letter()).collect();
+                let slots = slots.join(", ");
+                notes.push(tr!(
+                    l,
+                    "槽位 {slots} 可能已部分写入，请勿重启到该槽位。",
+                    "槽位 {slots} 可能已部分寫入，請勿重新啟動到該槽位。",
+                    "Slot {slots} may be partly written: don't start it."
+                ));
+            }
+            for copy in &failure.backups {
+                let path = copy.path.display().to_string();
+                let partition = format!("{}{}", copy.partition, copy.slot.suffix());
+                notes.push(tr!(
+                    l,
+                    "在电脑上：fastboot flash {partition} {path}",
+                    "在電腦上：fastboot flash {partition} {path}",
+                    "From a computer: fastboot flash {partition} {path}"
+                ));
+            }
+            let summary = tr!(
+                l,
+                "未安装：在「{heading}」时失败：{why}",
+                "未安裝：在「{heading}」時失敗：{why}",
+                "Not installed: failed while {heading}: {why}"
+            );
+            (summary, notes)
+        }
+    }
+}
+
+/// Why a kernel run did not start, or stopped before writing.
+#[cfg(feature = "roots")]
+fn kernel_refusal(l: Lang, refusal: &skyward_root::kernel::Refusal) -> String {
+    use skyward_root::kernel::Refusal;
+    match refusal {
+        Refusal::NoSlot => l
+            .pick(["这台手机没有可写入的 A/B 槽位。", "這台手機沒有可寫入的 A/B 槽位。", "This phone has no A/B slot to write."])
+            .into(),
+        Refusal::Missing { slot, partition } => {
+            let slot = slot.letter();
+            tr!(l, "槽位 {slot} 没有 {partition} 分区", "槽位 {slot} 沒有 {partition} 分割區", "slot {slot} has no {partition} partition")
+        }
+        Refusal::Battery { level, charging } => {
+            let how = l.pick(if *charging {
+                ["电量过低（{level}%），即使已接电源", "電量過低（{level}%），即使已接電源", "charge too low ({level}%), even while charging"]
+            } else {
+                ["电量过低（{level}%），请先充电", "電量過低（{level}%），請先充電", "charge too low ({level}%), charge the phone first"]
+            });
+            how.replace("{level}", &level.to_string())
+        }
+        Refusal::NotBootImage { slot, partition } => {
+            let slot = slot.letter();
+            tr!(l, "槽位 {slot} 的 {partition} 不是启动映像", "槽位 {slot} 的 {partition} 不是啟動映像", "slot {slot}'s {partition} is not a boot image")
+        }
+        Refusal::RecoveryImage { slot, partition } => {
+            let slot = slot.letter();
+            tr!(l, "映像带有恢复模式，不能写进槽位 {slot} 的 {partition}", "映像帶有復原模式，不能寫進槽位 {slot} 的 {partition}", "the image carries a recovery, not the system's boot, and cannot go to slot {slot}'s {partition}")
+        }
+        Refusal::TooLarge { slot, partition, image, partition_size } => {
+            let slot = slot.letter();
+            tr!(
+                l,
+                "内核映像有 {image} 字节，大于槽位 {slot} 的 {partition} 分区（{partition_size} 字节）",
+                "核心映像有 {image} 位元組，大於槽位 {slot} 的 {partition} 分割區（{partition_size} 位元組）",
+                "the kernel image is {image} bytes, more than slot {slot}'s {partition} partition ({partition_size} bytes)"
+            )
+        }
+        Refusal::NoRoom { need, have } => tr!(
+            l,
+            "内部存储空间不足：需要 {need} 字节，只有 {have} 字节",
+            "內部儲存空間不足：需要 {need} 位元組，只有 {have} 位元組",
+            "not enough internal storage: {need} bytes needed, {have} free"
+        ),
+        Refusal::StorageClosed => l
+            .pick(["内部存储未打开。", "內部儲存空間未開啟。", "Internal storage is not open."])
+            .into(),
+        Refusal::Damaged => l
+            .pick(["下载的映像与它的 SHA-256 不符。", "下載的映像與它的 SHA-256 不符。", "The downloaded image does not match its SHA-256."])
+            .into(),
+        Refusal::NoImage => l
+            .pick(["下载的映像不见了。", "下載的映像不見了。", "The downloaded image is missing."])
+            .into(),
+        Refusal::NoRelease => l
+            .pick(["这个仓库没有带内核映像的稳定发布。", "這個倉庫沒有帶核心映像的穩定發布。", "The repository has no stable release with a kernel image."])
+            .into(),
+    }
+}
+
+/// The KernelSU-family run's page: what it has done, and how it ended.
+#[cfg(feature = "roots")]
+pub fn ksu_job(cx: &Ctx) -> Frame {
+    use crate::app::KsuJob;
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let ksu = s.ksu.clone().unwrap_or_default();
+    let finished = matches!(ksu.job, KsuJob::Finished(_));
+
+    let lines = match &ksu.job {
+        KsuJob::Finished(outcome) => {
+            let (summary, notes) = ksu_result(l, outcome);
+            let mut lines = ksu.log.clone();
+            lines.push(summary);
+            lines.extend(notes);
+            lines
+        }
+        _ => ksu.log.clone(),
+    };
+
+    let swipe_h = m.dp(widgets::CONFIRM_H_DP);
+    let done_top = m.h as f32 - m.margin - swipe_h;
+    let log_top = widgets::section_first(&mut c, t, f, top, l.pick(LOG));
+    let room = done_top - m.card_gap - log_top;
+    log_window(&mut c, t, f, log_top, room, &lines);
+
+    if finished {
+        let (label, danger) = confirm_label(Confirm::KsuDone, cx.state);
+        let track = widgets::confirm(&mut c, t, f, done_top, label, danger, s.confirm);
+        out.push(Hit { rect: track, action: Action::Confirm(Confirm::KsuDone) });
+    }
+    Frame { back: finished, ..Frame::new(t, c, out, l.pick(KSU_TITLE), top) }
+}
+
+/// Whether nothing stands between the page and a run: a slot to write, the
+/// owner's storage, charge enough, and a manager to patch with.
+#[cfg(feature = "roots")]
+fn ready_to_ksu(cx: &Ctx) -> bool {
+    use crate::app::KsuSource;
+    let enough_charge = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal).is_none();
+    let ksu = cx.state.ksu.clone().unwrap_or_default();
+    let manager = match ksu.source {
+        KsuSource::Download => cx.state.online(),
+        KsuSource::Installed => ksu.installed_manager().is_some(),
+    };
+    cx.info.slot.is_some() && cx.state.data.storage_open() && enough_charge && manager
+}
+
+/// What the page says before a run: what stands in the way, or what it will
+/// do.
+#[cfg(feature = "roots")]
+fn ksu_notes(l: Lang, cx: &Ctx, ksu: &crate::app::KsuState) -> Vec<String> {
+    use crate::app::KsuSource;
+    use skyward_root::ksu::{Flavor, Tier};
+    let mut notes = Vec::new();
+    if ksu.flavor == Flavor::BakaSu && ksu.tier == Tier::Stable && ksu.source == KsuSource::Download {
+        notes.push(l.pick(["BakaSU 只发布预发布版：稳定版为空，请选择最新版。", "BakaSU 只發布預發布版：穩定版為空，請選擇最新版。", "BakaSU publishes only prereleases: Stable has none, so choose Latest."]).to_string());
+    }
+    if ksu.source == KsuSource::Download && !cx.state.online() {
+        notes.push(l.pick(["需先加入网络：管理器要从 GitHub 下载。", "需先加入網路：管理器要從 GitHub 下載。", "Join a network first: the manager is downloaded from GitHub."]).to_string());
+    }
+    if ksu.source == KsuSource::Installed && ksu.installed_manager().is_none() {
+        notes.push(l.pick(["Android 中未找到该系列的管理器。", "Android 中未找到該系列的管理器。", "No manager of the family is installed in Android."]).to_string());
+    }
+    if cx.info.slot.is_none() {
+        notes.push(l.pick(["这台手机只有一个槽位，没有可写入的 boot 分区。", "這台手機只有一個槽位，沒有可寫入的 boot 分割區。", "This phone has one slot, so there are no boot partitions to write."]).to_string());
+    }
+    if !cx.state.data.storage_open() {
+        notes.push(l.pick(["需先在「解密」中打开 data 分区：备份与管理器要保存到内部存储。", "需先在「解密」中開啟 data 分割區：備份與管理器要儲存到內部儲存空間。", "Open the data partition in Decrypt first: the backups and manager are saved to internal storage."]).to_string());
+    }
+    if let Some(skyward_install::Refusal::Battery { level, .. }) = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal) {
+        notes.push(tr!(l, "电量仅剩 {level}%：充电后再试。", "電量僅剩 {level}%：充電後再試。", "Only {level}% charge: charge the phone first."));
+    }
+    if cx.info.snapshot != skyward_vab::SnapshotState::None {
+        notes.push(l.pick(["有更新尚未合并：补丁可能在更新完成前被覆盖。", "有更新尚未合併：修補可能在更新完成前被覆寫。", "An update is still in flight: the patch may be overwritten before it finishes."]).to_string());
+    }
+    notes.push(l.pick([
+        "管理器只用于取出其中的 ksud 来打补丁，不会运行它的安装脚本。",
+        "管理器只用於取出其中的 ksud 來打修補，不會執行它的安裝指令碼。",
+        "The manager is only read for the ksud inside it; none of its scripts are run.",
+    ]).to_string());
+    notes.push(l.pick([
+        "补丁未签名：强制校验启动映像的引导程序可能拒绝启动；无法启动时用备份恢复。",
+        "修補未簽名：強制校驗啟動映像的引導程式可能拒絕啟動；無法啟動時用備份還原。",
+        "The patch is unsigned: a bootloader that enforces AVB may refuse to start it. Restore the backup if it does not.",
+    ]).to_string());
+    notes.push(l.pick([
+        "重启后需在 Android 中安装本次运行文件夹里的 manager.apk，版本要与补丁一致。",
+        "重新啟動後需在 Android 中安裝本次執行資料夾裡的 manager.apk，版本要與修補一致。",
+        "After it starts, install the manager.apk from the run's folder in Android; it must be the release the patch was made from.",
+    ]).to_string());
+    notes
+}
+
+/// The heading and the line under it a KernelSU-family run's stage says.
+#[cfg(feature = "roots")]
+pub(crate) fn ksu_stage(l: Lang, stage: Option<&skyward_root::ksu::Stage>) -> (String, String) {
+    use skyward_root::ksu::Stage;
+    let bytes = |done: u64, total: u64| tr!(l, "{done} / {total} 字节", "{done} / {total} 位元組", "{done} of {total} bytes");
+    match stage {
+        None => (l.pick(["正在准备", "正在準備", "Getting ready"]).into(), String::new()),
+        Some(Stage::Checking) => (l.pick(["正在检查", "正在檢查", "Checking"]).into(), String::new()),
+        Some(Stage::Finding) => (l.pick(["正在查找管理器的发布", "正在尋找管理器的發布", "Looking for the manager's release"]).into(), String::new()),
+        Some(Stage::Downloading { done, total }) => {
+            (l.pick(["正在下载管理器", "正在下載管理器", "Downloading the manager"]).into(), bytes(*done, *total))
+        }
+        Some(Stage::Extracting) => (l.pick(["正在取出 ksud", "正在取出 ksud", "Taking ksud out of the manager"]).into(), String::new()),
+        Some(Stage::BackingUp { slot, partition, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在备份槽位 {slot} 的 {partition} 分区", "正在備份槽位 {slot} 的 {partition} 分割區", "Saving slot {slot}'s {partition} partition"),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::Patching { slot, partition }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在为槽位 {slot} 的 {partition} 打补丁", "正在為槽位 {slot} 的 {partition} 打修補", "Patching slot {slot}'s {partition}"),
+                String::new(),
+            )
+        }
+        Some(Stage::Verifying { slot, partition }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在校验槽位 {slot} 的 {partition} 补丁", "正在校驗槽位 {slot} 的 {partition} 修補", "Checking slot {slot}'s {partition} patch"),
+                String::new(),
+            )
+        }
+        Some(Stage::Flashing { slot, partition, done, total }) => {
+            let slot = slot.letter();
+            (
+                tr!(l, "正在写入槽位 {slot} 的 {partition}", "正在寫入槽位 {slot} 的 {partition}", "Writing slot {slot}'s {partition}"),
+                bytes(*done, *total),
+            )
+        }
+        Some(Stage::SavingManager) => (l.pick(["正在保存管理器", "正在儲存管理器", "Keeping a copy of the manager"]).into(), String::new()),
+    }
+}
+
+/// How a KernelSU-family run ended: the line the window ends with, and what
+/// else the page has to say.
+#[cfg(feature = "roots")]
+fn ksu_result(l: Lang, outcome: &skyward_root::ksu::Outcome) -> (String, Vec<String>) {
+    match outcome {
+        skyward_root::ksu::Outcome::Installed(installed) => {
+            let places: Vec<String> = installed
+                .slots
+                .iter()
+                .zip(&installed.partitions)
+                .map(|(slot, partition)| format!("{} {partition}", slot.letter()))
+                .collect();
+            let places = places.join(", ");
+            let name = installed.flavor.name();
+            let manager = installed.apk.display().to_string();
+            let folder = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.display().to_string(), |p| p.display().to_string());
+            let tag = &installed.tag;
+            let notes = vec![
+                tr!(
+                    l,
+                    "写入前的分区在 {folder} 的 backup 文件夹。",
+                    "寫入前的分割區在 {folder} 的 backup 資料夾。",
+                    "The partitions from before the write are in {folder}, in its backup folder."
+                ),
+                tr!(
+                    l,
+                    "管理器副本：{manager}（{tag}）。重启后在 Android 中安装并打开它。",
+                    "管理器副本：{manager}（{tag}）。重新啟動後在 Android 中安裝並開啟它。",
+                    "The manager is kept at {manager} ({tag}). Install and open it in Android after the phone starts."
+                ),
+                l.pick([
+                    "补丁未签名：强制校验启动映像的引导程序可能拒绝启动；无法启动时用备份恢复。",
+                    "修補未簽名：強制校驗啟動映像的引導程式可能拒絕啟動；無法啟動時用備份還原。",
+                    "The patch is unsigned: a bootloader that enforces AVB may refuse to start it. Restore the backup if it does not.",
+                ])
+                .to_string(),
+            ];
+            let summary = tr!(
+                l,
+                "{name} 已安装：槽位 {places} 已写入补丁。",
+                "{name} 已安裝：槽位 {places} 已寫入修補。",
+                "{name} installed: slot {places} is patched."
+            );
+            (summary, notes)
+        }
+        skyward_root::ksu::Outcome::Refused(refusal) => {
+            let why = ksu_refusal(l, refusal);
+            let summary = tr!(l, "未安装：{why}", "未安裝：{why}", "Not installed: {why}");
+            let nothing = l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string();
+            (summary, vec![nothing])
+        }
+        skyward_root::ksu::Outcome::Failed(failure) => {
+            let (heading, _) = ksu_stage(l, Some(&failure.stage));
+            let why = &failure.why;
+            let mut notes = Vec::new();
+            if !failure.written.is_empty() {
+                let slots: Vec<&str> = failure.written.iter().map(|s| s.letter()).collect();
+                let slots = slots.join(", ");
+                notes.push(tr!(
+                    l,
+                    "槽位 {slots} 可能已部分写入，请勿重启到该槽位。",
+                    "槽位 {slots} 可能已部分寫入，請勿重新啟動到該槽位。",
+                    "Slot {slots} may be partly written: don't start it."
+                ));
+            }
+            for copy in &failure.backups {
+                let path = copy.path.display().to_string();
+                let partition = format!("{}{}", copy.partition, copy.slot.suffix());
+                notes.push(tr!(
+                    l,
+                    "在电脑上：fastboot flash {partition} {path}",
+                    "在電腦上：fastboot flash {partition} {path}",
+                    "From a computer: fastboot flash {partition} {path}"
+                ));
+            }
+            let summary = tr!(
+                l,
+                "未安装：在「{heading}」时失败：{why}",
+                "未安裝：在「{heading}」時失敗：{why}",
+                "Not installed: failed while {heading}: {why}"
+            );
+            (summary, notes)
+        }
+    }
+}
+
+/// Why a KernelSU-family run did not start, or stopped before writing.
+#[cfg(feature = "roots")]
+fn ksu_refusal(l: Lang, refusal: &skyward_root::ksu::Refusal) -> String {
+    use skyward_root::ksu::{Refusal, Tier};
+    match refusal {
+        Refusal::NoSlot => l
+            .pick(["这台手机没有可写入的 A/B 槽位。", "這台手機沒有可寫入的 A/B 槽位。", "This phone has no A/B slot to write."])
+            .into(),
+        Refusal::Missing { slot, partition } => {
+            let slot = slot.letter();
+            tr!(l, "槽位 {slot} 没有 {partition} 分区。", "槽位 {slot} 沒有 {partition} 分割區。", "Slot {slot} has no {partition} partition.")
+        }
+        Refusal::NotAarch64 => l
+            .pick(["这台手机的架构不受支持。", "這台手機的架構不受支援。", "This phone's architecture isn't supported."])
+            .into(),
+        Refusal::Battery { level, .. } => tr!(l, "电量仅剩 {level}%。", "電量僅剩 {level}%。", "Only {level}% charge."),
+        Refusal::NotBootImage { slot, partition } => {
+            let slot = slot.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 {partition} 分区不是可打补丁的启动镜像。",
+                "槽位 {slot} 的 {partition} 分割區不是可打修補的啟動映像。",
+                "Slot {slot}'s {partition} partition isn't a boot image that can be patched."
+            )
+        }
+        Refusal::RecoveryRamdisk { slot, partition } => {
+            let slot = slot.letter();
+            tr!(
+                l,
+                "槽位 {slot} 的 {partition} 分区里是恢复模式的 ramdisk。",
+                "槽位 {slot} 的 {partition} 分割區裡是復原模式的 ramdisk。",
+                "Slot {slot}'s {partition} partition holds a recovery's ramdisk."
+            )
+        }
+        Refusal::NoKsud(why) => tr!(
+            l,
+            "管理器里没有可运行的 ksud：{why}",
+            "管理器裡沒有可執行的 ksud：{why}",
+            "The manager carries no ksud this recovery can run: {why}"
+        ),
+        Refusal::Damaged => l
+            .pick([
+                "管理器的 APK 与发布时给出的 SHA-256 不符。",
+                "管理器的 APK 與發布時給出的 SHA-256 不符。",
+                "The manager's APK does not have the SHA-256 its release published.",
+            ])
+            .into(),
+        Refusal::StorageClosed => l
+            .pick([
+                "内部存储未打开，管理器无处保存。",
+                "內部儲存空間未開啟，管理器無處儲存。",
+                "Internal storage is closed, so the manager has nowhere to go.",
+            ])
+            .into(),
+        Refusal::NoRoom { need, have } => {
+            let need = fmt::bytes(*need);
+            let have = fmt::bytes(*have);
+            tr!(
+                l,
+                "空间不足：需要 {need}，可用 {have}。",
+                "空間不足：需要 {need}，可用 {have}。",
+                "Not enough room: it needs {need} and has {have}."
+            )
+        }
+        Refusal::NoRelease { flavor, tier } => {
+            let name = flavor.name();
+            let tier = match tier {
+                Tier::Stable => l.pick(["稳定版", "穩定版", "stable release"]),
+                Tier::Latest => l.pick(["最新版", "最新版", "latest release"]),
+            };
+            tr!(
+                l,
+                "{name} 没有可用的{tier}。请换一个版本。",
+                "{name} 沒有可用的{tier}。請換一個版本。",
+                "{name} has no {tier} to take. Choose another release."
+            )
+        }
+        Refusal::NoManager => l
+            .pick([
+                "Android 中没有安装该系列的管理器。",
+                "Android 中沒有安裝該系列的管理器。",
+                "No manager of the KernelSU family is installed in Android.",
+            ])
+            .into(),
+    }
+}
+
 /// How tall the card that holds a key is.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 fn key_card_height(t: &Theme, f: &Fonts) -> f32 {
     let (top, bottom) = f.mono.ink(t.m.dp(20.0));
     (bottom - top) + t.m.dp(40.0)
 }
 
 /// The key a run made, in a card of its own.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 fn key_card(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
     let m = &t.m;
     let h = key_card_height(t, f);
@@ -3874,7 +4798,7 @@ fn key_card(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
 
 /// A key on a line of its own, in the face whose characters are all one width,
 /// large enough to read off the screen and type back.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 fn key_line(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
     let m = &t.m;
     let px = m.dp(20.0);
@@ -3885,16 +4809,16 @@ fn key_line(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, key: &str) -> f32 {
 
 /// Whether nothing stands between the page and a run: a slot to write, the
 /// owner's storage for the backups, and charge enough to write it.
-#[cfg(feature = "folkpatch")]
-fn ready_to_root(cx: &Ctx) -> bool {
+#[cfg(feature = "roots")]
+fn ready_to_apatch(cx: &Ctx) -> bool {
     let enough_charge = cx.info.battery.as_ref().and_then(skyward_install::battery_refusal).is_none();
     cx.info.slot.is_some() && cx.state.data.storage_open() && enough_charge
 }
 
 /// What the page says in its window before a run: what stands in the way, or
 /// that nothing does.
-#[cfg(feature = "folkpatch")]
-fn root_notes(l: Lang, cx: &Ctx, root: &crate::app::RootState) -> Vec<String> {
+#[cfg(feature = "roots")]
+fn apatch_notes(l: Lang, cx: &Ctx, root: &crate::app::ApatchState) -> Vec<String> {
     let mut notes = Vec::new();
     // An image that carries the patch already stops a run before it writes;
     // it is said here, for each slot the page would write, where the page
@@ -3938,8 +4862,8 @@ fn root_notes(l: Lang, cx: &Ctx, root: &crate::app::RootState) -> Vec<String> {
 /// The run's lines in a window that keeps the room it is given, so that it is
 /// the same window from the first line to the last: the newest at its foot,
 /// older ones falling off the top, wrapped rather than cut.
-#[cfg(feature = "folkpatch")]
-fn root_window(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, room: f32, lines: &[String]) -> f32 {
+#[cfg(feature = "roots")]
+fn log_window(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, room: f32, lines: &[String]) -> f32 {
     let m = &t.m;
     let (pitch, pad) = (m.dp(widgets::OUTPUT_PITCH_DP), m.dp(widgets::OUTPUT_TOP_DP));
     let x = m.margin;
@@ -3963,15 +4887,15 @@ fn root_window(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, room: f32, lines:
 /// The superkey page: the key typed on the screen's keyboard once that is the
 /// key chosen, and otherwise the key this run stands to use, to look at. The
 /// key an earlier run made is here in both, under the field.
-#[cfg(feature = "folkpatch")]
-pub fn root_key(cx: &Ctx) -> Frame {
+#[cfg(feature = "roots")]
+pub fn apatch_key(cx: &Ctx) -> Frame {
     use crate::app::KeyMode;
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let mut c = page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
-    let root = s.root.clone().unwrap_or_default();
-    let title = l.pick(ROOT_KEY_TITLE);
+    let root = s.apatch.clone().unwrap_or_default();
+    let title = l.pick(APATCH_KEY_TITLE);
     let last = root.last.as_ref().map(|key| key.expose().to_string());
     if root.key_mode == KeyMode::Enter {
         let (y, caret) = widgets::text_field(&mut c, t, f, top, &root.entered);
@@ -4003,15 +4927,15 @@ pub fn root_key(cx: &Ctx) -> Frame {
 }
 
 /// What the key page's keyboard says on its last key.
-#[cfg(feature = "folkpatch")]
+#[cfg(feature = "roots")]
 fn title_label(l: Lang) -> &'static str {
     l.pick(DONE)
 }
 
 /// The heading and the line under it a run's stage says, on its card.
-#[cfg(feature = "folkpatch")]
-pub(crate) fn root_stage(l: Lang, stage: Option<&skyward_folkpatch::Stage>) -> (String, String) {
-    use skyward_folkpatch::Stage;
+#[cfg(feature = "roots")]
+pub(crate) fn apatch_stage(l: Lang, stage: Option<&skyward_root::folkpatch::Stage>) -> (String, String) {
+    use skyward_root::folkpatch::Stage;
     let bytes = |done: u64, total: u64| tr!(l, "{done} / {total} 字节", "{done} / {total} 位元組", "{done} of {total} bytes");
     match stage {
         None => (l.pick(["正在准备", "正在準備", "Getting ready"]).into(), String::new()),
@@ -4045,10 +4969,10 @@ pub(crate) fn root_stage(l: Lang, stage: Option<&skyward_folkpatch::Stage>) -> (
 
 /// How a run ended: the line the window ends with, the key it made where it
 /// made one, and what else the page has to say.
-#[cfg(feature = "folkpatch")]
-fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (String, Option<String>, Vec<String>) {
+#[cfg(feature = "roots")]
+fn apatch_result(l: Lang, outcome: &skyward_root::folkpatch::Outcome) -> (String, Option<String>, Vec<String>) {
     match outcome {
-        skyward_folkpatch::Outcome::Installed(installed) => {
+        skyward_root::folkpatch::Outcome::Installed(installed) => {
             let slots: Vec<&str> = installed.slots.iter().map(|s| s.letter()).collect();
             let slots = slots.join(", ");
             let folder = installed.backup_dir.parent().map_or_else(|| installed.backup_dir.display().to_string(), |p| p.display().to_string());
@@ -4076,14 +5000,14 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (String, Option
             );
             (summary, Some(installed.key.expose().to_string()), notes)
         }
-        skyward_folkpatch::Outcome::Refused(refusal) => {
-            let why = root_refusal(l, refusal);
+        skyward_root::folkpatch::Outcome::Refused(refusal) => {
+            let why = apatch_refusal(l, refusal);
             let summary = tr!(l, "未安装：{why}", "未安裝：{why}", "Not installed: {why}");
             let nothing = l.pick(["没有写入任何 boot 分区。", "沒有寫入任何 boot 分割區。", "No boot partition was written."]).to_string();
             (summary, None, vec![nothing])
         }
-        skyward_folkpatch::Outcome::Failed(failure) => {
-            let (heading, _) = root_stage(l, Some(&failure.stage));
+        skyward_root::folkpatch::Outcome::Failed(failure) => {
+            let (heading, _) = apatch_stage(l, Some(&failure.stage));
             let why = &failure.why;
             let mut notes = Vec::new();
             if !failure.written.is_empty() {
@@ -4098,7 +5022,7 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (String, Option
             }
             for copy in &failure.backups {
                 let path = copy.path.display().to_string();
-                let boot = format!("boot{}", copy.slot.suffix());
+                let boot = format!("{}{}", copy.partition, copy.slot.suffix());
                 notes.push(tr!(
                     l,
                     "在电脑上：fastboot flash {boot} {path}",
@@ -4118,9 +5042,9 @@ fn root_result(l: Lang, outcome: &skyward_folkpatch::Outcome) -> (String, Option
 }
 
 /// Why a run did not start, or stopped before writing, in the user's words.
-#[cfg(feature = "folkpatch")]
-fn root_refusal(l: Lang, refusal: &skyward_folkpatch::Refusal) -> String {
-    use skyward_folkpatch::Refusal;
+#[cfg(feature = "roots")]
+fn apatch_refusal(l: Lang, refusal: &skyward_root::folkpatch::Refusal) -> String {
+    use skyward_root::folkpatch::Refusal;
     match refusal {
         Refusal::NoSlot => l
             .pick(["这台手机没有可写入的 A/B 槽位。", "這台手機沒有可寫入的 A/B 槽位。", "This phone has no A/B slot to write."])
@@ -4270,18 +5194,40 @@ mod tests {
         assert_eq!(capitalized(Lang::Hans, "清空 data 分区"), "清空 data 分区");
     }
 
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
+    #[test]
+    fn a_kernelsu_run_says_where_the_manager_and_the_copies_went() {
+        let outcome = skyward_root::ksu::Outcome::Installed(skyward_root::ksu::Installed {
+            slots: vec![skyward_vab::Slot::A],
+            partitions: vec!["init_boot"],
+            flavor: skyward_root::ksu::Flavor::BakaSu,
+            tag: "v4.2.0-rc3".into(),
+            apk: "/sdcard/Download/Skyward/KSU/1120/manager.apk".into(),
+            apk_sha256: "00".into(),
+            ksud_sha256: "11".into(),
+            backup_dir: "/sdcard/Download/Skyward/KSU/1120/backup".into(),
+            run_dir: "/sdcard/Download/Skyward/KSU/1120".into(),
+        });
+        let (summary, notes) = ksu_result(Lang::En, &outcome);
+        let text = notes.join("\n");
+        assert_eq!(summary, "BakaSU installed: slot A init_boot is patched.");
+        assert!(text.contains("manager.apk"), "{text}");
+        assert!(text.contains("/sdcard/Download/Skyward/KSU/1120"), "{text}");
+        assert!(text.contains("unsigned"), "{text}");
+    }
+
+    #[cfg(feature = "roots")]
     #[test]
     fn a_root_run_that_installed_says_the_key_and_where_the_manager_went() {
-        let key = skyward_folkpatch::SuperKey::validate("abcd1234").unwrap();
-        let outcome = skyward_folkpatch::Outcome::Installed(skyward_folkpatch::Installed {
+        let key = skyward_root::folkpatch::SuperKey::validate("abcd1234").unwrap();
+        let outcome = skyward_root::folkpatch::Outcome::Installed(skyward_root::folkpatch::Installed {
             slots: vec![skyward_vab::Slot::A],
             key: key.clone(),
-            key_path: "/data/local/tmp/skyward-folkpatch/1120/superkey.txt".into(),
+            key_path: "/data/local/tmp/skyward-root/1120/superkey.txt".into(),
             backup_dir: "/sdcard/Download/Skyward/FolkPatch/1120/backup".into(),
             kallsyms_all: true,
         });
-        let (summary, key_line, notes) = root_result(Lang::En, &outcome);
+        let (summary, key_line, notes) = apatch_result(Lang::En, &outcome);
         let text = notes.join("\n");
         assert_eq!(summary, "KernelPatch installed: slot A is patched.");
         assert_eq!(key_line.as_deref(), Some(key.expose()), "the key has a line of its own");
@@ -4289,15 +5235,16 @@ mod tests {
         assert!(!text.contains("KALLSYMS_ALL"), "a kernel with every symbol has nothing to warn of");
     }
 
-    #[cfg(feature = "folkpatch")]
+    #[cfg(feature = "roots")]
     #[test]
     fn a_root_run_that_stopped_says_what_may_be_written_and_how_to_put_it_back() {
-        let outcome = skyward_folkpatch::Outcome::Failed(skyward_folkpatch::Failure {
-            stage: skyward_folkpatch::Stage::Flashing { slot: skyward_vab::Slot::A, done: 0, total: 0 },
+        let outcome = skyward_root::folkpatch::Outcome::Failed(skyward_root::folkpatch::Failure {
+            stage: skyward_root::folkpatch::Stage::Flashing { slot: skyward_vab::Slot::A, done: 0, total: 0 },
             slot: Some(skyward_vab::Slot::A),
             why: "no space left on device".into(),
-            backups: vec![skyward_folkpatch::backup::Backup {
+            backups: vec![skyward_root::backup::Backup {
                 slot: skyward_vab::Slot::A,
+                partition: "boot".into(),
                 path: "/sdcard/Download/Skyward/FolkPatch/1120/backup/boot_a.img".into(),
                 size: 96 << 20,
                 sha256: "00".into(),
@@ -4305,7 +5252,7 @@ mod tests {
             written: vec![skyward_vab::Slot::A],
             key_path: None,
         });
-        let (summary, key_line, notes) = root_result(Lang::En, &outcome);
+        let (summary, key_line, notes) = apatch_result(Lang::En, &outcome);
         let text = notes.join("\n");
         assert!(summary.starts_with("Not installed:"), "{summary}");
         assert!(summary.contains("no space left on device"), "{summary}");

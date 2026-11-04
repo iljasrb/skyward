@@ -6,7 +6,7 @@
 # Skyward. That base is the stock recovery partition, which is the phone
 # maker's to hand out and so is not in this repository:
 #
-# The image carries FolkPatch's installer, which gives the Root page (marked
+# The image carries the root methods, which give the Root page (marked
 # beta there); a build without it is the recovery as it has always been.
 #
 #   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG]
@@ -44,7 +44,7 @@ export ANDROID_NDK_HOME=$ndk
 # compares; nothing at runtime parses a time.
 export SKYWARD_BUILD=${SKYWARD_BUILD:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
-cargo ndk -t arm64-v8a --platform 30 build --release --features folkpatch -p skyward
+cargo ndk -t arm64-v8a --platform 30 build --release --features roots -p skyward
 cargo build --release -p skyward-pack
 
 mkdir -p "$(dirname "$out")"

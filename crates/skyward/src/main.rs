@@ -29,8 +29,12 @@ mod readings;
 mod recovery;
 #[cfg(target_os = "android")]
 mod relabel;
-#[cfg(all(feature = "folkpatch", target_os = "android"))]
-mod root;
+#[cfg(all(feature = "roots", target_os = "android"))]
+mod apatch;
+#[cfg(all(feature = "roots", target_os = "android"))]
+mod kernel;
+#[cfg(all(feature = "roots", target_os = "android"))]
+mod ksu;
 #[cfg(target_os = "android")]
 mod secure;
 #[cfg(target_os = "android")]

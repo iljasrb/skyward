@@ -10,9 +10,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-# FolkPatch's root installer: the Root page, the pinned tools and manager it
-# carries, and the worker that writes the patched boot.
-folkpatch = ["dep:skyward-folkpatch", "skyward-ui/folkpatch"]
+# The root methods: FolkPatch's APatch, the KernelSU family, and the kernels a
+# phone's own configuration adds.
+roots = ["dep:skyward-root", "skyward-ui/roots"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -25,8 +25,8 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
-# FolkPatch's root installer, on a build that carries it.
-skyward-folkpatch = { path = "../skyward-folkpatch", optional = true }
+# The root methods, on a build that carries them.
+skyward-root = { path = "../skyward-root", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 evdev = "0.13.2"

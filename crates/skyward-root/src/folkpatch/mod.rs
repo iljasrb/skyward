@@ -1,5 +1,5 @@
-//! Patching FolkPatch's root into the boot partition: the KernelPatch tools it
-//! is patched with, and the SuperKey that opens what is patched in.
+//! FolkPatch's APatch: the KernelPatch tools it is patched with, and the
+//! SuperKey that opens what is patched in.
 //!
 //! Only the patch is made here. The manager that uses it is the owner's to
 //! install in Android, from its own release; nothing of it is carried, saved
@@ -7,13 +7,13 @@
 //! written by this recovery. The key is made here or typed on the screen, kept
 //! out of command lines and logs, and saved only where root can read it.
 
-pub mod backup;
 pub mod install;
 pub mod key;
 
 pub use install::{install, patched_slot};
 pub use key::{KeyFault, SuperKey};
 
+use crate::backup;
 use anyhow::{Context, Result};
 use skyward_vab::Slot;
 use std::fmt;
@@ -22,20 +22,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// The partition patched, and the only one written. `init_boot`,
-/// `vendor_boot`, `recovery`, the boot-control partitions and super are left
-/// as they are.
-pub const BOOT: &str = "boot";
-
 /// The KernelPatch release the tools are of.
 pub const KPIMG_VERSION: &str = "0.13.9";
 
 // The tools themselves, taken from the FolkPatch release and checked against
 // the hashes pinned here. They are carried rather than fetched, so a build
 // needs no network and every clone builds the same bytes.
-pub const KPTOOLS: &[u8] = include_bytes!("../assets/kptools");
+pub const KPTOOLS: &[u8] = include_bytes!("../../assets/kptools");
 pub const KPTOOLS_SHA256: &str = "ea06a9a46dc1f210c71a61a9f07556fa9b739c327847c7ab16ccbb46fdb7631c";
-pub const KPIMG: &[u8] = include_bytes!("../assets/kpimg");
+pub const KPIMG: &[u8] = include_bytes!("../../assets/kpimg");
 pub const KPIMG_SHA256: &str = "7a7aa4b930d1a9d684cbb426a3999f75cb2e2cead26673dcbbc5f70871f01141";
 
 /// What a run is asked to do besides the phone it is on.
@@ -59,7 +54,7 @@ pub struct Options {
     /// The owner's storage, as `/sdcard`, which the backups are saved in.
     pub storage: PathBuf,
     /// Where only root reads what the run keeps, as
-    /// `/data/local/tmp/skyward-folkpatch`.
+    /// `/data/local/tmp/skyward-root`.
     pub private: PathBuf,
     /// When the run was started, as `20261101-123456`.
     pub stamp: String,
@@ -207,32 +202,9 @@ pub fn share_key(run: &Path, key: &SuperKey) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The slots `slots` names, each once, in the order they were named.
-pub fn slots(slots: &[Slot]) -> anyhow::Result<Vec<Slot>> {
-    let mut kept: Vec<Slot> = Vec::with_capacity(slots.len());
-    for slot in slots {
-        if !kept.contains(slot) {
-            kept.push(*slot);
-        }
-    }
-    anyhow::ensure!(!kept.is_empty(), "no slot to patch");
-    Ok(kept)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_slot_named_twice_is_patched_once() {
-        assert_eq!(slots(&[Slot::A, Slot::B, Slot::A]).unwrap(), vec![Slot::A, Slot::B]);
-        assert_eq!(slots(&[Slot::B]).unwrap(), vec![Slot::B]);
-    }
-
-    #[test]
-    fn no_slot_named_is_no_run_at_all() {
-        assert!(slots(&[]).is_err());
-    }
 
     #[test]
     fn the_files_the_crate_carries_are_the_pinned_release() {
