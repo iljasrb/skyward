@@ -1189,6 +1189,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // why it did not come up goes to the kernel log and on screen.
     let mut fastboot = first == Screen::Fastboot;
     let mut port_at = Instant::now();
+    // What the boots before kept: brightness, the theme, the language and
+    // the rest are back before the first frame is drawn, and a WLAN that was
+    // on is brought back up by itself. Read before file transfer starts, so a
+    // saved "off" is not overruled by the default.
+    let saved = saved_settings(cfg, app.state.lang);
+    let mut settings_read = settings_root(cfg).is_some();
+    let mut wlan_wanted = saved.as_ref().is_some_and(|s| s.wlan);
+    let mut wlan_touched = false;
+    if let Some(saved) = saved {
+        app.set_saved_settings(saved, false);
+    }
     // File transfer runs while its switch is on, and offers internal
     // storage while that is open; one that does not start says why on
     // screen, and the recovery carries on.
@@ -1350,15 +1361,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         None => None,
     };
-    // What the boots before kept: brightness, the theme, the language and
-    // the rest are back before the first frame is drawn, and a WLAN that was
-    // on is brought back up by itself.
-    let saved = saved_settings(cfg, app.state.lang);
-    let mut wlan_wanted = saved.as_ref().is_some_and(|s| s.wlan);
-    let mut wlan_touched = false;
-    if let Some(saved) = saved {
-        app.set_saved_settings(saved, false);
-    }
     // A WLAN started before the data partition is open keeps its networks in
     // memory and saves the ones joined there in it: the supplicant that holds
     // them is started once the partition they are kept on is open, by the
@@ -1907,13 +1909,35 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             scanned_at = Instant::now();
             wlan_worker(&wlan)?.send(wlan::Command::Scan);
         }
+        // The place the settings are kept on may open after the pages do --
+        // the data partition, once its screen lock is answered. Read what it
+        // holds before a pending write can put the defaults over it.
+        if !settings_read && settings_root(cfg).is_some() {
+            settings_read = true;
+            if let Some(saved) = saved_settings(cfg, app.state.lang) {
+                if !wlan_touched {
+                    wlan_wanted = saved.wlan;
+                }
+                let was_transfer = app.state.file_transfer;
+                app.set_saved_settings(saved, true);
+                if was_transfer && !app.state.file_transfer {
+                    if let Some(t) = transfer.take() {
+                        if let Err(e) = t.stop(!fastboot && !sideloading) {
+                            let _ = skyward_sys::kmsg(&format!("file transfer did not stop cleanly: {e:#}"));
+                        }
+                    }
+                }
+            }
+        }
         // What the user changed goes to the partition the phone keeps it on
         // a moment after the last change. The place may not be mounted yet;
         // the change stays pending until it is.
-        if let Some(settings) = app.settings_due(now) {
-            match settings_root(cfg) {
-                Some(root) if write_settings(&root, &settings) => app.settings_written(settings),
-                _ => app.settings_not_written(now),
+        if settings_read {
+            if let Some(settings) = app.settings_due(now) {
+                match settings_root(cfg) {
+                    Some(root) if write_settings(&root, &settings) => app.settings_written(settings),
+                    _ => app.settings_not_written(now),
+                }
             }
         }
         let mut checked = false;

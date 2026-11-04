@@ -3241,7 +3241,9 @@ impl App {
             vibrate: self.state.vibrate,
             vibration: self.state.vibration,
             file_transfer: self.state.file_transfer,
-            wlan: self.state.wlan.as_ref().is_some_and(|w| w.power == WlanPower::On),
+            // Starting counts as on: the user asked for it, and a write that
+            // lands before the driver is up must not record it as off.
+            wlan: self.state.wlan.as_ref().is_some_and(|w| !matches!(w.power, WlanPower::Off | WlanPower::Failed(_))),
         }
     }
 
