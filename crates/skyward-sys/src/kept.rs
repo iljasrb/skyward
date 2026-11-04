@@ -2,10 +2,13 @@
 //! user changes, and the network the WLAN joined.
 //!
 //! Settings are kept where the device config says: the vendor persist
-//! partition, which opens before the data partition and no reset wipes, or
-//! the data partition, which opens once the user answers the decrypt page.
-//! The WLAN's networks are always kept on the data partition, because they
-//! hold a password and persist is not encrypted.
+//! partition, mounted where the phone's own table mounts it, which opens
+//! before the data partition and no reset wipes, or the data partition,
+//! which opens once the user answers the decrypt page. The data partition is
+//! the default; the vendor one is for a phone whose recovery needs its
+//! settings before that page is answered. The WLAN's networks are always
+//! kept on the data partition, because they hold a password and persist is
+//! not encrypted.
 //!
 //! A place is used only while it is mounted. A folder that is not a mount
 //! point lives on the ramdisk and forgets what is written in it.
@@ -18,36 +21,38 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The vendor partition the phone keeps its calibration in.
-pub const VENDOR: &str = "/mnt/vendor/persist";
+/// The vendor persist partition, mounted where the phone's own table mounts
+/// it; none where the table names no persist partition.
+pub fn vendor_root() -> Option<PathBuf> {
+    let entry = skyward_block::fstab::partition("persist").ok().flatten()?;
+    Some(PathBuf::from(entry.mount_point))
+}
 
 /// The data partition, which opens only once the user answers the decrypt
 /// page.
 pub const DATA: &str = "/data";
 
 /// Whether `root` is a mount point rather than a folder on the ramdisk.
-pub fn mounted(root: &str) -> bool {
-    skyward_block::mount::is_mount_point(Path::new(root)).unwrap_or(false)
+pub fn mounted(root: impl AsRef<Path>) -> bool {
+    skyward_block::mount::is_mount_point(root.as_ref()).unwrap_or(false)
 }
 
 /// The recovery's folder on `root`.
 const SKYWARD: &str = "skyward";
 
 /// The folder `name` in the recovery's folder on `root`.
-pub fn folder(root: &str, name: &str) -> PathBuf {
-    Path::new(root).join(SKYWARD).join(name)
+pub fn folder(root: impl AsRef<Path>, name: &str) -> PathBuf {
+    root.as_ref().join(SKYWARD).join(name)
 }
 
-/// Where `folder/name` is, and what it holds; none while there is none.
-pub fn read(root: &str, folder: &str, name: &str) -> Option<(PathBuf, String)> {
-    let path = Path::new(root).join(SKYWARD).join(folder).join(name);
-    let text = fs::read_to_string(&path).ok()?;
-    Some((path, text))
+/// What `folder/name` holds; none while there is none.
+pub fn read(root: impl AsRef<Path>, folder: &str, name: &str) -> Option<String> {
+    fs::read_to_string(root.as_ref().join(SKYWARD).join(folder).join(name)).ok()
 }
 
 /// Write `text` as `folder/name`; the file it wrote is returned.
-pub fn write(root: &str, folder: &str, name: &str, text: &str) -> Result<PathBuf> {
-    let path = Path::new(root).join(SKYWARD).join(folder).join(name);
+pub fn write(root: impl AsRef<Path>, folder: &str, name: &str, text: &str) -> Result<PathBuf> {
+    let path = root.as_ref().join(SKYWARD).join(folder).join(name);
     let dir = path.parent().expect("a kept file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     // Nothing secret is kept here, but a partition the phone's own calibration
@@ -105,8 +110,8 @@ mod tests {
         assert_eq!(read(root, "settings", "values"), None, "nothing written yet");
         let path = write(root, "settings", "values", "wlan = true\n").unwrap();
         assert_eq!(path, dir.path().join("skyward/settings/values"));
-        assert_eq!(read(root, "settings", "values"), Some((path, "wlan = true\n".to_string())));
+        assert_eq!(read(root, "settings", "values"), Some("wlan = true\n".to_string()));
         write(root, "settings", "values", "wlan = false\n").unwrap();
-        assert_eq!(read(root, "settings", "values").unwrap().1, "wlan = false\n", "the newer one is read");
+        assert_eq!(read(root, "settings", "values").unwrap(), "wlan = false\n", "the newer one is read");
     }
 }

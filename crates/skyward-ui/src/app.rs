@@ -1849,6 +1849,57 @@ impl Default for SavedSettings {
     }
 }
 
+impl SavedSettings {
+    /// The settings `text` names. A key it does not name, or a value it
+    /// cannot read, stays at `current`.
+    pub fn parse(text: &str, current: Lang) -> SavedSettings {
+        let mut saved = SavedSettings { lang: current, ..SavedSettings::default() };
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else { continue };
+            let value = value.trim();
+            let on = |at: &mut bool| {
+                if let Some(v) = parse_flag(value) {
+                    *at = v;
+                }
+            };
+            match key.trim() {
+                "language" => {
+                    if let Some(lang) = language(value) {
+                        saved.lang = lang;
+                    }
+                }
+                "dark" => on(&mut saved.dark),
+                "vibrate" => on(&mut saved.vibrate),
+                "file_transfer" => on(&mut saved.file_transfer),
+                "wlan" => on(&mut saved.wlan),
+                "brightness" => saved.brightness = value.parse().unwrap_or(saved.brightness),
+                "vibration" => saved.vibration = value.parse().unwrap_or(saved.vibration),
+                "screen_off" => saved.screen_off = value.parse().unwrap_or(saved.screen_off),
+                "time_zone" => saved.time_zone = value.parse().unwrap_or(saved.time_zone),
+                _ => {}
+            }
+        }
+        saved
+    }
+}
+
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "true" | "on" => Some(true),
+        "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn language(value: &str) -> Option<Lang> {
+    match value {
+        "hans" => Some(Lang::Hans),
+        "hant" => Some(Lang::Hant),
+        "en" => Some(Lang::En),
+        _ => None,
+    }
+}
+
 /// Choices the pages show and the user changes, and where installing
 /// stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -2870,8 +2921,13 @@ pub struct App {
     /// Settings as the owner's storage last had them: what differs from
     /// these is written back a moment after the last change.
     settings_kept: SavedSettings,
+    /// The settings as last looked at, to tell a change from a tick.
+    settings_seen: SavedSettings,
     /// When a pending settings write matures.
     settings_due_at: Option<u64>,
+    /// Whether the user chose a language this boot, which a late read of
+    /// the storage must not overrule.
+    lang_chosen: bool,
     /// The pages open, the one shown last: each with how far it is
     /// scrolled and where the keys are on it.
     stack: Vec<(Screen, f32, Focus)>,
@@ -3008,7 +3064,9 @@ impl App {
         App {
             state: State::default(),
             settings_kept: SavedSettings::default(),
+            settings_seen: SavedSettings::default(),
             settings_due_at: None,
+            lang_chosen: false,
             stack: vec![(start, 0.0, Focus::Unset)],
             frame: None,
             spots: None,
@@ -3190,24 +3248,43 @@ impl App {
     /// Whether the settings differ from what the owner's storage has, and
     /// have been left alone long enough to be written back: once.
     pub fn settings_due(&mut self, now: u64) -> Option<SavedSettings> {
-        if self.settings() == self.settings_kept {
+        let current = self.settings();
+        if current == self.settings_kept {
             self.settings_due_at = None;
+            self.settings_seen = current;
             return None;
         }
-        let due = *self.settings_due_at.get_or_insert(now + SETTINGS_SAVE_DELAY);
-        if now < due {
+        // Every change starts the wait again, so a slider dragged across
+        // the page is written once, after the hand stops.
+        if current != self.settings_seen {
+            self.settings_seen = current;
+            self.settings_due_at = Some(now + SETTINGS_SAVE_DELAY);
+        }
+        if self.settings_due_at.is_none_or(|due| now < due) {
             return None;
         }
-        let settings = self.settings();
-        self.settings_kept = settings;
-        self.settings_due_at = None;
-        Some(settings)
+        Some(current)
     }
 
-    /// Take the settings the owner's storage kept, where the user has left
-    /// each at the value it starts at this boot: a choice of their own made
-    /// before the storage opened is never overruled.
-    pub fn set_saved_settings(&mut self, saved: SavedSettings) {
+    /// The settings are now in the owner's storage.
+    pub fn settings_written(&mut self, settings: SavedSettings) {
+        self.settings_kept = settings;
+        self.settings_seen = settings;
+        self.settings_due_at = None;
+    }
+
+    /// The settings could not be written: keep them and try again after the
+    /// same wait.
+    pub fn settings_not_written(&mut self, now: u64) {
+        self.settings_due_at = Some(now + SETTINGS_SAVE_DELAY);
+    }
+
+    /// Take the settings the owner's storage kept. On the first read of a
+    /// boot every one is taken; a later read, once the storage opens, takes
+    /// only those the user has left at the value they start at, so a choice
+    /// of their own made before it opened is never overruled. What the file
+    /// does not hold yet is written back by `settings_due`.
+    pub fn set_saved_settings(&mut self, saved: SavedSettings, keep_this_boot: bool) {
         let start = SavedSettings::default();
         // A file that was cut short, or edited by hand, must not take the
         // pages down with it: every value is brought into the range the pages
@@ -3219,33 +3296,39 @@ impl App {
             time_zone: if saved.time_zone < TIME_ZONES.len() { saved.time_zone } else { start.time_zone },
             ..saved
         };
-        if self.state.lang == start.lang {
+        let take = |same: bool| !keep_this_boot || same;
+        // The language starts from the phone's locale, not from the page
+        // default, so a late read may take the saved one unless the user
+        // chose a language this boot.
+        if !keep_this_boot || !self.lang_chosen {
             self.state.lang = saved.lang;
         }
-        if self.state.dark == start.dark {
+        if take(self.state.dark == start.dark) {
             self.state.dark = saved.dark;
         }
-        if (self.state.brightness - start.brightness).abs() < f32::EPSILON {
+        if take((self.state.brightness - start.brightness).abs() < f32::EPSILON) {
             self.state.brightness = saved.brightness;
         }
-        if self.state.screen_off == start.screen_off {
+        if take(self.state.screen_off == start.screen_off) {
             self.state.screen_off = saved.screen_off;
         }
-        if self.state.time_zone == start.time_zone {
+        if take(self.state.time_zone == start.time_zone) {
             self.state.time_zone = saved.time_zone;
         }
-        if self.state.vibrate == start.vibrate {
+        if take(self.state.vibrate == start.vibrate) {
             self.state.vibrate = saved.vibrate;
         }
-        if (self.state.vibration - start.vibration).abs() < f32::EPSILON {
+        if take((self.state.vibration - start.vibration).abs() < f32::EPSILON) {
             self.state.vibration = saved.vibration;
         }
-        if self.state.file_transfer == start.file_transfer {
+        if take(self.state.file_transfer == start.file_transfer) {
             self.state.file_transfer = saved.file_transfer;
         }
-        // What is kept now is what the storage holds; a WLAN brought up to
-        // match it is the runtime's to do.
-        self.settings_kept = self.settings();
+        // What is kept now is what the storage held before the merge; a
+        // choice made before the storage opened differs, and is written back.
+        self.settings_kept = saved;
+        self.settings_seen = saved;
+        self.settings_due_at = None;
         self.refresh();
     }
 
@@ -5938,6 +6021,7 @@ impl App {
             }
             Action::Language(l) => {
                 self.state.lang = l;
+                self.lang_chosen = true;
                 self.refresh();
             }
             Action::BackupPart(k) => {
@@ -8447,7 +8531,7 @@ mod tests {
             file_transfer: true,
             wlan: true,
         };
-        app.set_saved_settings(nonsense);
+        app.set_saved_settings(nonsense, false);
         assert_eq!(app.state.screen_off, SavedSettings::default().screen_off, "a screen-off time that is not one");
         assert_eq!(app.state.time_zone, SavedSettings::default().time_zone, "a time zone that is not one");
         assert_eq!(app.state.brightness, 1.0, "a brightness over the slider's end");
@@ -8465,16 +8549,17 @@ mod tests {
         assert_eq!(app.settings_due(0), None, "nothing changed, nothing to write");
         tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
         assert_eq!(app.settings_due(1_500), None, "the write waits for the last change");
-        assert_eq!(app.settings_due(2_000), None, "and matures after it");
+        assert_eq!(app.settings_due(2_000), None, "and is not due yet");
         let kept = app.settings_due(5_000).expect("the settings are written");
         assert!(!kept.vibrate, "as they stand");
+        app.settings_written(kept);
         assert_eq!(app.settings_due(9_000), None, "and once, not at every tick");
 
         // The boots to come take them back, except where the user has
         // already chosen otherwise this boot.
         let mut fresh = App::new(Screen::Settings, W, H, PPD);
         fresh.frame(&f, &i);
-        fresh.set_saved_settings(kept);
+        fresh.set_saved_settings(kept, false);
         assert!(!fresh.state.vibrate, "kept from the boot before");
         assert_eq!(fresh.settings_due(9_000), None, "what was just read is not written again");
 
@@ -8482,8 +8567,62 @@ mod tests {
         chosen.frame(&f, &i);
         tap_at(&mut chosen, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
         assert!(!chosen.state.vibrate, "turned off this boot");
-        chosen.set_saved_settings(SavedSettings { vibrate: true, ..kept });
+        chosen.set_saved_settings(SavedSettings { vibrate: true, ..kept }, true);
         assert!(!chosen.state.vibrate, "the user's choice this boot is not overruled");
+        assert_eq!(chosen.settings_due(12_000), None, "and waits to be written");
+        assert!(chosen.settings_due(14_000).is_some(), "and is written back over the storage that does not hold it yet");
+    }
+
+    #[test]
+    fn settings_wait_for_the_last_change_and_are_offered_again_after_a_failed_write() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.frame(&f, &i);
+        tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
+        assert_eq!(app.settings_due(1_500), None, "the first change starts the wait");
+        tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 2000);
+        assert_eq!(app.settings_due(2_000), None, "the second change starts it again");
+        assert_eq!(app.settings_due(3_500), None, "the first wait does not write mid-change");
+        let settings = app.settings_due(4_000).expect("the wait after the last change matures");
+        app.settings_not_written(4_000);
+        assert_eq!(app.settings_due(5_000), None, "a failed write waits again");
+        assert_eq!(app.settings_due(6_000), Some(settings), "and offers the same settings once more");
+    }
+
+    #[test]
+    fn settings_are_parsed_from_what_the_file_names() {
+        let text = "language = hant\ndark = true\nbrightness = 0.7\nscreen_off = 5\ntime_zone = 2\nvibrate = false\nvibration = 0.4\nfile_transfer = false\nwlan = true\n";
+        assert_eq!(
+            SavedSettings::parse(text, Lang::En),
+            SavedSettings {
+                lang: Lang::Hant,
+                dark: true,
+                brightness: 0.7,
+                screen_off: 5,
+                time_zone: 2,
+                vibrate: false,
+                vibration: 0.4,
+                file_transfer: false,
+                wlan: true,
+            }
+        );
+        let partial = SavedSettings::parse("unknown = 1\nlanguage = klingon\nbrightness = not a number\n", Lang::En);
+        assert_eq!(partial.lang, Lang::En, "an unknown language keeps the one the pages speak");
+        assert_eq!(partial.brightness, SavedSettings::default().brightness, "a value that is not a number keeps the default");
+    }
+
+    #[test]
+    fn a_saved_language_is_taken_at_boot_and_a_choice_this_boot_is_not() {
+        let saved = SavedSettings { lang: Lang::Hant, ..SavedSettings::default() };
+        let mut boot = App::new(Screen::Settings, W, H, PPD);
+        boot.state.lang = Lang::En;
+        boot.set_saved_settings(saved, false);
+        assert_eq!(boot.state.lang, Lang::Hant, "the saved language is the one the pages speak");
+
+        let mut chosen = App::new(Screen::Settings, W, H, PPD);
+        chosen.act(Action::Language(Lang::En), 0);
+        chosen.set_saved_settings(saved, true);
+        assert_eq!(chosen.state.lang, Lang::En, "a choice made before the storage opened stays");
     }
 
     #[test]
