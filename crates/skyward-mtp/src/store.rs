@@ -304,9 +304,10 @@ impl Store {
     }
 }
 
-/// Whether `path` is a folder, through any link to one.
+/// Whether `path` itself is a folder; a link to one is not, so a link in
+/// shared storage cannot make the store walk in circles.
 fn is_dir(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_dir())
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
 }
 
 /// What the system said happened in a folder followed. A system with no

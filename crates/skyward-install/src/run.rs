@@ -42,6 +42,8 @@ const METADATA: &str = "/metadata";
 /// Where a zip's install script is put to run, as Android's recovery puts
 /// it, and the version of the interface the script is told it runs under.
 const BINARY: &str = "/tmp/update-binary";
+/// The most an install script may take; a real one is far smaller.
+const SCRIPT_MAX: u64 = 16 << 20;
 const API_VERSION: &str = "3";
 const RETRY: &str = "retry";
 
@@ -651,10 +653,12 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             Ok(())
         });
     }
+    // The log is made before the program starts, so a failure here cannot
+    // leave it writing partitions with nobody watching.
+    let mut log = File::create(ENGINE_LOG).with_context(|| format!("create {ENGINE_LOG}"))?;
     let mut child = command.spawn().with_context(|| format!("start {}", ota::PROGRAM))?;
     drop(status_write);
     let stderr = child.stderr.take().expect("stderr is piped");
-    let mut log = File::create(ENGINE_LOG).with_context(|| format!("create {ENGINE_LOG}"))?;
 
     let (tx, rx) = mpsc::channel();
     let status_tx = tx.clone();
@@ -801,7 +805,14 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             SlotMaps::default()
         }
     };
-    let mounted = skyward_block::mount::mount_ids()?;
+    let mounted = match skyward_block::mount::mount_ids() {
+        Ok(mounted) => mounted,
+        Err(e) => {
+            // The slot is already mapped, and nothing else will take it off.
+            let _ = skyward_vab::unmap_slot(&mapped);
+            return Err(e);
+        }
+    };
     let ran = run_binary(ctx);
     if let Err(e) = clean_up(&mounted, &mapped) {
         let _ = kmsg(&format!("install: not all the script left behind was taken away: {e:#}"));
@@ -840,6 +851,7 @@ fn extract_script() -> Result<()> {
     let zip = File::open(fuse::PACKAGE).context("open the package")?;
     let mut zip = zip::ZipArchive::new(BufReader::new(zip)).context("read the zip directory")?;
     let mut script = zip.by_name(package::UPDATE_BINARY).context("open the install script")?;
+    ensure!(script.size() <= SCRIPT_MAX, "the install script is {} bytes, larger than this recovery runs", script.size());
     match fs::remove_file(BINARY) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -1008,11 +1020,22 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
 /// away.
 fn clean_up(before: &[(i32, PathBuf)], mapped: &SlotMaps) -> Result<()> {
     let kept: HashSet<i32> = before.iter().map(|(id, _)| *id).collect();
+    let mut first = None;
     for (_, point) in skyward_block::mount::mount_ids()?.into_iter().rev().filter(|(id, _)| !kept.contains(id)) {
-        skyward_block::mount::umount_detach(&point)?;
+        if let Err(e) = skyward_block::mount::umount_detach(&point) {
+            first.get_or_insert(e);
+        }
     }
-    skyward_vab::unmap_slot(mapped)?;
-    remount_metadata()
+    if let Err(e) = skyward_vab::unmap_slot(mapped) {
+        first.get_or_insert(e);
+    }
+    if let Err(e) = remount_metadata() {
+        first.get_or_insert(e);
+    }
+    match first {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// What the phone tells the computer it is.

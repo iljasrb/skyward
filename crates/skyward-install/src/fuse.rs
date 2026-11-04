@@ -387,8 +387,8 @@ mod device {
     /// Write a reply; the kernel refuses one whose request was interrupted
     /// and gone.
     fn answer(dev: &File, reply: &[u8]) -> Result<()> {
-        match { dev }.write(reply) {
-            Ok(_) => Ok(()),
+        match { dev }.write_all(reply) {
+            Ok(()) => Ok(()),
             Err(e) if e.raw_os_error() == Some(libc::ENOENT) => Ok(()),
             Err(e) => Err(e).context("write a FUSE reply"),
         }

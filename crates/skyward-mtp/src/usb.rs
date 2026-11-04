@@ -31,6 +31,10 @@ const CHUNK: usize = 1 << 20;
 /// What a command is read into; one is a single short packet.
 const COMMAND_MAX: usize = 512;
 
+/// How many events wait for a computer that is not polling; the oldest go
+/// first, as they only say what changed.
+const EVENTS_MAX: usize = 64;
+
 // From linux/usb/functionfs.h and linux/usb/ch9.h.
 const DESCRIPTORS_MAGIC_V2: u32 = 3;
 const STRINGS_MAGIC: u32 = 2;
@@ -1001,6 +1005,9 @@ impl Port {
     /// their turn behind the one going.
     pub fn event(&mut self, code: u16, transaction: u32, param: u32) -> io::Result<()> {
         let bytes: [u8; 16] = dataset::short(container::EVENT, code, transaction, &[param]).try_into().expect("an event with one parameter is sixteen bytes");
+        if self.events.len() >= EVENTS_MAX {
+            self.events.pop_front();
+        }
         self.events.push_back(bytes);
         if self.event.is_none() {
             self.next_event()?;
