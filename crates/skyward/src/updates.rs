@@ -177,16 +177,10 @@ fn fetch(
         }
         let a = http::agent(servers.clone());
         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-        let mut came = None::<u64>;
-        let mut gained = false;
         let mut last = None;
         let mut progress = |p: Progress| {
             if let Progress::Downloading { done, .. } = p {
                 let now = Instant::now();
-                if came.is_some_and(|before| done > before) {
-                    gained = true;
-                }
-                came = Some(done);
                 samples.push((now, done));
                 samples.retain(|(at, _)| now.duration_since(*at) <= RATE_OVER);
             }
@@ -234,7 +228,7 @@ fn fetch(
                 }
             }
         }
-        failed = if gained { 1 } else { failed + 1 };
+        failed += 1;
         if failed >= TRIES {
             return End::Failed(Failure::Other(format!("{e:#}")));
         }

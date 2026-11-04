@@ -148,13 +148,29 @@ pub fn fetch(agent: &ureq::Agent, url: &str, path: &Path, md5: &str, stop: &Atom
         }
         let mut response = asked.call().context("start the download")?;
         match response.status().as_u16() {
-            206 if have > 0 => {}
+            206 if have > 0 => {
+                // A part is only appended to when the server sends the bytes
+                // that come next; anything else is started over.
+                let Some((start, whole)) = content_range(response.headers()) else {
+                    file.set_len(0).with_context(|| format!("empty {}", part.display()))?;
+                    bail!(Refused(416));
+                };
+                if start != have || whole != total {
+                    file.set_len(0).with_context(|| format!("empty {}", part.display()))?;
+                    bail!(Refused(416));
+                }
+            }
             200 => {
                 if have > 0 {
                     file.set_len(0).with_context(|| format!("empty {}", part.display()))?;
                     have = 0;
                     hash = Md5::new();
                 }
+            }
+            // The part is longer than what the server now has: start over.
+            416 => {
+                file.set_len(0).with_context(|| format!("empty {}", part.display()))?;
+                bail!(Refused(416));
             }
             status => bail!(Refused(status)),
         }
@@ -191,6 +207,14 @@ pub(crate) fn content_length(headers: &ureq::http::HeaderMap) -> Option<u64> {
     headers.get(ureq::http::header::CONTENT_LENGTH)?.to_str().ok()?.parse().ok()
 }
 
+/// The first byte and the whole length a `Content-Range: bytes a-b/n` names.
+fn content_range(headers: &ureq::http::HeaderMap) -> Option<(u64, u64)> {
+    let value = headers.get(ureq::http::header::CONTENT_RANGE)?.to_str().ok()?;
+    let (range, whole) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, _) = range.split_once('-')?;
+    Some((start.parse().ok()?, whole.parse().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +237,15 @@ mod tests {
         let stopped = hash_of(&mut File::open(&path).unwrap(), 1, &AtomicBool::new(true), &mut |_| {});
         assert!(stopped.unwrap_err().is::<crate::Stopped>());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_range_a_part_is_sent_from_is_read() {
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert(ureq::http::header::CONTENT_RANGE, "bytes 10-19/100".parse().unwrap());
+        assert_eq!(content_range(&headers), Some((10, 100)));
+        headers.insert(ureq::http::header::CONTENT_RANGE, "bytes 10-19/*".parse().unwrap());
+        assert_eq!(content_range(&headers), None, "a length it does not say");
     }
 
     #[test]
