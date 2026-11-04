@@ -1,6 +1,6 @@
 use crate::app::{
-    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field,
-    FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
+    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, DownloadJob, EraseStop,
+    Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
     Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS,
     DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
     WIPES, installs,
@@ -2528,6 +2528,63 @@ pub fn update(cx: &Ctx) -> Frame {
 /// has joined no network that reaches the internet.
 const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
 
+/// A package download under way: how far it has come, how fast, and the
+/// control that pauses it. `stop` is the action that pauses this download.
+fn download_under_way(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>, job: &DownloadJob, stop: Action) -> f32 {
+    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
+    let (heading, detail, share) = match job.progress {
+        None => (l.pick(GETTING_READY), String::new(), None),
+        Some(Progress::Checking { done, total }) => (
+            l.pick(["正在校验已下载的部分", "正在驗證已下載的部分", "Verifying what was downloaded"]),
+            format!("{} / {}", fmt::file_size(done), fmt::file_size(total)),
+            Some(share(done, total)),
+        ),
+        Some(Progress::Downloading { done, total }) => (
+            l.pick(["正在下载", "正在下載", "Downloading"]),
+            format!("{} / {} · {}/s", fmt::file_size(done), fmt::file_size(total), fmt::file_size(job.rate)),
+            Some(share(done, total)),
+        ),
+    };
+    let y = widgets::progress_card(c, t, f, y + t.m.card_gap, heading, &detail, share);
+    let label = l.pick(if job.stopping { ["正在暂停", "正在暫停", "Pausing"] } else { ["暂停", "暫停", "Pause"] });
+    let pause = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
+    if !job.stopping {
+        out.extend(hits(&pause.rows, &[stop]));
+    }
+    pause.bottom
+}
+
+/// The row that downloads a package, or carries on downloading it, with why
+/// the last attempt stopped and what the page needs first.
+fn download_offer(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>, have: Have, job: Option<&DownloadJob>, action: Action) -> f32 {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut y = y;
+    match job.and_then(|j| j.outcome.as_ref()) {
+        Some(DownloadEnd::Failed(why)) => y = widgets::footnote(c, t, f, y, &fmt::download_failure(l, why)),
+        Some(DownloadEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已暂停下载。", "已暫停下載。", "Download paused."])),
+        _ => {}
+    }
+    let title = l.pick(if matches!(have, Have::Part(_)) { ["继续下载", "繼續下載", "Resume download"] } else { ["下载", "下載", "Download"] });
+    let had = match have {
+        Have::Part(done) => {
+            let done = fmt::file_size(done);
+            Some(tr!(l, "已下载 {done}", "已下載 {done}", "{done} downloaded"))
+        }
+        _ => None,
+    };
+    let sub = if !s.data.storage_open() {
+        Some(l.pick(DECRYPT_NEEDED))
+    } else if !s.online() {
+        Some(l.pick(WLAN_FIRST))
+    } else {
+        had.as_deref()
+    };
+    let row = Row::new(title);
+    let download = widgets::list(c, t, f, y + t.m.card_gap, &[sub.map_or(row, |sub| row.subtitle(sub))]);
+    out.extend(hits(&download.rows, &[action]));
+    download.bottom
+}
+
 /// Asking the phone's ROM for its newest system, then its package:
 /// downloading it, how far that has come, and installing it through the
 /// package installer once it is whole.
@@ -2558,30 +2615,9 @@ fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
     };
     let size = fmt::file_size(release.image.size);
     let image = tr!(l, "系统镜像 {size}", "系統鏡像 {size}", "System image {size}");
-    let mut y = widgets::list(c, t, f, y, &[Row::new(&release.build).icon(GREEN, Icon::Layers).subtitle(&image).trail(Trail::None)]).bottom;
+    let y = widgets::list(c, t, f, y, &[Row::new(&release.build).icon(GREEN, Icon::Layers).subtitle(&image).trail(Trail::None)]).bottom;
     match (&rom.download, rom.have) {
-        (Some(job), _) if job.outcome.is_none() => {
-            let (heading, detail, share) = match job.progress {
-                None => (l.pick(GETTING_READY), String::new(), None),
-                Some(Progress::Checking { done, total }) => (
-                    l.pick(["正在校验已下载的部分", "正在驗證已下載的部分", "Verifying what was downloaded"]),
-                    format!("{} / {}", fmt::file_size(done), fmt::file_size(total)),
-                    Some(share(done, total)),
-                ),
-                Some(Progress::Downloading { done, total }) => (
-                    l.pick(["正在下载", "正在下載", "Downloading"]),
-                    format!("{} / {} · {}/s", fmt::file_size(done), fmt::file_size(total), fmt::file_size(job.rate)),
-                    Some(share(done, total)),
-                ),
-            };
-            y = widgets::progress_card(c, t, f, y + t.m.card_gap, heading, &detail, share);
-            let label = l.pick(if job.stopping { ["正在暂停", "正在暫停", "Pausing"] } else { ["暂停", "暫停", "Pause"] });
-            let stop = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
-            if !job.stopping {
-                out.extend(hits(&stop.rows, &[Action::StopRomDownload]));
-            }
-            stop.bottom
-        }
+        (Some(job), _) if job.outcome.is_none() => download_under_way(c, cx, y, out, job, Action::StopRomDownload),
         (_, Have::Whole(_)) => {
             let row = Row::new(l.pick(["安装", "安裝", "Install"])).subtitle(l.pick([
                 "已下载到内部存储，安装到另一槽位，重启后启动新系统",
@@ -2592,32 +2628,7 @@ fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             out.extend(hits(&install.rows, &[Action::InstallRom]));
             install.bottom
         }
-        (job, have) => {
-            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
-                Some(DownloadEnd::Failed(why)) => y = widgets::footnote(c, t, f, y, &fmt::download_failure(l, why)),
-                Some(DownloadEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已暂停下载。", "已暫停下載。", "Download paused."])),
-                _ => {}
-            }
-            let title = l.pick(if matches!(have, Have::Part(_)) { ["继续下载", "繼續下載", "Resume download"] } else { ["下载", "下載", "Download"] });
-            let had = match have {
-                Have::Part(done) => {
-                    let done = fmt::file_size(done);
-                    Some(tr!(l, "已下载 {done}", "已下載 {done}", "{done} downloaded"))
-                }
-                _ => None,
-            };
-            let sub = if !s.data.storage_open() {
-                Some(l.pick(DECRYPT_NEEDED))
-            } else if !s.online() {
-                Some(l.pick(WLAN_FIRST))
-            } else {
-                had.as_deref()
-            };
-            let row = Row::new(title);
-            let download = widgets::list(c, t, f, y + t.m.card_gap, &[sub.map_or(row, |sub| row.subtitle(sub))]);
-            out.extend(hits(&download.rows, &[Action::DownloadRom]));
-            download.bottom
-        }
+        (job, have) => download_offer(c, cx, y, out, have, job.as_ref(), Action::DownloadRom),
     }
 }
 
@@ -2672,28 +2683,7 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         return y;
     }
     match (&s.download, s.have) {
-        (Some(job), _) if job.outcome.is_none() => {
-            let (heading, detail, share) = match job.progress {
-                None => (l.pick(GETTING_READY), String::new(), None),
-                Some(Progress::Checking { done, total }) => (
-                    l.pick(["正在校验已下载的部分", "正在驗證已下載的部分", "Verifying what was downloaded"]),
-                    format!("{} / {}", fmt::file_size(done), fmt::file_size(total)),
-                    Some(share(done, total)),
-                ),
-                Some(Progress::Downloading { done, total }) => (
-                    l.pick(["正在下载", "正在下載", "Downloading"]),
-                    format!("{} / {} · {}/s", fmt::file_size(done), fmt::file_size(total), fmt::file_size(job.rate)),
-                    Some(share(done, total)),
-                ),
-            };
-            y = widgets::progress_card(c, t, f, y + t.m.card_gap, heading, &detail, share);
-            let label = l.pick(if job.stopping { ["正在暂停", "正在暫停", "Pausing"] } else { ["暂停", "暫停", "Pause"] });
-            let stop = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
-            if !job.stopping {
-                out.extend(hits(&stop.rows, &[Action::StopDownload]));
-            }
-            y = stop.bottom;
-        }
+        (Some(job), _) if job.outcome.is_none() => y = download_under_way(c, cx, y, out, job, Action::StopDownload),
         (_, Have::Whole(_)) => {
             let row = Row::new(l.pick(["写入", "寫入", "Write it"])).subtitle(l.pick([
                 "已下载到内部存储，校验通过后写入本机 recovery 分区",
@@ -2704,32 +2694,7 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             out.extend(hits(&install.rows, &[Action::InstallRecovery]));
             y = install.bottom;
         }
-        (job, have) => {
-            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
-                Some(DownloadEnd::Failed(why)) => y = widgets::footnote(c, t, f, y, &fmt::download_failure(l, why)),
-                Some(DownloadEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已暂停下载。", "已暫停下載。", "Download paused."])),
-                _ => {}
-            }
-            let title = l.pick(if matches!(have, Have::Part(_)) { ["继续下载", "繼續下載", "Resume download"] } else { ["下载", "下載", "Download"] });
-            let had = match have {
-                Have::Part(done) => {
-                    let done = fmt::file_size(done);
-                    Some(tr!(l, "已下载 {done}", "已下載 {done}", "{done} downloaded"))
-                }
-                _ => None,
-            };
-            let sub = if !s.data.storage_open() {
-                Some(l.pick(DECRYPT_NEEDED))
-            } else if !s.online() {
-                Some(l.pick(WLAN_FIRST))
-            } else {
-                had.as_deref()
-            };
-            let row = Row::new(title);
-            let download = widgets::list(c, t, f, y + t.m.card_gap, &[sub.map_or(row, |sub| row.subtitle(sub))]);
-            out.extend(hits(&download.rows, &[Action::Download]));
-            y = download.bottom;
-        }
+        (job, have) => y = download_offer(c, cx, y, out, have, job.as_ref(), Action::Download),
     }
     let saved = tr!(
         l,
