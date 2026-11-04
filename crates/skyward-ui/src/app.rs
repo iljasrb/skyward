@@ -957,9 +957,9 @@ impl Folder {
         Folder { path: path.into(), entries: Ok(Vec::new()), listed: 0, left: Vec::new() }
     }
 
-    /// The entry at this place in the list.
-    fn entry(&self, i: usize) -> &FileRow {
-        &self.entries.as_ref().expect("an entry touched is one the list shows")[i]
+    /// The entry at this place in the list, while the list still holds it.
+    fn entry(&self, i: usize) -> Option<&FileRow> {
+        self.entries.as_ref().ok()?.get(i)
     }
 
     /// Where the entry of this name in the folder is.
@@ -3215,7 +3215,7 @@ impl App {
     /// Open what can be done with entry `i` of the folder shown, held long
     /// enough to, with a tap of the motor.
     fn held_entry(&mut self, i: usize) -> Vec<Effect> {
-        let entry = self.state.files.entry(i).clone();
+        let Some(entry) = self.state.files.entry(i).cloned() else { return Vec::new() };
         self.state.file = Some(entry);
         self.state.asking_delete = false;
         self.open(Screen::FileInfo);
@@ -4037,7 +4037,20 @@ impl App {
     /// The partitions for the filesystem page, as the runtime read them,
     /// or why it could not.
     pub fn set_filesystems(&mut self, rows: Result<Vec<FsRow>, String>) {
+        // The page of one partition cannot show a list that did not read, or
+        // one too short for the partition chosen: go back to the list, which
+        // says why.
+        let usable = rows.as_ref().is_ok_and(|rows| !rows.is_empty());
+        if !usable && self.screen() == Screen::Filesystem {
+            self.leave(true);
+            self.stack.pop();
+            self.settle_page();
+        }
         self.state.filesystems = Some(rows);
+        let count = self.state.filesystems.as_ref().and_then(|rows| rows.as_ref().ok()).map_or(0, |rows| rows.len());
+        if self.state.fs_chosen >= count {
+            self.state.fs_chosen = 0;
+        }
         self.refresh();
     }
 
@@ -4606,6 +4619,9 @@ impl App {
         }
         self.state.usb_drive = drive;
         self.state.drive = Folder::new("");
+        // A row held on the drive that left is not the row that takes its
+        // place.
+        self.drag = Drag::Idle;
         self.refresh();
         let gone = !self.state.place_open(Place::UsbDrive) && self.state.restore.as_ref().is_some_and(|(e, _)| e.place == Place::UsbDrive);
         match self.screen() {
@@ -5054,11 +5070,12 @@ impl App {
         // The search page's round button and the home page's search bar
         // darken at once under a finger.
         if let Some(a) = pressing.filter(|a| matches!(a, Action::CloseSearch | Action::Open(Screen::Search))) {
-            let r = frame.hits.iter().find(|h| h.action == a).expect("a button held down is on its page").rect;
-            match frame.shown(r, offset) {
-                Some(r) if a == Action::CloseSearch => widgets::cancel_held(out, t, r),
-                Some(r) => widgets::search_bar_held(out, t, r),
-                None => {}
+            if let Some(r) = frame.hits.iter().find(|h| h.action == a).map(|h| h.rect) {
+                match frame.shown(r, offset) {
+                    Some(r) if a == Action::CloseSearch => widgets::cancel_held(out, t, r),
+                    Some(r) => widgets::search_bar_held(out, t, r),
+                    None => {}
+                }
             }
         }
         if let Some(caret) = frame.caret.as_ref().filter(|_| view.caret) {
@@ -5215,6 +5232,9 @@ impl App {
     /// Put the page back where it rests, for a page just opened or returned
     /// to; its first frame shows the bar as its scroll has it.
     fn settle_page(&mut self) {
+        // A page that changed under a finger does not answer the action the
+        // finger took hold of on the page before.
+        self.drag = Drag::Idle;
         self.height = 0.0;
         self.fling = None;
         self.glide = None;
@@ -5747,7 +5767,7 @@ impl App {
             // The switch moves at once; the runtime then tells how the WLAN
             // came up, or went off.
             Action::Toggle(Switch::Wlan) => {
-                let w = self.state.wlan.as_mut().expect("the WLAN switch shows on a phone whose WLAN is brought up");
+                let Some(w) = self.state.wlan.as_mut() else { return Vec::new() };
                 let on = matches!(w.power, Power::Off | Power::Failed(_));
                 *w = Wlan { power: if on { Power::Starting } else { Power::Off }, ..Wlan::default() };
                 self.refresh();
@@ -5784,7 +5804,7 @@ impl App {
                 if self.state.mount_failure.take().is_some() {
                     self.refresh();
                 }
-                let row = &self.state.mounts.as_ref().expect("a partition toggled is one the page lists")[i];
+                let Some(row) = self.state.mounts.as_ref().ok().and_then(|rows| rows.get(i)) else { return Vec::new() };
                 let base = row.base.clone();
                 return vec![if row.mounted { Effect::Unmount(base) } else { Effect::Mount(base) }];
             }
@@ -5826,8 +5846,10 @@ impl App {
             },
             Action::FlashPartition(k) => {
                 if let Install::Choosing(choice) = &mut self.state.install {
-                    choice.partition = k;
-                    self.refresh();
+                    if k < choice.partitions.len() {
+                        choice.partition = k;
+                        self.refresh();
+                    }
                 }
             }
             Action::FlashSlots(pick) => {
@@ -5906,11 +5928,12 @@ impl App {
                 return vec![Effect::Paste { op: clip.op, path: clip.path, into, clash: Some(choice) }];
             }
             Action::StopJob => {
-                let job = self.state.job.as_mut().expect("only work under way is stopped");
-                if job.outcome.is_none() && !job.stopping {
-                    job.stopping = true;
-                    self.refresh();
-                    return vec![Effect::StopJob];
+                if let Some(job) = self.state.job.as_mut() {
+                    if job.outcome.is_none() && !job.stopping {
+                        job.stopping = true;
+                        self.refresh();
+                        return vec![Effect::StopJob];
+                    }
                 }
             }
             #[cfg(feature = "roots")]
@@ -5992,23 +6015,31 @@ impl App {
                 self.refresh();
             }
             Action::StopRelabel => {
-                let job = self.state.relabel.as_mut().expect("only work under way is stopped");
-                if job.outcome.is_none() && !job.stopping {
-                    job.stopping = true;
-                    self.refresh();
-                    return vec![Effect::StopRelabel];
+                if let Some(job) = self.state.relabel.as_mut() {
+                    if job.outcome.is_none() && !job.stopping {
+                        job.stopping = true;
+                        self.refresh();
+                        return vec![Effect::StopRelabel];
+                    }
                 }
             }
             Action::OpenFilesystem(k) => {
+                let Some(rows) = self.state.filesystems.as_ref().and_then(|rows| rows.as_ref().ok()) else { return Vec::new() };
+                if k >= rows.len() {
+                    return Vec::new();
+                }
                 self.state.fs_chosen = k;
                 self.state.fs_action = FsAction::Repair;
                 self.open(Screen::Filesystem);
             }
             Action::ChooseFs(choice) => {
-                let row = self.fs_row().expect("the page of a partition shows one that was read");
+                let Some(row) = self.fs_row() else { return Vec::new() };
                 let action = match choice {
                     FsChoice::Repair => FsAction::Repair,
-                    FsChoice::Remake(k) => FsAction::Remake(row.others[k].clone()),
+                    FsChoice::Remake(k) => match row.others.get(k) {
+                        Some(filesystem) => FsAction::Remake(filesystem.clone()),
+                        None => return Vec::new(),
+                    },
                 };
                 self.state.fs_action = action;
                 self.refresh();
@@ -6036,7 +6067,7 @@ impl App {
             }
             // All a backup holds is ticked to restore at first.
             Action::OpenBackup(i) => {
-                let entry = self.state.backups[i].clone();
+                let Some(entry) = self.state.backups.get(i).cloned() else { return Vec::new() };
                 let parts = entry.held.as_ref().map_or([false; 4], |h| h.parts);
                 self.state.restore = Some((entry, parts));
                 self.state.asking_delete = false;
@@ -6048,11 +6079,12 @@ impl App {
                 self.refresh();
             }
             Action::StopBackup => {
-                let job = self.state.backup_job.as_mut().expect("only work under way is stopped");
-                if job.outcome.is_none() && !job.stopping {
-                    job.stopping = true;
-                    self.refresh();
-                    return vec![Effect::StopBackup];
+                if let Some(job) = self.state.backup_job.as_mut() {
+                    if job.outcome.is_none() && !job.stopping {
+                        job.stopping = true;
+                        self.refresh();
+                        return vec![Effect::StopBackup];
+                    }
                 }
             }
             Action::LogPart(k) => {
@@ -6108,7 +6140,7 @@ impl App {
                 self.refresh();
             }
             Action::OpenEntry(i) => {
-                let entry = self.state.files.entry(i).clone();
+                let Some(entry) = self.state.files.entry(i).cloned() else { return Vec::new() };
                 match entry.kind {
                     FileKind::Folder { .. } | FileKind::Link { folder: true, .. } => {
                         let scroll = self.top().1;
@@ -6143,9 +6175,9 @@ impl App {
             }
             Action::ChooseEntry(i) => {
                 let screen = self.screen();
-                let Screen::Choose(place) = screen else { unreachable!("only a place's folder is chosen in") };
+                let Screen::Choose(place) = screen else { return Vec::new() };
                 let folder = self.state.folder(screen);
-                let entry = folder.entry(i).clone();
+                let Some(entry) = folder.entry(i).cloned() else { return Vec::new() };
                 let path = folder.inside(&entry.name);
                 match entry.kind {
                     FileKind::Folder { .. } | FileKind::Link { folder: true, .. } => {
@@ -6154,7 +6186,7 @@ impl App {
                         return vec![Effect::ReadPlace(place, path)];
                     }
                     FileKind::File | FileKind::Link { folder: false, .. } => return self.install_file(place, path, entry.size, now),
-                    FileKind::Special => unreachable!("a place lists no special files"),
+                    FileKind::Special => return Vec::new(),
                 }
             }
             Action::OpenAncestor(depth) => {
@@ -6167,7 +6199,7 @@ impl App {
                 }
             }
             Action::JoinNetwork(i) => {
-                let w = self.state.wlan.as_ref().expect("networks show on a phone whose WLAN is brought up");
+                let Some(w) = self.state.wlan.as_ref() else { return Vec::new() };
                 // A scan may have changed the list since the page was drawn.
                 let Some(network) = w.networks.get(i).cloned() else { return Vec::new() };
                 if w.joined.as_ref().is_some_and(|j| j.ssid == network.ssid) {
@@ -6190,13 +6222,13 @@ impl App {
                 }
             }
             Action::NetworkDetails(i) => {
-                let w = self.state.wlan.as_ref().expect("networks show on a phone whose WLAN is brought up");
+                let Some(w) = self.state.wlan.as_ref() else { return Vec::new() };
                 let Some(network) = w.networks.get(i).cloned() else { return Vec::new() };
                 self.state.details = Some(network);
                 self.open(Screen::WlanNetwork);
             }
             Action::OpenJoined => {
-                let w = self.state.wlan.as_ref().expect("a network is chosen on a phone whose WLAN is brought up");
+                let Some(w) = self.state.wlan.as_ref() else { return Vec::new() };
                 let Some(j) = w.joined.clone() else { return Vec::new() };
                 // As found, where it still is; as it was chosen otherwise.
                 let found = w.networks.iter().find(|n| n.ssid == j.ssid).cloned();
@@ -6259,8 +6291,12 @@ impl App {
             // Asking takes a network, which the WLAN page joins.
             Action::CheckUpdate => {
                 if !self.state.online() {
-                    self.open(Screen::Wlan);
-                    return self.arrive_at(Screen::Wlan);
+                    if self.state.wlan.is_some() {
+                        self.open(Screen::Wlan);
+                        return self.arrive_at(Screen::Wlan);
+                    }
+                    self.say(l.pick(["此手机没有 WLAN", "此手機沒有 WLAN", "This phone has no WLAN"]), now);
+                    return Vec::new();
                 }
                 if self.state.check != Check::Asking {
                     self.state.check = Check::Asking;
@@ -6271,14 +6307,18 @@ impl App {
             // The package goes to internal storage, which the decrypt page
             // opens, over a network the WLAN page joins.
             Action::Download => {
-                let release = self.state.newest().expect("the download is offered for the newest system").clone();
+                let Some(release) = self.state.newest().cloned() else { return Vec::new() };
                 if !self.state.data.storage_open() {
                     self.open(Screen::Decrypt);
                     return self.arrive_at(Screen::Decrypt);
                 }
                 if !self.state.online() {
-                    self.open(Screen::Wlan);
-                    return self.arrive_at(Screen::Wlan);
+                    if self.state.wlan.is_some() {
+                        self.open(Screen::Wlan);
+                        return self.arrive_at(Screen::Wlan);
+                    }
+                    self.say(l.pick(["此手机没有 WLAN", "此手機沒有 WLAN", "This phone has no WLAN"]), now);
+                    return Vec::new();
                 }
                 if !self.state.downloading() {
                     self.state.download = Some(DownloadJob { progress: None, rate: 0, outcome: None, stopping: false });
@@ -6287,16 +6327,19 @@ impl App {
                 }
             }
             Action::StopDownload => {
-                let job = self.state.download.as_mut().expect("only a download under way is stopped");
-                if job.outcome.is_none() && !job.stopping {
-                    job.stopping = true;
-                    self.refresh();
-                    return vec![Effect::StopDownload];
+                if let Some(job) = self.state.download.as_mut() {
+                    if job.outcome.is_none() && !job.stopping {
+                        job.stopping = true;
+                        self.refresh();
+                        return vec![Effect::StopDownload];
+                    }
                 }
             }
             Action::InstallRecovery => {
-                self.state.newest().expect("only the newest recovery is installed");
-                let Have::Whole(_) = self.state.have else { unreachable!("only a whole image is offered to install") };
+                if self.state.newest().is_none() {
+                    return Vec::new();
+                }
+                let Have::Whole(_) = self.state.have else { return Vec::new() };
                 self.install_started();
                 return vec![Effect::InstallRecovery];
             }
@@ -6304,8 +6347,12 @@ impl App {
             Action::CheckRom => {
                 let Some(rom) = &self.state.rom else { return Vec::new() };
                 if !self.state.online() {
-                    self.open(Screen::Wlan);
-                    return self.arrive_at(Screen::Wlan);
+                    if self.state.wlan.is_some() {
+                        self.open(Screen::Wlan);
+                        return self.arrive_at(Screen::Wlan);
+                    }
+                    self.say(l.pick(["此手机没有 WLAN", "此手機沒有 WLAN", "This phone has no WLAN"]), now);
+                    return Vec::new();
                 }
                 if rom.check != RomCheck::Asking {
                     if let Some(rom) = &mut self.state.rom {
@@ -6324,10 +6371,14 @@ impl App {
                     return self.arrive_at(Screen::Decrypt);
                 }
                 if !self.state.online() {
-                    self.open(Screen::Wlan);
-                    return self.arrive_at(Screen::Wlan);
+                    if self.state.wlan.is_some() {
+                        self.open(Screen::Wlan);
+                        return self.arrive_at(Screen::Wlan);
+                    }
+                    self.say(l.pick(["此手机没有 WLAN", "此手機沒有 WLAN", "This phone has no WLAN"]), now);
+                    return Vec::new();
                 }
-                let rom = self.state.rom.as_mut().expect("a download is offered by the ROM's page");
+                let Some(rom) = self.state.rom.as_mut() else { return Vec::new() };
                 if !rom.downloading() {
                     rom.download = Some(DownloadJob { progress: None, rate: 0, outcome: None, stopping: false });
                     self.refresh();
@@ -6336,15 +6387,16 @@ impl App {
             }
             Action::StopRomDownload => {
                 let Some(rom) = &mut self.state.rom else { return Vec::new() };
-                let job = rom.download.as_mut().expect("only a download under way is stopped");
-                if job.outcome.is_none() && !job.stopping {
-                    job.stopping = true;
-                    self.refresh();
-                    return vec![Effect::StopRomDownload];
+                if let Some(job) = rom.download.as_mut() {
+                    if job.outcome.is_none() && !job.stopping {
+                        job.stopping = true;
+                        self.refresh();
+                        return vec![Effect::StopRomDownload];
+                    }
                 }
             }
             Action::InstallRom => {
-                let release = self.state.rom_newest().expect("only the newest system is installed").clone();
+                let Some(release) = self.state.rom_newest().cloned() else { return Vec::new() };
                 let path = rom_downloaded(&release);
                 return self.install_named(Source::File(Place::Storage), Some(release.image.name), release.image.size, Effect::InstallPath(path), now);
             }
@@ -6353,23 +6405,24 @@ impl App {
         Vec::new()
     }
 
-    /// The text the keyboard types into on this page.
-    fn typing(&mut self) -> &mut String {
+    /// The text the keyboard types into on this page; none when the page
+    /// changed under a key held from the one before.
+    fn typing(&mut self) -> Option<&mut String> {
         match self.screen() {
-            Screen::Search => &mut self.state.search,
-            Screen::Decrypt => &mut self.state.code,
-            Screen::Rename => &mut self.state.new_name,
+            Screen::Search => Some(&mut self.state.search),
+            Screen::Decrypt => Some(&mut self.state.code),
+            Screen::Rename => Some(&mut self.state.new_name),
             #[cfg(feature = "roots")]
-            Screen::ApatchKey => &mut self.state.apatch.as_mut().expect("the key page types a key").entered,
-            Screen::WlanPassword => &mut self.state.password,
+            Screen::ApatchKey => self.state.apatch.as_mut().map(|root| &mut root.entered),
+            Screen::WlanPassword => Some(&mut self.state.password),
             Screen::WlanAdd => {
-                let a = self.state.adding.as_mut().expect("the page adds a network");
-                match a.field {
+                let a = self.state.adding.as_mut()?;
+                Some(match a.field {
                     Field::Name => &mut a.name,
                     Field::Password => &mut self.state.password,
-                }
+                })
             }
-            s => panic!("{s:?} has no text field"),
+            _ => None,
         }
     }
 
@@ -6526,18 +6579,21 @@ impl App {
         match cap {
             Cap::Char(ch) => {
                 let shifted = self.state.layer == Layer::Shifted;
-                self.typing().push(if shifted { ch.to_ascii_uppercase() } else { ch });
+                let Some(text) = self.typing() else { return Vec::new() };
+                text.push(if shifted { ch.to_ascii_uppercase() } else { ch });
                 self.edits += 1;
                 if shifted {
                     self.state.layer = Layer::Letters;
                 }
             }
             Cap::Space => {
-                self.typing().push(' ');
+                let Some(text) = self.typing() else { return Vec::new() };
+                text.push(' ');
                 self.edits += 1;
             }
             Cap::Backspace => {
-                self.typing().pop();
+                let Some(text) = self.typing() else { return Vec::new() };
+                text.pop();
                 self.edits += 1;
             }
             Cap::Shift => {
@@ -7158,7 +7214,7 @@ impl App {
                 }
             }
             Confirm::Restore => {
-                let (entry, parts) = self.state.restore.as_ref().expect("the restore page shows a backup");
+                let Some((entry, parts)) = self.state.restore.as_ref() else { return fx };
                 let restore = Effect::Restore { place: entry.place, name: entry.name.clone(), parts: *parts };
                 if !parts.contains(&true) {
                     self.say(l.pick(["请选择要恢复的内容", "請選擇要還原的內容", "Choose what to restore"]), now);
@@ -7169,7 +7225,7 @@ impl App {
                 }
             }
             Confirm::DeleteBackup => {
-                let (entry, _) = self.state.restore.as_ref().expect("the restore page shows a backup");
+                let Some((entry, _)) = self.state.restore.as_ref() else { return fx };
                 fx.push(Effect::DeleteBackup { place: entry.place, name: entry.name.clone() });
             }
             Confirm::Slot => match (&self.state.boot_slots, self.state.next_slot) {
@@ -7193,7 +7249,7 @@ impl App {
             // take is turned down before anything is written.
             #[cfg(feature = "roots")]
             Confirm::ApatchPatch => {
-                let root = self.state.apatch.clone().expect("the root page shows it");
+                let root = self.state.apatch.get_or_insert_with(ApatchState::default).clone();
                 let key = match root.key_mode {
                     KeyMode::Generate => skyward_root::folkpatch::Key::Generate,
                     KeyMode::Enter => match skyward_root::folkpatch::SuperKey::validate(&root.entered) {
@@ -7249,7 +7305,7 @@ impl App {
             // downloads its manager or reads the installed one on its own.
             #[cfg(feature = "roots")]
             Confirm::KsuPatch => {
-                let ksu = self.state.ksu.clone().expect("the KernelSU page shows it");
+                let ksu = self.state.ksu.get_or_insert_with(KsuState::default).clone();
                 let installed =
                     if ksu.source == KsuSource::Installed { ksu.installed_manager().cloned() } else { None };
                 self.open(Screen::KsuJob);
@@ -7285,7 +7341,7 @@ impl App {
             // The data partition is reached through its own key whether or
             // not it is open, but not while it is being opened or erased.
             Confirm::Filesystem => {
-                let row = self.fs_row().expect("the page of a partition shows one that was read");
+                let Some(row) = self.fs_row() else { return fx };
                 let data = row.name == DATA_PARTITION;
                 match (&self.state.fs_action, &self.state.data) {
                     (_, Data::Opening) if data => self.say(l.pick(DATA_OPENING), now),
@@ -7295,7 +7351,7 @@ impl App {
             }
             Confirm::Flash => {
                 if let Install::Choosing(choice) = &self.state.install {
-                    let partition = choice.partitions[choice.partition];
+                    let Some(partition) = choice.partitions.get(choice.partition).copied() else { return fx };
                     fx.push(Effect::Flash { partition, pick: choice.pick });
                     self.state.install = Install::Flashing { partition, stage: None };
                     self.refresh();
@@ -12559,5 +12615,23 @@ mod tests {
         app.apatch_started();
         app.apatch_finished(skyward_root::folkpatch::Outcome::Refused(skyward_root::folkpatch::Refusal::AlreadyPatched(Slot::A)), 0);
         assert!(matches!(app.state.apatch.as_ref().unwrap().job, ApatchJob::Finished(_)));
+    }
+
+    #[test]
+    fn a_stop_that_arrives_after_the_work_ended_does_nothing() {
+        let mut app = App::new(Screen::Files, W, H, PPD);
+        app.file_job_started(FileTask::Delete { path: "/data/example".into() });
+        app.file_job_ended(JobEnd::Done, 1000);
+        assert!(app.state.job.is_none(), "the work ended and its page went");
+        assert!(app.act(Action::StopJob, 1100).is_empty(), "a stop held from the page before does nothing");
+    }
+
+    #[test]
+    fn asking_for_an_update_on_a_phone_without_wlan_says_so() {
+        let mut app = App::new(Screen::Update, W, H, PPD);
+        app.state.update_server = true;
+        app.state.wlan = None;
+        assert!(app.act(Action::CheckUpdate, 1000).is_empty());
+        assert_eq!(app.screen(), Screen::Update, "no WLAN page is opened");
     }
 }
