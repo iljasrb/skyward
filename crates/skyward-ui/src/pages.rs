@@ -2218,6 +2218,16 @@ fn fs_held(l: Lang, row: &FsRow, data: &Data) -> String {
     }
 }
 
+/// What the page of one partition shows when the list it came from was not
+/// read, or no longer holds it.
+fn filesystem_missing(cx: &Ctx) -> Frame {
+    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
+    let mut c = long_page(cx);
+    let top = t.m.content_top;
+    let y = widgets::footnote(&mut c, t, f, top, l.pick(["无法读取分区", "無法讀取分割區", "Couldn't read the partitions"]));
+    Frame::new(t, fit(c, t, y), Vec::new(), l.pick(FILESYSTEMS), top)
+}
+
 /// One partition: what it holds, what can be done to it, and a swipe to do
 /// what is chosen.
 pub fn filesystem(cx: &Ctx) -> Frame {
@@ -2225,8 +2235,8 @@ pub fn filesystem(cx: &Ctx) -> Frame {
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
-    let Some(Ok(rows)) = &s.filesystems else { unreachable!("a partition's page opens from the list read") };
-    let row = &rows[s.fs_chosen];
+    let Some(Ok(rows)) = &s.filesystems else { return filesystem_missing(cx) };
+    let Some(row) = rows.get(s.fs_chosen) else { return filesystem_missing(cx) };
     let data = row.name == DATA_PARTITION;
     let facts = [
         (l.pick(["挂载点", "掛載點", "Mount point"]), row.mount_point.clone()),
