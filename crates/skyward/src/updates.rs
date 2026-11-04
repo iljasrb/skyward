@@ -9,6 +9,7 @@ use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
 use skyward_net::release::{self, Release, Unanswered};
+use skyward_net::rom;
 use skyward_sys::worker;
 use skyward_vab::Slot;
 use std::path::PathBuf;
@@ -40,6 +41,12 @@ pub enum Task {
     /// Write the image at `path` over the recovery partitions: the one the
     /// phone runs `active` from, and the other when it holds this recovery.
     Install { path: PathBuf, active: Slot },
+    /// Ask the phone's ROM for its newest system, and say whether it is newer
+    /// than the installed one.
+    RomCheck { feed: String, installed: String, probe: String },
+    /// Download the ROM's package to `path`, checked against the SHA-256 the
+    /// feed publishes.
+    RomDownload { release: rom::Release, path: PathBuf },
 }
 
 pub enum Event {
@@ -52,6 +59,13 @@ pub enum Event {
     Writing(u64, u64),
     /// The slots written, or why they could not be.
     Installed(Result<Vec<Slot>, String>),
+    /// What the ROM's feed says of its newest system: none while the system
+    /// installed is as new.
+    RomChecked(Result<Option<rom::Release>, Unanswered>),
+    /// How far the ROM's package download has come, and how fast, in bytes a
+    /// second.
+    RomProgress(Progress, u64),
+    RomEnded(End),
 }
 
 pub enum End {
@@ -104,7 +118,11 @@ impl Worker {
                     say(Event::Checked(answer));
                 }
                 Task::Download { release, sha256, path } => {
-                    let end = fetch(&servers, release, sha256, &path, &stopping, &using, &say);
+                    let mut remote = Remote::of_release(&release);
+                    if sha256.is_some() {
+                        remote.sha256 = sha256;
+                    }
+                    let end = fetch(&servers, remote, &path, &stopping, &using, &say);
                     say(Event::Ended(end));
                 }
                 Task::Install { path, active } => {
@@ -120,6 +138,29 @@ impl Worker {
                     });
                     let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
                     say(Event::Installed(written.map_err(|e| format!("{e:#}"))));
+                }
+                Task::RomCheck { feed, installed, probe } => {
+                    let a = http::agent(servers.clone());
+                    *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
+                    let answer = rom::newest(&a, &feed)
+                        .map_err(|e| unanswered(&e, &feed, &probe, &servers))
+                        .map(|found| found.is_newer_than(&installed).then_some(found));
+                    match &answer {
+                        Ok(Some(found)) => {
+                            let _ = skyward_sys::kmsg(&format!("a newer system is published: {}", found.build));
+                        }
+                        Ok(None) => {
+                            let _ = skyward_sys::kmsg(&format!("no system is published after {installed}"));
+                        }
+                        Err(why) => {
+                            let _ = skyward_sys::kmsg(&format!("the system's feed {feed} was not read: {why:?}"));
+                        }
+                    }
+                    say(Event::RomChecked(answer));
+                }
+                Task::RomDownload { release, path } => {
+                    let end = fetch(&servers, Remote::of_rom(&release), &path, &stopping, &using, &say);
+                    say(Event::RomEnded(end));
                 }
             }
         })?;
@@ -149,29 +190,65 @@ fn unanswered(e: &anyhow::Error, repo: &str, probe: &str, servers: &Servers) -> 
     }
 }
 
-/// Read the SHA-256 a release publishes for its image: the one GitHub
-/// reports, or else the line for it in the file of sums.
-fn published_sha(agent: &ureq::Agent, release: &Release, known: Option<String>) -> Result<String> {
-    if let Some(known) = known {
-        return Ok(known);
-    }
-    if let Some(sums) = release.sha256(None) {
-        return Ok(sums);
-    }
-    let asset = release.sums.as_ref().context("the release publishes no SHA-256 for its image")?;
-    let mut response = agent.get(&asset.url).call().with_context(|| format!("ask {}", asset.url))?;
-    let status = response.status();
-    anyhow::ensure!(status.is_success(), "{} answered {status}", asset.url);
-    let body = response.body_mut().read_to_string().with_context(|| format!("read {}", asset.url))?;
-    release.sha256(Some(&body)).with_context(|| format!("{} says nothing of {}", asset.name, release.image.name))
+/// A package to download, with where its SHA-256 is if it is not already
+/// known: a recovery's GitHub release, or the ROM's system update.
+struct Remote {
+    name: String,
+    url: String,
+    size: u64,
+    /// The SHA-256 already known, from the release's digest or the feed.
+    sha256: Option<String>,
+    /// Where the file of sums that names the package is, where the digest is
+    /// not known.
+    sums: Option<String>,
 }
 
-/// Download the image, trying again while the connection fails and something
-/// more comes each time.
+impl Remote {
+    fn of_release(release: &Release) -> Remote {
+        Remote {
+            name: release.image.name.clone(),
+            url: release.image.url.clone(),
+            size: release.image.size,
+            sha256: release.sha256(None),
+            sums: release.sums.as_ref().map(|sums| sums.url.clone()),
+        }
+    }
+
+    fn of_rom(release: &rom::Release) -> Remote {
+        Remote {
+            name: release.image.name.clone(),
+            url: release.image.url.clone(),
+            size: release.image.size,
+            sha256: release.image.digest.clone(),
+            // The OTA feed names only its package's MD5; the mirror keeps the
+            // SHA-256 sums beside the package.
+            sums: match release.image.digest {
+                Some(_) => None,
+                None => release.image.url.rsplit_once('/').map(|(dir, _)| format!("{dir}/SHA256SUMS")),
+            },
+        }
+    }
+}
+
+/// Read the SHA-256 a package is to be checked against: the one already
+/// known, or else the line for it in the file of sums.
+fn published_sha(agent: &ureq::Agent, remote: &Remote) -> Result<String> {
+    if let Some(known) = &remote.sha256 {
+        return Ok(known.clone());
+    }
+    let url = remote.sums.as_ref().context("the update publishes no SHA-256 for its package")?;
+    let mut response = agent.get(url).call().with_context(|| format!("ask {url}"))?;
+    let status = response.status();
+    anyhow::ensure!(status.is_success(), "{url} answered {status}");
+    let body = response.body_mut().read_to_string().with_context(|| format!("read {url}"))?;
+    release::sha256_in(&body, &remote.name).with_context(|| format!("{url} says nothing of {}", remote.name))
+}
+
+/// Download the package, trying again while the connection fails and
+/// something more comes each time.
 fn fetch(
     servers: &Servers,
-    release: Release,
-    known: Option<String>,
+    remote: Remote,
     path: &std::path::Path,
     stop: &AtomicBool,
     using: &Mutex<Option<ureq::Agent>>,
@@ -186,7 +263,7 @@ fn fetch(
         }
         let a = http::agent(servers.clone());
         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-        let sha256 = match published_sha(&a, &release, known.clone()) {
+        let sha256 = match published_sha(&a, &remote) {
             Ok(sha) => sha,
             Err(e) => return End::Failed(Failure::Other(format!("{e:#}"))),
         };
@@ -211,10 +288,10 @@ fn fetch(
                 tell(Event::Progress(p, rate));
             }
         };
-        let result = download::fetch(&a, &release.image.url, path, &sha256, stop, &mut progress);
+        let result = download::fetch(&a, &remote.url, path, &sha256, stop, &mut progress);
         // How far it came shows in the end, whatever stopped it.
         let done = samples.last().map_or(0, |&(_, done)| done);
-        tell(Event::Progress(Progress::Downloading { done, total: release.image.size }, 0));
+        tell(Event::Progress(Progress::Downloading { done, total: remote.size }, 0));
         let e = match result {
             Ok(()) => return End::Downloaded,
             Err(e) => e,
@@ -231,7 +308,7 @@ fn fetch(
         if e.is::<Refused>() {
             return End::Failed(Failure::Other(format!("{e:#}")));
         }
-        let _ = skyward_sys::kmsg(&format!("downloading {} from {}: {e:#}", release.image.name, release.image.url));
+        let _ = skyward_sys::kmsg(&format!("downloading {} from {}: {e:#}", remote.name, remote.url));
         failed = if gained { 1 } else { failed + 1 };
         if failed >= TRIES {
             return End::Failed(Failure::Other(format!("{e:#}")));

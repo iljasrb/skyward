@@ -12,7 +12,7 @@ Rust — for one phone, the 2023 Motorola ThinkPhone (`bronco`). Verified on A16
 | backup, restore | the phone's partitions and `/data`, SHA-256 checked end to end |
 | installs | zips with an install script and update packages, from storage or `adb sideload` |
 | fastbootd | getvar, flash, fetch |
-| updates | the update page reads this fork's GitHub releases, checks the SHA-256 and writes the running slot's recovery (and the other when it holds Skyward) |
+| updates | the update page reads this fork's GitHub releases and Infinity X's own feed; a system update installs to the other slot |
 | haptics, MTP, adb | a click on the motor's own driver, `mtp,adb`, adb |
 
 ## Build

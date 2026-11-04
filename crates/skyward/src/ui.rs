@@ -33,8 +33,8 @@ use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind,
     FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
-    INSTALL_UNFINISHED, USB_DRIVE,
+    RenameRefused, RomState, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
+    INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
 };
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang};
@@ -1063,10 +1063,19 @@ fn downloaded(release: &Release) -> PathBuf {
 /// What internal storage holds of `release`'s image; nothing while it cannot
 /// be read.
 fn have(app: &App, release: &Release) -> Have {
+    have_at(app, &downloaded(release))
+}
+
+/// What internal storage holds of the ROM's package.
+fn rom_have(app: &App, release: &skyward_net::rom::Release) -> Have {
+    have_at(app, Path::new(&rom_downloaded(release)))
+}
+
+/// What internal storage holds at `path`; nothing while it cannot be read.
+fn have_at(app: &App, path: &Path) -> Have {
     if !app.state.data.storage_open() {
         return Have::Nothing;
     }
-    let path = downloaded(release);
     let size = |p: &Path| match fs::metadata(p) {
         Ok(m) => Some(m.len()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -1075,7 +1084,7 @@ fn have(app: &App, release: &Release) -> Have {
             None
         }
     };
-    match (size(&path), size(&download::partial(&path))) {
+    match (size(path), size(&download::partial(path))) {
         (Some(whole), _) => Have::Whole(whole),
         (None, Some(part)) => Have::Part(part),
         (None, None) => Have::Nothing,
@@ -1403,10 +1412,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // When adbd was asked for the network's port, until the kernel is read as showing it holds it.
     let mut adb_until: Option<Instant> = None;
     app.state.update_server = cfg.update.is_some();
+    app.state.rom = cfg.rom.as_ref().map(|rom| RomState::new(rom.name.clone()));
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
     let mut downloader: Option<updates::Worker> = None;
     let mut writer: Option<updates::Worker> = None;
+    let mut rom_checker: Option<updates::Worker> = None;
+    let mut rom_downloader: Option<updates::Worker> = None;
     // The USB drive plugged in, looked for each second.
     let mut plugged: Option<Plugged> = None;
     let mut seen: Option<String> = None;
@@ -1968,7 +1980,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.download_ended(end, have(&app, &release), now);
                         fetched = true;
                     }
-                    updates::Event::Checked(_) | updates::Event::Writing(..) | updates::Event::Installed(_) => {
+                    updates::Event::Checked(_)
+                    | updates::Event::Writing(..)
+                    | updates::Event::Installed(_)
+                    | updates::Event::RomChecked(_)
+                    | updates::Event::RomProgress(..)
+                    | updates::Event::RomEnded(_) => {
                         unreachable!("a download asks nothing and writes nothing")
                     }
                 }
@@ -1976,6 +1993,48 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if fetched {
             downloader = None;
+        }
+        let mut rom_checked = false;
+        if let Some(c) = &rom_checker {
+            for ev in c.worker.events() {
+                let updates::Event::RomChecked(answer) = ev else { unreachable!("asking the ROM downloads nothing") };
+                let have = match &answer {
+                    Ok(Some(release)) => rom_have(&app, release),
+                    _ => Have::Nothing,
+                };
+                app.rom_checked(answer, have);
+                rom_checked = true;
+            }
+        }
+        if rom_checked {
+            rom_checker = None;
+        }
+        let mut rom_fetched = false;
+        if let Some(d) = &rom_downloader {
+            for ev in d.worker.events() {
+                match ev {
+                    updates::Event::RomProgress(progress, rate) => app.rom_download_progress(progress, rate),
+                    updates::Event::RomEnded(end) => {
+                        let release = app.state.rom_newest().context("a download is of the newest system")?.clone();
+                        let end = match end {
+                            updates::End::Downloaded => DownloadEnd::Downloaded,
+                            updates::End::Stopped => DownloadEnd::Stopped,
+                            updates::End::Failed(why) => DownloadEnd::Failed(why),
+                        };
+                        skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.image.name))?;
+                        app.rom_download_ended(end, rom_have(&app, &release), now);
+                        rom_fetched = true;
+                    }
+                    updates::Event::Checked(_)
+                    | updates::Event::Progress(..)
+                    | updates::Event::Ended(_)
+                    | updates::Event::Writing(..)
+                    | updates::Event::Installed(_) => unreachable!("a ROM download asks nothing and writes nothing"),
+                }
+            }
+        }
+        if rom_fetched {
+            rom_downloader = None;
         }
         let mut wrote = false;
         if let Some(w) = &writer {
@@ -1986,7 +2045,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.install_ended(outcome.map(drop), now);
                         wrote = true;
                     }
-                    updates::Event::Checked(_) | updates::Event::Progress(..) | updates::Event::Ended(_) => {
+                    updates::Event::Checked(_)
+                    | updates::Event::Progress(..)
+                    | updates::Event::Ended(_)
+                    | updates::Event::RomChecked(_)
+                    | updates::Event::RomProgress(..)
+                    | updates::Event::RomEnded(_) => {
                         unreachable!("writing asks nothing and downloads nothing")
                     }
                 }
@@ -2688,6 +2752,27 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         let task = updates::Task::Install { path: downloaded(&release), active };
                         writer = Some(updates::Worker::start(task, servers.clone())?);
                     }
+                    // The ROM's own feed, asked for the newest system it
+                    // publishes, and its package downloaded beside the
+                    // recovery's.
+                    Effect::CheckRom => {
+                        ensure!(rom_checker.is_none(), "the ROM's feed is being asked already");
+                        let rom = cfg.rom.as_ref().context("this phone's ROM feed is not known")?;
+                        let probe = cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
+                        let task = updates::Task::RomCheck {
+                            feed: rom.feed.clone(),
+                            installed: info.os_version.clone().unwrap_or_default(),
+                            probe,
+                        };
+                        rom_checker = Some(updates::Worker::start(task, servers.clone())?);
+                    }
+                    Effect::DownloadRom(release) => {
+                        ensure!(rom_downloader.is_none(), "the ROM's package is being downloaded already");
+                        let path = PathBuf::from(rom_downloaded(&release));
+                        let task = updates::Task::RomDownload { release, path };
+                        rom_downloader = Some(updates::Worker::start(task, servers.clone())?);
+                    }
+                    Effect::StopRomDownload => rom_downloader.as_ref().context("there is no ROM download to stop")?.stop(),
                     // Logs that cannot be saved are the page's to report;
                     // the recovery carries on.
                     Effect::ExportLogs { recovery, kernel, storage } => {

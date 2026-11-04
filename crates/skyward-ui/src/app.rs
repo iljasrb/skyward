@@ -21,6 +21,7 @@ use skyward_info::DeviceInfo;
 use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
 use skyward_net::release::{Release, Unanswered};
+use skyward_net::rom;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Joined, Network, Power, Power as WlanPower, Stage as Joining, Traffic, Wlan};
 use skyward_vab::{BootSlots, Hold, Slot, SnapshotState, Standing};
@@ -170,7 +171,7 @@ pub enum Check {
     Answered(Option<Release>),
 }
 
-/// What internal storage holds of the newest system's full package.
+/// What internal storage holds of a downloaded full package.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Have {
     #[default]
@@ -181,8 +182,8 @@ pub enum Have {
     Whole(u64),
 }
 
-/// Downloading the newest recovery's image, as the update page shows it:
-/// how far it has come, how fast, and how it ended.
+/// Downloading a full package, as the update page shows it: how far it has
+/// come, how fast, and how it ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadJob {
     /// None until the download has begun.
@@ -199,6 +200,56 @@ pub enum DownloadEnd {
     Downloaded,
     Stopped,
     Failed(Failure),
+}
+
+/// Asking the phone's ROM for its newest system, as the update page shows
+/// it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RomCheck {
+    #[default]
+    Idle,
+    Asking,
+    Failed(Unanswered),
+    /// The newest system the ROM publishes; none when the system installed
+    /// is as new.
+    Answered(Option<rom::Release>),
+}
+
+/// The phone's ROM update: the feed's answer, what internal storage holds of
+/// its package, and the download under way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RomState {
+    /// What the ROM calls itself, such as `Infinity X`.
+    pub name: String,
+    pub check: RomCheck,
+    pub have: Have,
+    pub download: Option<DownloadJob>,
+}
+
+impl RomState {
+    pub fn new(name: String) -> RomState {
+        RomState { name, check: RomCheck::Idle, have: Have::Nothing, download: None }
+    }
+
+    /// The newest system the ROM publishes.
+    pub fn newest(&self) -> Option<&rom::Release> {
+        match &self.check {
+            RomCheck::Answered(Some(release)) => Some(release),
+            _ => None,
+        }
+    }
+
+    /// Whether its package is being downloaded.
+    pub fn downloading(&self) -> bool {
+        self.download.as_ref().is_some_and(|d| d.outcome.is_none())
+    }
+}
+
+/// Where the ROM's package is downloaded to, from the top of internal
+/// storage: the folder the stock updater keeps packages in, under the name
+/// the feed gives it.
+pub fn rom_downloaded(release: &rom::Release) -> String {
+    format!("/sdcard/{DOWNLOADS}/{}", release.image.name)
 }
 
 /// Where the full packages downloaded go, from the top of internal
@@ -1485,6 +1536,13 @@ pub enum Action {
     StopDownload,
     /// Write the downloaded recovery image over this recovery.
     InstallRecovery,
+    /// Ask the phone's ROM for its newest system.
+    CheckRom,
+    /// Download that system's package, or carry on downloading it.
+    DownloadRom,
+    StopRomDownload,
+    /// Install the downloaded ROM package, which installs to the other slot.
+    InstallRom,
     /// Choose what APatch page patches, or where its key comes
     /// from.
     #[cfg(feature = "roots")]
@@ -1958,6 +2016,8 @@ pub struct State {
     pub update_server: bool,
     pub check: Check,
     pub have: Have,
+    /// The phone's ROM update, on a phone whose ROM publishes a feed.
+    pub rom: Option<RomState>,
     /// Downloading the newest recovery, or how that last ended.
     pub download: Option<DownloadJob>,
     /// Writing the downloaded image over this recovery, as the share of it
@@ -2052,6 +2112,7 @@ impl Default for State {
             update_server: false,
             check: Check::Idle,
             have: Have::Nothing,
+            rom: None,
             download: None,
             installing: None,
             installed: None,
@@ -2114,6 +2175,16 @@ impl State {
     /// Whether the full package is being downloaded.
     pub fn downloading(&self) -> bool {
         self.download.as_ref().is_some_and(|d| d.outcome.is_none())
+    }
+
+    /// The newest system the phone's ROM publishes.
+    pub fn rom_newest(&self) -> Option<&rom::Release> {
+        self.rom.as_ref()?.newest()
+    }
+
+    /// Whether the ROM's package is being downloaded.
+    pub fn rom_downloading(&self) -> bool {
+        self.rom.as_ref().is_some_and(RomState::downloading)
     }
 }
 
@@ -2299,6 +2370,13 @@ pub enum Effect {
     /// goes with [`App::download_progress`] and [`App::download_ended`].
     Download(Release),
     StopDownload,
+    /// Ask the phone's ROM for its newest system, telling what it answered
+    /// with [`App::rom_checked`].
+    CheckRom,
+    /// Download the ROM's package, telling how it goes with
+    /// [`App::rom_download_progress`] and [`App::rom_download_ended`].
+    DownloadRom(rom::Release),
+    StopRomDownload,
     /// Merge the update that waits in the slot the phone runs from,
     /// telling how it goes with [`App::set_update`].
     Merge,
@@ -4065,6 +4143,45 @@ impl App {
         }
     }
 
+    /// What the phone's ROM answered, and what internal storage holds of its
+    /// package.
+    pub fn rom_checked(&mut self, answer: Result<Option<rom::Release>, Unanswered>, have: Have) {
+        if let Some(rom) = &mut self.state.rom {
+            rom.check = match answer {
+                Ok(newest) => RomCheck::Answered(newest),
+                Err(why) => RomCheck::Failed(why),
+            };
+            rom.have = have;
+        }
+        if matches!(self.screen(), Screen::Advanced | Screen::Update) {
+            self.refresh();
+        }
+    }
+
+    /// How far downloading the ROM's package has come, and how fast it goes,
+    /// in bytes a second.
+    pub fn rom_download_progress(&mut self, progress: Progress, rate: u64) {
+        let Some(rom) = &mut self.state.rom else { return };
+        let job = rom.download.as_mut().expect("only a download under way moves on");
+        job.progress = Some(progress);
+        job.rate = rate;
+        if self.screen() == Screen::Update {
+            self.refresh();
+        }
+    }
+
+    /// The ROM's package download has ended, and what internal storage holds
+    /// of it.
+    pub fn rom_download_ended(&mut self, end: DownloadEnd, have: Have, now: u64) {
+        let Some(rom) = &mut self.state.rom else { return };
+        let job = rom.download.as_mut().expect("only a download under way ends");
+        job.stopping = false;
+        job.outcome = Some(end);
+        rom.have = have;
+        self.wake(now);
+        self.refresh();
+    }
+
     /// How far downloading the full package has come, and how fast it goes,
     /// in bytes a second.
     pub fn download_progress(&mut self, progress: Progress, rate: u64) {
@@ -5465,12 +5582,19 @@ impl App {
             // As the stock updater does, the page asks the update server as
             // it opens, once a network is joined and nothing has been heard.
             Screen::Update => {
-                if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && self.state.online() {
+                let online = self.state.online();
+                let mut asks = Vec::new();
+                if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && online {
                     self.state.check = Check::Asking;
-                    vec![Effect::CheckUpdate]
-                } else {
-                    Vec::new()
+                    asks.push(Effect::CheckUpdate);
                 }
+                if let Some(rom) = &mut self.state.rom {
+                    if matches!(rom.check, RomCheck::Idle | RomCheck::Failed(_)) && online {
+                        rom.check = RomCheck::Asking;
+                        asks.push(Effect::CheckRom);
+                    }
+                }
+                asks
             }
             // The system update a package left is read where packages are
             // installed.
@@ -6085,6 +6209,54 @@ impl App {
                 let Have::Whole(_) = self.state.have else { unreachable!("only a whole image is offered to install") };
                 self.install_started();
                 return vec![Effect::InstallRecovery];
+            }
+            // Asking takes a network, which the WLAN page joins.
+            Action::CheckRom => {
+                let Some(rom) = &self.state.rom else { return Vec::new() };
+                if !self.state.online() {
+                    self.open(Screen::Wlan);
+                    return self.arrive_at(Screen::Wlan);
+                }
+                if rom.check != RomCheck::Asking {
+                    if let Some(rom) = &mut self.state.rom {
+                        rom.check = RomCheck::Asking;
+                    }
+                    self.refresh();
+                    return vec![Effect::CheckRom];
+                }
+            }
+            // The package goes to internal storage, which the decrypt page
+            // opens, over a network the WLAN page joins.
+            Action::DownloadRom => {
+                let Some(release) = self.state.rom_newest().cloned() else { return Vec::new() };
+                if !self.state.data.storage_open() {
+                    self.open(Screen::Decrypt);
+                    return self.arrive_at(Screen::Decrypt);
+                }
+                if !self.state.online() {
+                    self.open(Screen::Wlan);
+                    return self.arrive_at(Screen::Wlan);
+                }
+                let rom = self.state.rom.as_mut().expect("a download is offered by the ROM's page");
+                if !rom.downloading() {
+                    rom.download = Some(DownloadJob { progress: None, rate: 0, outcome: None, stopping: false });
+                    self.refresh();
+                    return vec![Effect::DownloadRom(release)];
+                }
+            }
+            Action::StopRomDownload => {
+                let Some(rom) = &mut self.state.rom else { return Vec::new() };
+                let job = rom.download.as_mut().expect("only a download under way is stopped");
+                if job.outcome.is_none() && !job.stopping {
+                    job.stopping = true;
+                    self.refresh();
+                    return vec![Effect::StopRomDownload];
+                }
+            }
+            Action::InstallRom => {
+                let release = self.state.rom_newest().expect("only the newest system is installed").clone();
+                let path = rom_downloaded(&release);
+                return self.install_named(Source::File(Place::Storage), Some(release.image.name), release.image.size, Effect::InstallPath(path), now);
             }
             Action::Unavailable(text) => self.say(text, now),
         }
@@ -11293,6 +11465,51 @@ mod tests {
         let fx = tap_at(&mut app, &f, &i, Action::InstallRecovery, 8000);
         assert_eq!(fx, vec![Effect::InstallRecovery]);
         assert!(app.state.installing.is_some(), "the page says it is writing");
+    }
+
+    fn rom_newest() -> rom::Release {
+        rom::Release {
+            build: "Project Infinity X 4.1 · 01.11.2026".into(),
+            timestamp: 1_793_491_200,
+            image: skyward_net::release::Asset {
+                name: "Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into(),
+                url: "https://rom.flac.moe/bronco/latest/Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into(),
+                size: 1_866_720_728,
+                digest: Some("11cc3f4c3c7c73fb4d574a791cba07bc71e95ad241c6760e99417cfb27bbfa96".into()),
+            },
+        }
+    }
+
+    #[test]
+    fn the_update_page_asks_the_rom_for_its_newest_system_and_installs_its_package() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        app.state.rom = Some(RomState::new("Infinity X".into()));
+        app.state.wlan = Some(Wlan::default());
+        app.refresh();
+        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Update)).is_empty(), "nothing is asked without a network");
+        assert!(tap(&mut app, &f, &i, Action::CheckRom).is_empty());
+        assert_eq!(app.screen(), Screen::Wlan, "asking takes a network");
+        app.key(Key::Back, 0);
+        app.set_wlan(connected("Skyward"));
+        assert_eq!(tap(&mut app, &f, &i, Action::CheckRom), vec![Effect::CheckRom]);
+        assert_eq!(app.state.rom.as_ref().unwrap().check, RomCheck::Asking);
+        app.rom_checked(Ok(Some(rom_newest())), Have::Nothing);
+        app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
+        app.refresh();
+        assert!(tap(&mut app, &f, &i, Action::DownloadRom).is_empty());
+        assert_eq!(app.screen(), Screen::Decrypt, "the package goes to internal storage, which opens with the owner's files");
+        app.state.data = Data::Open;
+        app.act(Action::Skip, 0);
+        assert_eq!(app.screen(), Screen::Update);
+        assert_eq!(tap(&mut app, &f, &i, Action::DownloadRom), vec![Effect::DownloadRom(rom_newest())]);
+        app.rom_download_progress(Progress::Downloading { done: 1_000_000_000, total: 1_866_720_728 }, 12_000_000);
+        assert!(app.state.rom_downloading());
+        assert_eq!(tap(&mut app, &f, &i, Action::StopRomDownload), vec![Effect::StopRomDownload]);
+        app.rom_download_ended(DownloadEnd::Downloaded, Have::Whole(1_866_720_728), 6000);
+        let fx = tap_at(&mut app, &f, &i, Action::InstallRom, 8000);
+        assert_eq!(fx, vec![Effect::InstallPath("/sdcard/downloaded_rom/Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into())]);
+        assert_eq!(app.screen(), Screen::Installing, "the package installer takes over");
     }
 
     #[test]

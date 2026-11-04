@@ -60,7 +60,7 @@ pub const ENTRIES: &[Entry] = &[
     ),
     entry(["导出日志", "匯出記錄", "Export logs"], ADVANCED, Screen::Logs, &["daochurizhi", "dcrz", "rizhi", "rz", "logs", "dmesg"]),
     entry(
-        ["Recovery 更新", "Recovery 更新", "Recovery update"],
+        ["更新", "更新", "Update"],
         ADVANCED,
         Screen::Update,
         &["recoverygengxin", "rcgx", "gengxin", "gx", "skyward", "recovery", "update", "xiazai", "xz", "download"],
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(titles("wifi"), ["WLAN"]);
         assert_eq!(find_on("wlan", Lang::Hans, true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
         assert!(find_on("wlan", Lang::Hans, false).is_empty());
-        assert_eq!(titles("xiazai"), ["Recovery 更新"]);
+        assert_eq!(titles("xiazai"), ["更新"]);
     }
 
     #[test]

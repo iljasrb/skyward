@@ -1,8 +1,9 @@
 use crate::app::{
     Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field,
     FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
-    Rows, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED,
-    DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
+    Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS,
+    DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
+    WIPES, installs,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -194,6 +195,7 @@ const LOGS: Text = ["导出日志", "匯出記錄", "Export logs"];
 const SCREEN_TIMEOUT: Text = ["息屏时间", "螢幕自動關閉", "Screen timeout"];
 const RECOVERY_UPDATE: Text = ["Recovery 更新", "Recovery 更新", "Recovery update"];
 const SYSTEM_UPDATE: Text = ["系统更新", "系統更新", "System update"];
+const UPDATE: Text = ["更新", "更新", "Update"];
 const FILES: Text = ["文件管理", "檔案管理", "File manager"];
 const TERMINAL: Text = ["终端", "終端機", "Terminal"];
 const LANGUAGE: Text = ["语言", "語言", "Language"];
@@ -333,10 +335,10 @@ pub fn home(cx: &Ctx) -> Frame {
 /// under way, a newer recovery found, or the build this one is.
 fn update_value(cx: &Ctx) -> String {
     let (s, l) = (cx.state, cx.state.lang);
-    if s.downloading() {
+    if s.downloading() || s.rom_downloading() {
         return l.pick(["正在下载", "正在下載", "Downloading"]).to_string();
     }
-    if s.newest().is_some() {
+    if s.newest().is_some() || s.rom_newest().is_some() {
         return l.pick(["有新版本", "有新版本", "New version"]).to_string();
     }
     fmt::build_date(l, BUILD)
@@ -2160,7 +2162,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
-        Row::new(l.pick(RECOVERY_UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(&build)),
+        Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(&build)),
     ]);
     let out = hits(&tools.rows, &[
         Action::Open(Screen::Files),
@@ -2509,17 +2511,115 @@ pub fn update(cx: &Ctx) -> Frame {
         (l.pick(["当前版本", "目前版本", "Current build"]), format!("Skyward {VERSION}")),
         (l.pick(["构建时间", "建置時間", "Built"]), fmt::build_date(l, BUILD)),
     ]);
+    if let Some(rom) = &s.rom {
+        let name = &rom.name;
+        let heading = tr!(l, "系统更新 · {name}", "系統更新 · {name}", "System update · {name}");
+        y = widgets::section(&mut c, t, f, y, &heading);
+        y = rom_update(&mut c, cx, y, &mut out);
+    }
     if s.update_server {
-        let online_update = l.pick(["在线更新", "線上更新", "Online update"]);
-        y = if y == top { widgets::section_first(&mut c, t, f, y, online_update) } else { widgets::section(&mut c, t, f, y, online_update) };
+        y = widgets::section(&mut c, t, f, y, l.pick(RECOVERY_UPDATE));
         y = online(&mut c, cx, y, &mut out);
     }
-    Frame::new(t, fit(c, t, y), out, l.pick(RECOVERY_UPDATE), top)
+    Frame::new(t, fit(c, t, y), out, l.pick(UPDATE), top)
 }
 
 /// What downloading or checking for updates needs first, while the phone
 /// has joined no network that reaches the internet.
 const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
+
+/// Asking the phone's ROM for its newest system, then its package:
+/// downloading it, how far that has come, and installing it through the
+/// package installer once it is whole.
+fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let rom = s.rom.as_ref().expect("the system section shows on a phone with a feed");
+    let release = match &rom.check {
+        RomCheck::Asking => {
+            return widgets::list(c, t, f, y, &[Row::new(l.pick(["正在检查更新", "正在檢查更新", "Checking for updates"])).trail(Trail::None)]).bottom;
+        }
+        RomCheck::Answered(Some(release)) => release,
+        other => {
+            let mut row = Row::new(l.pick(["检查更新", "檢查更新", "Check for updates"]));
+            if !s.online() {
+                row = row.subtitle(l.pick(WLAN_FIRST));
+            }
+            let check = widgets::list(c, t, f, y, &[row]);
+            out.extend(hits(&check.rows, &[Action::CheckRom]));
+            return match other {
+                RomCheck::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
+                RomCheck::Answered(None) => {
+                    let none = l.pick(["系统已是最新版本。", "系統已是最新版本。", "The system is the newest one published."]);
+                    widgets::footnote(c, t, f, check.bottom, none)
+                }
+                _ => check.bottom,
+            };
+        }
+    };
+    let size = fmt::file_size(release.image.size);
+    let image = tr!(l, "系统镜像 {size}", "系統鏡像 {size}", "System image {size}");
+    let mut y = widgets::list(c, t, f, y, &[Row::new(&release.build).icon(GREEN, Icon::Layers).subtitle(&image).trail(Trail::None)]).bottom;
+    match (&rom.download, rom.have) {
+        (Some(job), _) if job.outcome.is_none() => {
+            let (heading, detail, share) = match job.progress {
+                None => (l.pick(GETTING_READY), String::new(), None),
+                Some(Progress::Checking { done, total }) => (
+                    l.pick(["正在校验已下载的部分", "正在驗證已下載的部分", "Verifying what was downloaded"]),
+                    format!("{} / {}", fmt::file_size(done), fmt::file_size(total)),
+                    Some(share(done, total)),
+                ),
+                Some(Progress::Downloading { done, total }) => (
+                    l.pick(["正在下载", "正在下載", "Downloading"]),
+                    format!("{} / {} · {}/s", fmt::file_size(done), fmt::file_size(total), fmt::file_size(job.rate)),
+                    Some(share(done, total)),
+                ),
+            };
+            y = widgets::progress_card(c, t, f, y + t.m.card_gap, heading, &detail, share);
+            let label = l.pick(if job.stopping { ["正在暂停", "正在暫停", "Pausing"] } else { ["暂停", "暫停", "Pause"] });
+            let stop = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
+            if !job.stopping {
+                out.extend(hits(&stop.rows, &[Action::StopRomDownload]));
+            }
+            stop.bottom
+        }
+        (_, Have::Whole(_)) => {
+            let row = Row::new(l.pick(["安装", "安裝", "Install"])).subtitle(l.pick([
+                "已下载到内部存储，安装到另一槽位，重启后启动新系统",
+                "已下載到內部儲存空間，安裝到另一槽位，重新啟動後啟動新系統",
+                "Downloaded to internal storage; it installs to the other slot and starts after a restart",
+            ]));
+            let install = widgets::list(c, t, f, y + t.m.card_gap, &[row]);
+            out.extend(hits(&install.rows, &[Action::InstallRom]));
+            install.bottom
+        }
+        (job, have) => {
+            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
+                Some(DownloadEnd::Failed(why)) => y = widgets::footnote(c, t, f, y, &fmt::download_failure(l, why)),
+                Some(DownloadEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已暂停下载。", "已暫停下載。", "Download paused."])),
+                _ => {}
+            }
+            let title = l.pick(if matches!(have, Have::Part(_)) { ["继续下载", "繼續下載", "Resume download"] } else { ["下载", "下載", "Download"] });
+            let had = match have {
+                Have::Part(done) => {
+                    let done = fmt::file_size(done);
+                    Some(tr!(l, "已下载 {done}", "已下載 {done}", "{done} downloaded"))
+                }
+                _ => None,
+            };
+            let sub = if !s.data.storage_open() {
+                Some(l.pick(DECRYPT_NEEDED))
+            } else if !s.online() {
+                Some(l.pick(WLAN_FIRST))
+            } else {
+                had.as_deref()
+            };
+            let row = Row::new(title);
+            let download = widgets::list(c, t, f, y + t.m.card_gap, &[sub.map_or(row, |sub| row.subtitle(sub))]);
+            out.extend(hits(&download.rows, &[Action::DownloadRom]));
+            download.bottom
+        }
+    }
+}
 
 /// Asking the fork's releases for a newer recovery, then its image:
 /// downloading it, how far that has come, writing it over this recovery once

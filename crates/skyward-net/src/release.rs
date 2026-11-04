@@ -50,14 +50,18 @@ impl Release {
         if let Some(digest) = &self.image.digest {
             return Some(digest.trim_start_matches("sha256:").to_lowercase());
         }
-        let sums = sums?;
-        sums.lines().find_map(|line| {
-            let mut parts = line.split_whitespace();
-            let (hash, name) = (parts.next()?, parts.next()?);
-            let name = name.trim_start_matches('*');
-            (name == self.image.name && hash.len() == 64).then(|| hash.to_lowercase())
-        })
+        sha256_in(sums?, &self.image.name)
     }
+}
+
+/// The SHA-256 `sums` names for `name`, as `sha256sum` writes a line of it.
+pub fn sha256_in(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let (hash, file) = (parts.next()?, parts.next()?);
+        let file = file.trim_start_matches('*');
+        (file == name && hash.len() == 64).then(|| hash.to_lowercase())
+    })
 }
 
 /// Why the releases could not be read.

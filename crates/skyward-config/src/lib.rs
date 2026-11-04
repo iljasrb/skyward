@@ -73,6 +73,10 @@ pub struct DeviceConfig {
     /// whose server the recovery knows.
     #[serde(default)]
     pub update: Option<Update>,
+    /// Where the phone's ROM publishes its newest system, on phones whose
+    /// ROM keeps such a feed.
+    #[serde(default)]
+    pub rom: Option<Rom>,
     /// The stock build the recovery is made on.
     #[serde(default)]
     pub stock: Option<Stock>,
@@ -227,6 +231,16 @@ pub struct Update {
 
 fn recovery_image() -> String {
     "skyward-bronco.img".into()
+}
+
+/// Where a phone's ROM publishes its newest full system package.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Rom {
+    /// What the update page calls the system, such as `Infinity X`.
+    pub name: String,
+    /// The manifest the publisher writes, naming the build, its package and
+    /// the package's SHA-256.
+    pub feed: String,
 }
 
 /// What a backup takes in and leaves out beyond what every Android phone
@@ -662,6 +676,10 @@ impl DeviceConfig {
                 ensure!(path.is_absolute() && plain && path.file_name().is_some(), "[[owners]] paths: {file} is not an absolute path to a file");
             }
         }
+        if let Some(rom) = &cfg.rom {
+            ensure!(!rom.name.is_empty(), "[rom] name is empty");
+            ensure!(rom.feed.starts_with("https://"), "[rom] feed: {} is not an HTTPS address", rom.feed);
+        }
         if let Some(stock) = &cfg.stock {
             let name = stock.package.rsplit('/').next().unwrap_or_default();
             ensure!(
@@ -713,7 +731,22 @@ mod tests {
         assert_eq!(cfg.modules.sources, default_module_sources());
         assert!(cfg.modules.load.is_empty());
         assert_eq!((cfg.firmware, cfg.wlan, cfg.update), (None, None, None), "a phone may have none of them");
+        assert_eq!(cfg.rom, None, "nor a ROM feed");
         assert_eq!(cfg.logd, None, "a recovery's own logd usually has all it needs");
+    }
+
+    #[test]
+    fn a_phone_can_name_the_feed_its_rom_publishes() {
+        let cfg = DeviceConfig::parse(
+            "[device]\ncodename = \"bronco\"\n[rom]\nname = \"Infinity X\"\nfeed = \"https://rom.flac.moe/bronco/latest/latest.json\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.rom,
+            Some(Rom { name: "Infinity X".into(), feed: "https://rom.flac.moe/bronco/latest/latest.json".into() })
+        );
+        assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[rom]\nname = \"\"\nfeed = \"https://example.invalid\"\n").is_err());
+        assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[rom]\nname = \"X\"\nfeed = \"http://example.invalid\"\n").is_err());
     }
     #[test]
     fn a_phone_can_add_a_kernel_from_its_own_releases() {
