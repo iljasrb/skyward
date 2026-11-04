@@ -62,9 +62,6 @@ pub enum Event {
     /// What the ROM's feed says of its newest system: none while the system
     /// installed is as new.
     RomChecked(Result<Option<rom::Release>, Unanswered>),
-    /// How far the ROM's package download has come, and how fast, in bytes a
-    /// second.
-    RomProgress(Progress, u64),
     RomEnded(End),
 }
 

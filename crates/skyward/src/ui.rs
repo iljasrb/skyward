@@ -1984,7 +1984,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     | updates::Event::Writing(..)
                     | updates::Event::Installed(_)
                     | updates::Event::RomChecked(_)
-                    | updates::Event::RomProgress(..)
                     | updates::Event::RomEnded(_) => {
                         unreachable!("a download asks nothing and writes nothing")
                     }
@@ -2013,7 +2012,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(d) = &rom_downloader {
             for ev in d.worker.events() {
                 match ev {
-                    updates::Event::RomProgress(progress, rate) => app.rom_download_progress(progress, rate),
+                    updates::Event::Progress(progress, rate) => app.rom_download_progress(progress, rate),
                     updates::Event::RomEnded(end) => {
                         let release = app.state.rom_newest().context("a download is of the newest system")?.clone();
                         let end = match end {
@@ -2026,10 +2025,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         rom_fetched = true;
                     }
                     updates::Event::Checked(_)
-                    | updates::Event::Progress(..)
                     | updates::Event::Ended(_)
                     | updates::Event::Writing(..)
-                    | updates::Event::Installed(_) => unreachable!("a ROM download asks nothing and writes nothing"),
+                    | updates::Event::Installed(_)
+                    | updates::Event::RomChecked(_) => unreachable!("a ROM download asks nothing and writes nothing"),
                 }
             }
         }
@@ -2049,7 +2048,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     | updates::Event::Progress(..)
                     | updates::Event::Ended(_)
                     | updates::Event::RomChecked(_)
-                    | updates::Event::RomProgress(..)
                     | updates::Event::RomEnded(_) => {
                         unreachable!("writing asks nothing and downloads nothing")
                     }
