@@ -12634,4 +12634,13 @@ mod tests {
         assert!(app.act(Action::CheckUpdate, 1000).is_empty());
         assert_eq!(app.screen(), Screen::Update, "no WLAN page is opened");
     }
+
+    #[test]
+    fn a_wlan_that_is_still_starting_is_kept_as_on() {
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.state.wlan = Some(Wlan { power: Power::Starting, ..Wlan::default() });
+        assert!(app.settings().wlan, "the user asked for it, and it is coming up");
+        app.state.wlan = Some(Wlan { power: Power::Failed("no driver".into()), ..Wlan::default() });
+        assert!(!app.settings().wlan, "a failure is off");
+    }
 }
