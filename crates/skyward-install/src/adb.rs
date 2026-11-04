@@ -34,6 +34,9 @@ pub const FAILED: &[u8; 8] = b"FAILFAIL";
 
 /// The most taken from the USB endpoint in one read.
 const READ_CHUNK: usize = 16 * 1024;
+/// The most a `rescue-wipe` answer is padded to; the command asks for a few
+/// bytes, and a host that asks for more is not answered.
+const RESCUE_ANSWER_MAX: usize = 4096;
 
 /// The block sizes the package can be served in, and the most blocks: a
 /// read never spans more than two blocks, and every block's hash is kept.
@@ -229,9 +232,10 @@ pub fn service(payload: &[u8]) -> Service {
         return Service::RescueGetprop(prop.to_string());
     }
     if let Some(args) = name.strip_prefix("rescue-wipe:") {
-        let asked = args
-            .split_once(':')
-            .and_then(|(target, size)| Some(Service::RescueWipe { target: target.to_string(), size: size.parse().ok()? }));
+        let asked = args.split_once(':').and_then(|(target, size)| {
+            let size: usize = size.parse().ok()?;
+            (size <= RESCUE_ANSWER_MAX).then(|| Service::RescueWipe { target: target.to_string(), size })
+        });
         return asked.unwrap_or(Service::Other(name));
     }
     if let Some(target) = name.strip_prefix("reboot:") {
@@ -340,6 +344,7 @@ impl<L: Link> Connection<L> {
     fn fill(&mut self, n: usize) -> Result<(), Error> {
         while self.inbox.len() < n {
             let got = match self.link.read(&mut self.chunk) {
+                Ok(0) => return Err(Error::Io(io::Error::from(io::ErrorKind::UnexpectedEof))),
                 Ok(got) => got,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(Error::Interrupted),
                 Err(e) => return Err(Error::Io(e)),

@@ -15,7 +15,7 @@ use std::fmt::Display;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::RawFd;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -715,7 +715,12 @@ impl Responder {
             return Err(Reply::failed(response::INVALID_OBJECT_HANDLE, format!("object {h} is a folder")));
         }
         let path = self.store.as_ref().and_then(|s| s.path(h)).expect("a known object has a path");
-        let file = File::open(&path).map_err(|e| Reply::failed(access_failed(&e), format!("open {}: {e}", path.display())))?;
+        // A link in shared storage is not a way out of it.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| Reply::failed(access_failed(&e), format!("open {}: {e}", path.display())))?;
         let size = file.metadata().map_err(|e| Reply::failed(response::GENERAL_ERROR, e))?.len();
         let length = most.min(size.saturating_sub(offset));
         Ok((Reply { data: Some(Outgoing::File { file, offset, length }), ..Reply::ok() }, length))

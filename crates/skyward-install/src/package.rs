@@ -5,7 +5,7 @@
 
 use crate::image::{self, ImageKind};
 use crate::Refusal;
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use zip::{CompressionMethod, ZipArchive};
@@ -13,6 +13,8 @@ use zip::{CompressionMethod, ZipArchive};
 const PAYLOAD: &str = "payload.bin";
 const PROPERTIES: &str = "payload_properties.txt";
 const METADATA: &str = "META-INF/com/android/metadata";
+/// The most a metadata file may take; a real one is a few kilobytes.
+const TEXT_MAX: u64 = 1 << 20;
 /// The install script of a zip that installs itself.
 pub const UPDATE_BINARY: &str = "META-INF/com/google/android/update-binary";
 
@@ -108,6 +110,7 @@ fn update<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Update> {
 
 fn text<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<String> {
     let mut entry = zip.by_name(name).with_context(|| format!("open {name}"))?;
+    ensure!(entry.size() <= TEXT_MAX, "{name} is {} bytes, larger than this recovery reads", entry.size());
     let mut s = String::new();
     entry.read_to_string(&mut s).with_context(|| format!("read {name}"))?;
     Ok(s)

@@ -390,6 +390,7 @@ impl Link for Endpoints {
         while !data.is_empty() {
             self.shared.ready()?;
             match (&self.inn).write(data) {
+                Ok(0) => return Err(io::Error::from(ErrorKind::WriteZero)),
                 Ok(n) => data = &data[n..],
                 Err(e) if e.kind() == ErrorKind::WouldBlock => self.shared.settle(),
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
