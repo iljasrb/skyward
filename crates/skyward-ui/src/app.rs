@@ -2896,7 +2896,9 @@ impl App {
             vibrate: self.state.vibrate,
             vibration: self.state.vibration,
             file_transfer: self.state.file_transfer,
-            wlan: self.state.wlan.as_ref().is_some_and(|w| w.power == WlanPower::On),
+            // Starting counts as on: the user asked for it, and a write that
+            // lands before the driver is up must not record it as off.
+            wlan: self.state.wlan.as_ref().is_some_and(|w| !matches!(w.power, WlanPower::Off | WlanPower::Failed(_))),
         }
     }
 
@@ -11636,5 +11638,14 @@ mod tests {
         app.state.wlan = None;
         assert!(app.act(Action::CheckUpdate, 1000).is_empty());
         assert_eq!(app.screen(), Screen::Update, "no WLAN page is opened");
+    }
+
+    #[test]
+    fn a_wlan_that_is_still_starting_is_kept_as_on() {
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.state.wlan = Some(Wlan { power: Power::Starting, ..Wlan::default() });
+        assert!(app.settings().wlan, "the user asked for it, and it is coming up");
+        app.state.wlan = Some(Wlan { power: Power::Failed("no driver".into()), ..Wlan::default() });
+        assert!(!app.settings().wlan, "a failure is off");
     }
 }
