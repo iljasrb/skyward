@@ -96,6 +96,11 @@ enum Cmd {
     },
     /// Tell what a package or image is, the way the installer reads it.
     Identify { file: PathBuf },
+    /// Print the partitions an update package's payload holds: each one's
+    /// size and the steps that write it.
+    Payload { package: PathBuf },
+    /// Take one partition out of an update package's payload, as an image.
+    Extract { package: PathBuf, partition: String, out: PathBuf },
     /// Discard all a block device holds and write zeros over its start, as
     /// a factory reset erases the data partition.
     #[cfg(target_os = "android")]
@@ -259,6 +264,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Identify { file } => identify(&file),
+        Cmd::Payload { package } => payload(&package),
+        Cmd::Extract { package, partition, out } => extract(&package, &partition, &out),
         Cmd::Mount => {
             let mounts = skyward_vab::mount_partitions(booted_slot()?)?;
             for d in &mounts.damaged {
@@ -830,6 +837,51 @@ fn identify(path: &Path) -> Result<()> {
         Package::Script => println!("a zip that installs itself with a script"),
         Package::Unknown => println!("nothing this recovery installs"),
     }
+    Ok(())
+}
+
+/// The update package at `path`, opened and read as the installer reads it.
+fn update_package(path: &Path) -> Result<(std::fs::File, skyward_install::package::Update)> {
+    use skyward_install::package::{self, Package};
+    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let update = match package::identify(&mut file)? {
+        Package::Update(update) => update,
+        _ => anyhow::bail!("{} holds no update payload", path.display()),
+    };
+    Ok((file, update))
+}
+
+fn payload(path: &Path) -> Result<()> {
+    let (mut file, update) = update_package(path)?;
+    let manifest = skyward_install::payload::read(&mut file, update.payload_offset, update.payload_size)?;
+    println!("payload {} bytes at {}, blocks of {}", update.payload_size, update.payload_offset, manifest.block());
+    for partition in &manifest.partitions {
+        let how = match partition.carried() {
+            true => String::new(),
+            false => format!(" (not carried out: {})", partition.uncarried().join(" ")),
+        };
+        println!("{}: {} bytes, {} steps{how}", partition.name, partition.size, partition.operations.len());
+    }
+    Ok(())
+}
+
+fn extract(path: &Path, name: &str, out: &Path) -> Result<()> {
+    let (mut file, update) = update_package(path)?;
+    let manifest = skyward_install::payload::read(&mut file, update.payload_offset, update.payload_size)?;
+    let partition = manifest
+        .partitions
+        .iter()
+        .find(|partition| partition.name == name)
+        .with_context(|| format!("{} holds no {name} partition", path.display()))?;
+    let mut last = 0u64;
+    skyward_install::payload::extract(&mut file, manifest.data_at, manifest.block(), partition, out, &mut |done, total| {
+        let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+        if percent != last {
+            last = percent;
+            println!("{percent}%");
+        }
+    })?;
+    println!("{}: {} bytes", out.display(), partition.size);
     Ok(())
 }
 
