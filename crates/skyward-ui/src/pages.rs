@@ -2,7 +2,7 @@ use crate::app::{
     Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, DownloadJob, EraseStop,
     Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
     Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS,
-    DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
+    DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
     WIPES, installs,
 };
 use crate::canvas::Canvas;
@@ -2714,19 +2714,7 @@ fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         }
         (job, have) => y = download_offer(c, cx, y, out, have, job.as_ref(), Action::Download),
     }
-    let saved = tr!(
-        l,
-        "镜像将保存到\"/sdcard/{DOWNLOADS}\"，写入后不会自动删除。",
-        "鏡像將儲存到「/sdcard/{DOWNLOADS}」，寫入後不會自動刪除。",
-        "The image is saved in “/sdcard/{DOWNLOADS}”, and stays there once it's written."
-    );
-    let points = [
-        l.pick(["只写入 recovery 分区，不碰系统与用户数据。", "只寫入 recovery 分割區，不碰系統與使用者資料。", "Only the recovery partitions are written; the system and your files are untouched."]),
-        saved.as_str(),
-        l.pick(["写入后每个分区都会读回校验，读回与写入不一致会报告。", "寫入後每個分割區都會讀回驗證，讀回與寫入不一致會回報。", "Every partition is read back and compared once written, and a mismatch is reported."]),
-        l.pick(["下载中断后可继续下载，已下载的部分会保留。", "下載中斷後可繼續下載，已下載的部分會保留。", "A download cut short can be resumed, keeping what was downloaded."]),
-    ];
-    widgets::notes(c, t, f, y + t.m.card_gap, l.pick(["注意事项", "注意事項", "Notes"]), &points)
+    y
 }
 
 /// The WLAN switch; then the network chosen and how joining it goes, and
