@@ -1,6 +1,7 @@
 use crate::adbwifi;
 use crate::backup;
 use crate::decrypt::{self, Decryptor};
+use crate::extract;
 use crate::filework;
 use crate::haptics::Haptics;
 use crate::relabel;
@@ -1332,6 +1333,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut relabeler: Option<filework::Worker> = None;
     // Backing up or restoring under way.
     let mut backuper: Option<backup::Worker> = None;
+    // Taking an image out of a system package under way.
+    let mut extractor: Option<extract::Worker> = None;
     // An update's merge followed: one the recovery found under way, which
     // the kernel took up again as the snapshots were mapped, or one started
     // on the install page.
@@ -1516,6 +1519,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(b) = &backuper {
             fds.push(b.worker.fd());
+        }
+        if let Some(e) = &extractor {
+            fds.push(e.worker.fd());
         }
         if let Some(m) = &merger {
             fds.push(m.worker.fd());
@@ -1853,6 +1859,32 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if backed {
             backuper = None;
+        }
+        let mut extracted = false;
+        if let Some(e) = &extractor {
+            for ev in e.worker.events() {
+                match ev {
+                    extract::Event::Progress { done, total } => app.package_progress(done, total),
+                    extract::Event::Ended(end) => {
+                        match end {
+                            extract::End::Done { path, size } => {
+                                let path = path.to_string_lossy().into_owned();
+                                if let Some(path) = app.package_extracted(path, size, now) {
+                                    if withhold(&mut transfer, &mut app, now)? {
+                                        installer = Some(Installer::open(PathBuf::from(path), detach(cfg.services.clone()), install_options(&app))?);
+                                    }
+                                }
+                            }
+                            extract::End::Stopped => app.package_stopped(now),
+                            extract::End::Failed(why) => app.package_failed(why, now),
+                        }
+                        extracted = true;
+                    }
+                }
+            }
+        }
+        if extracted {
+            extractor = None;
         }
         if let Some(m) = &merger {
             let slot = info.slot.context("only an A/B phone merges an update")?;
@@ -2285,6 +2317,21 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             continue;
                         }
                         installer = Some(Installer::open(PathBuf::from(path), detach(cfg.services.clone()), install_options(&app))?);
+                    }
+                    Effect::Extract { package, partition, out } => {
+                        ensure!(extractor.is_none(), "an extraction is running already");
+                        extractor = Some(extract::Worker::start(extract::Task {
+                            package: PathBuf::from(package),
+                            partition,
+                            out: PathBuf::from(out),
+                        })?);
+                    }
+                    Effect::StopExtract => {
+                        // It may have ended between the page's tap and this:
+                        // there is then nothing left to stop.
+                        if let Some(e) = &extractor {
+                            e.stop();
+                        }
                     }
                     Effect::Flash { partition, pick } => {
                         let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;

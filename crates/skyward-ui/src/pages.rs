@@ -69,6 +69,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Mount => mount(cx),
         Screen::Install => install(cx),
         Screen::Choose(place) => choose(cx, place),
+        Screen::PackageImages => package_images(cx),
         Screen::Installing => installing(cx),
         Screen::About => about(cx),
         Screen::Specs => specs(cx),
@@ -925,9 +926,16 @@ pub fn install(cx: &Ctx) -> Frame {
     rows.push(Row::new(install_title(l, Source::File(Place::UsbDrive))).icon(PURPLE, Icon::UsbDrive).subtitle(l.pick(usb)));
     let sideload = l.pick(["在电脑上运行 adb sideload", "在電腦上執行 adb sideload", "Run adb sideload on the computer"]);
     rows.push(Row::new(install_title(l, Source::Computer)).icon(GREEN, Icon::Usb).subtitle(sideload));
+    // A whole system package taken apart: each image it holds comes out,
+    // and is then flashed on its own.
+    rows.push(
+        Row::new(l.pick(["从完整系统包提取镜像", "從完整系統包提取映像檔", "Take images out of a system package"]))
+            .icon(PURPLE, Icon::Layers)
+            .subtitle(l.pick(["取出 boot、init_boot 等镜像后刷入", "取出 boot、init_boot 等映像檔後刷入", "boot, init_boot and the like, then flashed"])),
+    );
     let methods = widgets::list(&mut c, t, f, y, &rows);
     let from_usb = Action::Open(Screen::Choose(Place::UsbDrive));
-    out.extend(hits(&methods.rows, &[from_storage, from_usb, Action::Sideload]));
+    out.extend(hits(&methods.rows, &[from_storage, from_usb, Action::Sideload, Action::OpenPackageImages]));
     let what = l.pick([
         "支持安装 A/B 完整更新包和带安装脚本的刷机包，以及刷入 boot、init_boot、vendor_boot、recovery、dtbo、vbmeta 分区镜像。系统更新将安装到另一个槽位，重启后从该槽位启动。选择文件时仅列出文件夹以及 .zip、.img 文件。",
         "支援安裝 A/B 完整更新檔和帶有安裝指令碼的刷機包，以及刷入 boot、init_boot、vendor_boot、recovery、dtbo、vbmeta 分割區映像檔。系統更新將安裝到另一個槽位，重新啟動後從該槽位啟動。選擇檔案時僅列出資料夾以及 .zip、.img 檔案。",
@@ -952,6 +960,62 @@ pub fn install(cx: &Ctx) -> Frame {
         y = widgets::footnote(&mut c, t, f, options.bottom, note);
     }
     Frame::new(t, fit(c, t, y), out, l.pick(["安装", "安裝", "Install"]), top)
+}
+
+/// The images a system package holds: each is named by its partition and
+/// size, and picking one takes it out and hands it to the installer.
+pub fn package_images(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let title = l.pick(["包内镜像", "包內映像檔", "Images in the package"]);
+    let Some(package) = &s.package else {
+        let y = widgets::footnote(&mut c, t, f, top, l.pick(["没有选择系统包", "沒有選擇系統包", "No package was chosen"]));
+        return Frame::new(t, fit(c, t, y), out, title, top);
+    };
+    let mut y = widgets::section_first(&mut c, t, f, top, &package.name);
+    if let Some(error) = &package.error {
+        y = widgets::footnote(&mut c, t, f, y, error);
+        return Frame::new(t, fit(c, t, y), out, title, top);
+    }
+    if let Some((done, total)) = package.progress {
+        let detail = format!("{} / {}", fmt::bytes(done), fmt::bytes(total));
+        let heading = match &package.taking {
+            Some(name) => tr!(l, "正在提取 {name}", "正在提取 {name}", "Taking {name} out"),
+            None => l.pick(["正在提取", "正在提取", "Taking the image out"]).to_string(),
+        };
+        y = widgets::progress_card(&mut c, t, f, y, &heading, &detail, Some(share(done, total)));
+    }
+    if package.list.is_empty() {
+        let y = widgets::footnote(&mut c, t, f, y, l.pick(["这个包没有可提取的镜像", "這個包沒有可提取的映像檔", "The package holds no image to take out"]));
+        return Frame::new(t, fit(c, t, y), out, title, top);
+    }
+    let sizes: Vec<String> = package.list.iter().map(|(_, size)| fmt::bytes(*size)).collect();
+    let rows: Vec<Row> = package
+        .list
+        .iter()
+        .enumerate()
+        .map(|(at, (name, _))| Row::new(name.as_str()).subtitle(sizes[at].as_str()).trail(Trail::Arrow))
+        .collect();
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    if !package.extracting {
+        let picks: Vec<Action> = (0..rows.len()).map(Action::PickPackageImage).collect();
+        out.extend(hits(&list.rows, &picks));
+    }
+    y = list.bottom;
+    if !package.left.is_empty() {
+        let left: Vec<String> = package.left.iter().map(|(name, steps)| format!("{name}（{steps}）")).collect();
+        let said = format!("{}：{}", l.pick(["未取出", "未取出", "Not taken out"]), left.join("、"));
+        y = widgets::footnote(&mut c, t, f, y, &said);
+    }
+    let note = l.pick([
+        "选一个镜像：抽取后进入刷入页写入分区。返回会停止提取。",
+        "選一個映像檔：抽取後進入刷入頁寫入分割區。返回會停止提取。",
+        "Choose one: it is taken out, then flashed to a partition. Going back stops it.",
+    ]);
+    let y = widgets::footnote(&mut c, t, f, y, note);
+    Frame::new(t, fit(c, t, y), out, title, top)
 }
 
 const SECURITY_PATCH: Text = ["安全补丁", "安全性修補程式", "Security patch"];

@@ -12,6 +12,8 @@ mod backup;
 #[cfg(target_os = "android")]
 mod decrypt;
 #[cfg(target_os = "android")]
+mod extract;
+#[cfg(target_os = "android")]
 mod filework;
 #[cfg(target_os = "android")]
 mod haptics;

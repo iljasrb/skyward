@@ -40,6 +40,8 @@ pub enum Screen {
     /// A place's folders and the files in them that can be installed, to
     /// choose one.
     Choose(Place),
+    /// The images a system package holds, to take one out.
+    PackageImages,
     /// Installing a package, which the computer sends with `adb sideload`
     /// or which is a file chosen in a place, and how it went.
     Installing,
@@ -343,6 +345,30 @@ pub enum Place {
     /// only.
     UsbDrive,
 }
+
+/// The images a system package holds, and how taking one out stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageState {
+    /// The package's full path, and the name the page shows.
+    pub path: String,
+    pub name: String,
+    /// The partitions that can be taken out, by name and size.
+    pub list: Vec<(String, u64)>,
+    /// The partitions that cannot, by name and the steps that write them.
+    pub left: Vec<(String, String)>,
+    /// Why the package could not be read, where it could not.
+    pub error: Option<String>,
+    /// The partition being taken out, where one is.
+    pub taking: Option<String>,
+    /// The bytes written of the image under way, and how many there are.
+    pub progress: Option<(u64, u64)>,
+    /// An image is being taken out.
+    pub extracting: bool,
+}
+
+/// The partitions an image taken out of a package can be flashed to, by the
+/// names a package gives them.
+pub const FLASHABLE: [&str; 8] = ["boot", "init_boot", "vendor_boot", "recovery", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor"];
 
 /// The USB drive plugged in, as the runtime found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1472,6 +1498,12 @@ pub enum Action {
     /// Open the entry at this place in a place's folder: a folder to look
     /// in, or the file to install.
     ChooseEntry(usize),
+    /// Pick a whole system package to take an image out of.
+    OpenPackageImages,
+    /// Take the image at this place in the package's list out.
+    PickPackageImage(usize),
+    /// Stop taking an image out of a package.
+    StopExtract,
     /// Go up to the folder this many levels below the top of the list
     /// shown, by its place in the path shown over the list.
     OpenAncestor(usize),
@@ -1996,6 +2028,12 @@ pub struct State {
     /// The folder of internal storage a file to install is chosen in, its
     /// path from the top of the storage.
     pub storage: Folder,
+    /// The system package whose images are on show, and how taking one out
+    /// stands.
+    pub package: Option<PackageState>,
+    /// The folder on show is choosing a system package rather than a file
+    /// to install.
+    pub choose_package: bool,
     /// The USB drive plugged in, as the runtime last found it, and the
     /// folder of it a file to install is chosen in, its path from the top
     /// of the drive.
@@ -2129,6 +2167,8 @@ impl Default for State {
             held: None,
             files: Folder::new("/"),
             storage: Folder::new(""),
+            package: None,
+            choose_package: false,
             usb_drive: None,
             drive: Folder::new(""),
             file: None,
@@ -2291,6 +2331,11 @@ pub enum Effect {
     /// Start installing the file at this full path, opened in the file
     /// manager, telling how it goes as [`Effect::Sideload`] does.
     InstallPath(String),
+    /// Take `partition` out of `package` to `out`, telling how it goes with
+    /// [`App::package_progress`] and [`App::package_extracted`].
+    Extract { package: String, partition: String, out: String },
+    /// Stop taking an image out of a package.
+    StopExtract,
     /// Write the image the installer holds to `partition` in the slots
     /// `pick` means.
     Flash { partition: &'static str, pick: Pick },
@@ -5395,6 +5440,15 @@ impl App {
                 if let Some(up) = self.state.folder(Screen::Choose(place)).up() {
                     return vec![Effect::ReadPlace(place, up)];
                 }
+                self.state.choose_package = false;
+            }
+            Screen::PackageImages => {
+                let extracting = self.state.package.as_ref().is_some_and(|package| package.extracting);
+                self.state.package = None;
+                self.state.choose_package = false;
+                if extracting {
+                    fx.push(Effect::StopExtract);
+                }
             }
             Screen::FileInfo => {
                 self.state.file = None;
@@ -5844,6 +5898,28 @@ impl App {
                 }
                 _ => self.say(l.pick(INSTALL_UNFINISHED), now),
             },
+            Action::OpenPackageImages => {
+                if !self.state.data.storage_open() {
+                    self.open(Screen::Decrypt);
+                    return Vec::new();
+                }
+                self.state.choose_package = true;
+                let screen = Screen::Choose(Place::Storage);
+                *self.state.folder_mut(screen) = Folder::new("");
+                self.open(screen);
+                return vec![Effect::ReadPlace(Place::Storage, String::new())];
+            }
+            Action::PickPackageImage(at) => {
+                let Some(package) = self.state.package.clone() else { return Vec::new() };
+                if package.extracting {
+                    return Vec::new();
+                }
+                let Some((partition, _)) = package.list.get(at).cloned() else { return Vec::new() };
+                let out = format!("/tmp/skyward-package/{partition}.img");
+                self.package_started(&partition);
+                return vec![Effect::Extract { package: package.path, partition, out }];
+            }
+            Action::StopExtract => return vec![Effect::StopExtract],
             Action::FlashPartition(k) => {
                 if let Install::Choosing(choice) = &mut self.state.install {
                     if k < choice.partitions.len() {
@@ -6185,7 +6261,17 @@ impl App {
                         self.state.folder_mut(screen).leave(scroll);
                         return vec![Effect::ReadPlace(place, path)];
                     }
-                    FileKind::File | FileKind::Link { folder: false, .. } => return self.install_file(place, path, entry.size, now),
+                    FileKind::File | FileKind::Link { folder: false, .. } => {
+                        if self.state.choose_package {
+                            let top = match place {
+                                Place::Storage => "/sdcard",
+                                Place::UsbDrive => USB_DRIVE,
+                            };
+                            self.package_chosen(&format!("{top}/{path}"));
+                            return Vec::new();
+                        }
+                        return self.install_file(place, path, entry.size, now);
+                    }
                     FileKind::Special => return Vec::new(),
                 }
             }
@@ -6445,6 +6531,122 @@ impl App {
         let source = Source::Opened { drive: std::path::Path::new(&path).starts_with(USB_DRIVE) };
         let name = file_name(&path);
         self.install_named(source, name, size, Effect::InstallPath(path), now)
+    }
+
+    /// The system package at `path` was chosen: read what it holds and show
+    /// the images that can be taken out of it.
+    fn package_chosen(&mut self, path: &str) {
+        self.state.choose_package = false;
+        let read = (|| -> anyhow::Result<PackageState> {
+            let mut file = std::fs::File::open(path)?;
+            let update = match skyward_install::package::identify(&mut file)? {
+                skyward_install::package::Package::Update(update) => update,
+                _ => anyhow::bail!("this package holds no update payload"),
+            };
+            let manifest = skyward_install::payload::read(&mut file, update.payload_offset, update.payload_size)?;
+            let mut list = Vec::new();
+            let mut left = Vec::new();
+            for partition in &manifest.partitions {
+                if !FLASHABLE.contains(&partition.name.as_str()) {
+                    continue;
+                }
+                if !partition.carried() {
+                    left.push((partition.name.clone(), partition.uncarried().join(" ")));
+                    continue;
+                }
+                if partition.size == 0 {
+                    continue;
+                }
+                list.push((partition.name.clone(), partition.size));
+            }
+            Ok(PackageState {
+                path: path.to_string(),
+                name: file_name(path).unwrap_or_else(|| path.to_string()),
+                list,
+                left,
+                ..PackageState::default()
+            })
+        })();
+        self.state.package = Some(match read {
+            Ok(package) => package,
+            Err(e) => PackageState {
+                path: path.to_string(),
+                name: file_name(path).unwrap_or_else(|| path.to_string()),
+                error: Some(format!("{e:#}")),
+                ..PackageState::default()
+            },
+        });
+        // The folder gives way to the images, so going back returns to the
+        // page that asked for a package.
+        if matches!(self.screen(), Screen::Choose(_)) {
+            self.stack.pop();
+        }
+        self.open(Screen::PackageImages);
+    }
+
+    /// The image `partition` is being taken out of the package on show.
+    pub fn package_started(&mut self, partition: &str) {
+        if let Some(package) = &mut self.state.package {
+            package.extracting = true;
+            package.taking = Some(partition.to_string());
+            package.progress = Some((0, 0));
+            package.error = None;
+        }
+        self.refresh();
+    }
+
+    /// How far taking the image out has come.
+    pub fn package_progress(&mut self, done: u64, total: u64) {
+        if let Some(package) = &mut self.state.package {
+            package.progress = Some((done, total));
+        }
+        self.refresh();
+    }
+
+    /// The image is out: the installer takes it, as a chosen image file.
+    /// The path comes back when the install may start.
+    pub fn package_extracted(&mut self, path: String, size: u64, now: u64) -> Option<String> {
+        // The page was left while the image was being taken out: it is not
+        // handed to the installer behind the user's back.
+        self.state.package.as_ref()?;
+        if let Some(package) = &mut self.state.package {
+            package.extracting = false;
+            package.taking = None;
+            package.progress = None;
+        }
+        self.state.package = None;
+        // The images page gives way to the install, so going back from it
+        // returns to the page that asked for a package.
+        if matches!(self.screen(), Screen::PackageImages) {
+            self.stack.pop();
+        }
+        let name = file_name(&path);
+        let effects = self.install_named(Source::File(Place::Storage), name, size, Effect::InstallPath(path), now);
+        effects.into_iter().find_map(|effect| match effect {
+            Effect::InstallPath(path) => Some(path),
+            _ => None,
+        })
+    }
+
+    /// The image could not be taken out: the page says why.
+    pub fn package_failed(&mut self, why: String, now: u64) {
+        if let Some(package) = &mut self.state.package {
+            package.extracting = false;
+            package.taking = None;
+            package.progress = None;
+            package.error = Some(why.clone());
+        }
+        self.say(&why, now);
+    }
+
+    /// Taking the image out was stopped.
+    pub fn package_stopped(&mut self, now: u64) {
+        if let Some(package) = &mut self.state.package {
+            package.extracting = false;
+            package.taking = None;
+            package.progress = None;
+        }
+        self.say(self.state.lang.pick(["已停止提取", "已停止提取", "Extraction stopped"]), now);
     }
 
     /// Install the file `name` of `size` bytes from `source`, `start` asking
@@ -10114,6 +10316,38 @@ mod tests {
         assert_eq!(app.state.script_output.len(), SCRIPT_LINES);
         assert_eq!(app.state.script_output[0], "line 2");
         assert_eq!(app.frame(&f, &i).rows.as_ref().map(Rows::count), Some(SCRIPT_LINES));
+    }
+
+    #[test]
+    fn a_system_package_lists_its_images_and_takes_one_out() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Install, W, H, PPD);
+        app.state.data = Data::Open;
+        assert_eq!(
+            app.act(Action::OpenPackageImages, 0),
+            vec![Effect::ReadPlace(Place::Storage, String::new())],
+            "the package is chosen in internal storage"
+        );
+        assert_eq!(app.screen(), Screen::Choose(Place::Storage));
+        assert!(app.state.choose_package);
+        app.state.package = Some(PackageState {
+            path: "/sdcard/ota.zip".into(),
+            name: "ota.zip".into(),
+            list: vec![("boot".into(), 4096)],
+            ..PackageState::default()
+        });
+        app.open(Screen::PackageImages);
+        let frame = app.frame(&f, &i);
+        assert!(frame.hits.iter().any(|hit| hit.action == Action::PickPackageImage(0)), "the image is there to pick");
+        assert_eq!(
+            app.act(Action::PickPackageImage(0), 0),
+            vec![Effect::Extract {
+                package: "/sdcard/ota.zip".into(),
+                partition: "boot".into(),
+                out: "/tmp/skyward-package/boot.img".into(),
+            }]
+        );
+        assert!(app.state.package.as_ref().is_some_and(|package| package.extracting));
     }
 
     #[test]
