@@ -39,6 +39,9 @@ pub enum Screen {
     /// A WebDAV server used as a folder: its address, the way in, and
     /// whether it is mounted.
     Cloud,
+    /// The cloud server's address and the way in, typed on the screen's
+    /// keyboard.
+    CloudSettings,
     Install,
     /// A place's folders and the files in them that can be installed, to
     /// choose one.
@@ -5612,7 +5615,7 @@ impl App {
         let left = self.screen();
         match left {
             Screen::Mount => self.state.mount_failure = None,
-            Screen::Cloud => {
+            Screen::Cloud | Screen::CloudSettings => {
                 if self.state.cloud.field.take().is_some() {
                     self.refresh();
                     return fx;
@@ -6750,7 +6753,7 @@ impl App {
             #[cfg(feature = "roots")]
             Screen::ApatchKey => self.state.apatch.as_mut().map(|root| &mut root.entered),
             Screen::WlanPassword => Some(&mut self.state.password),
-            Screen::Cloud => {
+            Screen::Cloud | Screen::CloudSettings => {
                 let field = self.state.cloud.field?;
                 let cloud = &mut self.state.cloud;
                 Some(match field {
@@ -7120,7 +7123,7 @@ impl App {
                 }
                 // So is a name no network can have; the keyboard then types
                 // into the field turned down.
-                Screen::Cloud => {
+                Screen::Cloud | Screen::CloudSettings => {
                     self.state.cloud.field = None;
                     self.refresh();
                 }
@@ -8352,6 +8355,7 @@ mod tests {
             Screen::Wipe,
             Screen::Mount,
             Screen::Cloud,
+            Screen::CloudSettings,
             Screen::Install,
             Screen::Choose(Place::Storage),
             Screen::Specs,
@@ -8555,6 +8559,20 @@ mod tests {
         assert_eq!(tap(&mut app, &f, &i, Action::CloudUnmount), vec![Effect::CloudUnmount]);
         app.cloud_unmounted(Ok(()));
         assert!(!app.state.cloud.mounted);
+    }
+
+    #[test]
+    fn the_cloud_server_settings_have_a_page_of_their_own() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Cloud, &f, &i);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::CloudSettings)), Vec::<Effect>::new());
+        assert_eq!(app.screen(), Screen::CloudSettings);
+        tap(&mut app, &f, &i, Action::CloudField(CloudField::Address));
+        assert_eq!(app.state.cloud.field, Some(CloudField::Address));
+        assert!(app.key(Key::Back, 0).is_empty());
+        assert_eq!((app.screen(), app.state.cloud.field), (Screen::CloudSettings, None), "back closes the keyboard first");
+        assert!(app.key(Key::Back, 0).is_empty());
+        assert_eq!(app.screen(), Screen::Cloud);
     }
 
     #[test]

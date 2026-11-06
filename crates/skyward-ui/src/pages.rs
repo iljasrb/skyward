@@ -69,6 +69,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Wipe => wipe(cx),
         Screen::Mount => mount(cx),
         Screen::Cloud => cloud(cx),
+        Screen::CloudSettings => cloud_settings(cx),
         Screen::Install => install(cx),
         Screen::Choose(place) => choose(cx, place),
         Screen::PackageImages => package_images(cx),
@@ -469,9 +470,74 @@ pub fn mount(cx: &Ctx) -> Frame {
     Frame::new(t, fit(c, t, bottom), out, S_MOUNT, top)
 }
 
-/// The cloud storage: the server, the way in, and whether it is mounted.
+/// The cloud storage: whether it is mounted, and the way to its settings.
 pub fn cloud(cx: &Ctx) -> Frame {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let (t, f, s, _l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let cloud = &s.cloud;
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let server = match cloud.configured() {
+        true => cloud.settings.address.clone(),
+        false => S_NOT_SET_UP.to_string(),
+    };
+    let settings = widgets::list(&mut c, t, f, top, &[Row::new(S_SERVER).subtitle(&server).trail(Trail::Arrow)]);
+    out.extend(hits(&settings.rows, &[Action::Open(Screen::CloudSettings)]));
+    let mut y = settings.bottom;
+    if cloud.settings.address.trim().to_ascii_lowercase().starts_with("http://") {
+        y = widgets::footnote(&mut c, t, f, y, S_THE_ADDRESS_IS_NOT_ENCRYPTED_ANYONE_ON_THE_WAY_CAN_READ_IT);
+    } else if cloud.configured() {
+        y = widgets::footnote(&mut c, t, f, y, S_THE_SERVERS_CERTIFICATE_IS_NOT_VERIFIED_ONLY_CONNECT_TO_A_SERVER_YOU_TRUST);
+    }
+    let (title, detail, color) = match &cloud.status {
+        CloudStatus::NotSetUp => (S_NOT_SET_UP, S_ENTER_THE_ADDRESS_OF_A_WEBDAV_SERVER, SLATE),
+        CloudStatus::Ready => (S_READY, S_THE_SERVER_ANSWERS, GREEN),
+        CloudStatus::Testing => (S_TESTING, S_ASKING_THE_SERVER, ORANGE),
+        CloudStatus::Mounting => (S_MOUNTING, S_MOUNTING_THE_SERVER, ORANGE),
+        CloudStatus::Mounted => (S_MOUNTED, S_MOUNTED_AT_CLOUD, GREEN),
+        CloudStatus::Unmounting => (S_UNMOUNTING, S_LETTING_THE_SERVER_GO, ORANGE),
+        CloudStatus::Failed(why) => (S_CANT_CONNECT, why.as_str(), RED),
+    };
+    let detail = match (cloud.status == CloudStatus::Ready || cloud.status == CloudStatus::Mounted, &cloud.info) {
+        (true, Some(info)) => match (&info.server, info.free.map(fmt::gb)) {
+            (Some(server), Some(free)) => crate::t!(S_SERVER_FREE, server = server, free = free),
+            (Some(server), None) => server.clone(),
+            (None, Some(free)) => crate::t!(S_FREE, free = free),
+            (None, None) => detail.to_string(),
+        },
+        _ => detail.to_string(),
+    };
+    y = widgets::section(&mut c, t, f, y, S_STATUS);
+    y = widgets::list(&mut c, t, f, y, &[standing(title, color, Icon::Cloud, &detail)]).bottom;
+    let mut rows = Vec::new();
+    let mut acts = Vec::new();
+    if !cloud.busy() {
+        rows.push(Row::new(S_TEST_CONNECTION).trail(Trail::None));
+        acts.push(Action::CloudTest);
+        if cloud.mounted {
+            rows.push(Row::new(S_UNMOUNT).trail(Trail::None));
+            acts.push(Action::CloudUnmount);
+        } else {
+            rows.push(Row::new(S_MOUNT).trail(Trail::None));
+            acts.push(Action::CloudMount);
+        }
+    }
+    let actions = widgets::list(&mut c, t, f, y + m.card_gap, &rows);
+    out.extend(hits(&actions.rows, &acts));
+    y = actions.bottom;
+    if cloud.saved || cloud.pending_save || cloud.configured() {
+        let forget = widgets::list(&mut c, t, f, y + m.card_gap, &[Row::new(S_FORGET).tint(t.pal.danger).trail(Trail::None)]);
+        out.extend(hits(&forget.rows, &[Action::Confirm(Confirm::CloudForget)]));
+        y = forget.bottom;
+    }
+    Frame::new(t, fit(c, t, y), out, S_CLOUD_STORAGE, top)
+}
+
+/// The cloud server's address and the way in, typed on the screen's
+/// keyboard.
+pub fn cloud_settings(cx: &Ctx) -> Frame {
+    let (t, f, s, _l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let cloud = &s.cloud;
     let m = &t.m;
     let mut c = long_page(cx);
@@ -516,57 +582,15 @@ pub fn cloud(cx: &Ctx) -> Frame {
     } else if !cloud.settings.address.trim().is_empty() {
         y = widgets::footnote(&mut c, t, f, y, S_THE_SERVERS_CERTIFICATE_IS_NOT_VERIFIED_ONLY_CONNECT_TO_A_SERVER_YOU_TRUST);
     }
-    let (title, detail, color) = match &cloud.status {
-        CloudStatus::NotSetUp => (S_NOT_SET_UP, S_ENTER_THE_ADDRESS_OF_A_WEBDAV_SERVER, SLATE),
-        CloudStatus::Ready => (S_READY, S_THE_SERVER_ANSWERS, GREEN),
-        CloudStatus::Testing => (S_TESTING, S_ASKING_THE_SERVER, ORANGE),
-        CloudStatus::Mounting => (S_MOUNTING, S_MOUNTING_THE_SERVER, ORANGE),
-        CloudStatus::Mounted => (S_MOUNTED, S_MOUNTED_AT_CLOUD, GREEN),
-        CloudStatus::Unmounting => (S_UNMOUNTING, S_LETTING_THE_SERVER_GO, ORANGE),
-        CloudStatus::Failed(why) => (S_CANT_CONNECT, why.as_str(), RED),
-    };
-    let detail = match (cloud.status == CloudStatus::Ready || cloud.status == CloudStatus::Mounted, &cloud.info) {
-        (true, Some(info)) => match (&info.server, info.free.map(fmt::gb)) {
-            (Some(server), Some(free)) => crate::t!(S_SERVER_FREE, server = server, free = free),
-            (Some(server), None) => server.clone(),
-            (None, Some(free)) => crate::t!(S_FREE, free = free),
-            (None, None) => detail.to_string(),
-        },
-        _ => detail.to_string(),
-    };
-    y = widgets::section(&mut c, t, f, y, S_STATUS);
-    y = widgets::list(&mut c, t, f, y, &[standing(title, color, Icon::Cloud, &detail)]).bottom;
-    let mut rows = Vec::new();
-    let mut acts = Vec::new();
-    if !cloud.busy() {
-        rows.push(Row::new(S_TEST_CONNECTION).trail(Trail::None));
-        acts.push(Action::CloudTest);
-        if cloud.mounted {
-            rows.push(Row::new(S_UNMOUNT).trail(Trail::None));
-            acts.push(Action::CloudUnmount);
-        } else {
-            rows.push(Row::new(S_MOUNT).trail(Trail::None));
-            acts.push(Action::CloudMount);
-        }
-    }
-    let actions = widgets::list(&mut c, t, f, y + m.card_gap, &rows);
-    out.extend(hits(&actions.rows, &acts));
-    y = actions.bottom;
-    if cloud.saved || cloud.pending_save || cloud.configured() {
-        let forget = widgets::list(&mut c, t, f, y + m.card_gap, &[Row::new(S_FORGET).tint(t.pal.danger).trail(Trail::None)]);
-        out.extend(hits(&forget.rows, &[Action::Confirm(Confirm::CloudForget)]));
-        y = forget.bottom;
-    }
     if matches!(s.data, Data::Closed | Data::Opening | Data::Failed(_)) {
         y = widgets::footnote(&mut c, t, f, y, S_CLOUD_SETTINGS_LOAD_AFTER_THE_DATA_PARTITION_IS_DECRYPTED_WHAT_IS_TYPED_NOW_LASTS_UNTIL_A_RESTART);
     } else if cloud.saved {
         y = widgets::footnote(&mut c, t, f, y, S_THE_CLOUD_SETTINGS_ARE_KEPT_ON_THE_DATA_PARTITION);
     }
-    let _ = l;
     if cloud.field.is_some() {
         keyboard_hits(&mut c, t, f, s, S_DONE_2, &mut out);
     }
-    Frame { caret, ..Frame::new(t, fit(c, t, y), out, S_CLOUD_STORAGE, top) }
+    Frame { caret, ..Frame::new(t, fit(c, t, y), out, S_SERVER_SETTINGS, top) }
 }
 
 /// What the home page says of the cloud storage beside its row.

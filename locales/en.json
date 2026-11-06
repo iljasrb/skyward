@@ -1001,6 +1001,7 @@
   "saved_to_skyward_backups_in_cloud_storage": "Saved to Skyward/backups in cloud storage: {name}",
   "server": "Server",
   "server_free": "{server} · {free} free",
+  "server_settings": "Server settings",
   "set_up_cloud_storage": "Set up cloud storage",
   "test_connection": "Test connection",
   "testing": "Testing",
