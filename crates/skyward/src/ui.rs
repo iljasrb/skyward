@@ -39,6 +39,7 @@ use skyward_ui::app::{
     INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
 };
 use skyward_ui::surface::kms::KmsSurface;
+use skyward_ui::strings::*;
 use skyward_ui::{Canvas, Fonts, Lang};
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
@@ -84,23 +85,18 @@ fn settings_root(cfg: &DeviceConfig) -> Option<PathBuf> {
 
 /// Read the settings the boots before kept; none while the file is not
 /// there. A key the file does not name stays at the value it starts at.
-fn saved_settings(cfg: &DeviceConfig, current: Lang) -> Option<SavedSettings> {
+fn saved_settings(cfg: &DeviceConfig) -> Option<SavedSettings> {
     let root = settings_root(cfg)?;
     let text = skyward_sys::kept::read(&root, SETTINGS.0, SETTINGS.1)?;
-    Some(SavedSettings::parse(&text, current))
+    Some(SavedSettings::parse(&text))
 }
 
 /// Write the settings as they stand, for the boots to come; a storage that
 /// cannot be written keeps them only until it opens, and this says why
 /// rather than failing.
 fn write_settings(root: &Path, settings: &SavedSettings) -> bool {
-    let language = match settings.lang {
-        Lang::Hans => "hans",
-        Lang::Hant => "hant",
-        Lang::En => "en",
-    };
     let text = format!(
-        "language = {language}\ndark = {}\nbrightness = {:.3}\nscreen_off = {}\ntime_zone = {}\nvibrate = {}\nvibration = {:.3}\nfile_transfer = {}\nwlan = {}\n",
+        "dark = {}\nbrightness = {:.3}\nscreen_off = {}\ntime_zone = {}\nvibrate = {}\nvibration = {:.3}\nfile_transfer = {}\nwlan = {}\n",
         settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
         settings.file_transfer, settings.wlan
     );
@@ -1124,21 +1120,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             .collect();
         app.set_kernel_plugins(plugins);
     }
-    // The pages speak the language the system named with the work it asks
-    // for, or else the one the installed system is built to start in, or else
-    // English.
-    if let Some(locale) = request.locale.as_deref().or(info.locale.as_deref()) {
-        app.state.lang = Lang::for_locale(locale)?;
-        skyward_sys::kmsg(&format!("the pages speak {:?}, for the locale {locale}", app.state.lang))?;
-    } else {
-        // A boot that names no locale, whose installed system cannot be read
-        // yet -- into fastbootd, whose command carries none and whose
-        // partitions are not mounted -- speaks English, the language most of
-        // the people who flash a recovery read; the pages' own default is
-        // Chinese, and it used to stay that way for the whole session.
-        app.state.lang = Lang::En;
-        skyward_sys::kmsg(&format!("the pages speak {:?}: no locale was named and the installed system's could not be read", app.state.lang))?;
-    }
+    app.state.lang = Lang::En;
     // The home page tells of a restart into the slot the system does not
     // run from now: an update or a switch left for the next boot.
     if info.slot.is_some() {
@@ -1194,7 +1176,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // the rest are back before the first frame is drawn, and a WLAN that was
     // on is brought back up by itself. Read before file transfer starts, so a
     // saved "off" is not overruled by the default.
-    let saved = saved_settings(cfg, app.state.lang);
+    let saved = saved_settings(cfg);
     let mut settings_read = settings_root(cfg).is_some();
     let mut wlan_wanted = saved.as_ref().is_some_and(|s| s.wlan);
     let mut wlan_touched = false;
@@ -1946,7 +1928,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         // holds before a pending write can put the defaults over it.
         if !settings_read && settings_root(cfg).is_some() {
             settings_read = true;
-            if let Some(saved) = saved_settings(cfg, app.state.lang) {
+            if let Some(saved) = saved_settings(cfg) {
                 if !wlan_touched {
                     wlan_wanted = saved.wlan;
                 }
@@ -2092,7 +2074,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // The data partition now holds the settings if the device
                     // keeps them there, and the WLAN's saved networks.
                     if cfg.settings.place == SettingsPlace::Data {
-                        if let Some(saved) = saved_settings(cfg, app.state.lang) {
+                        if let Some(saved) = saved_settings(cfg) {
                             if !wlan_touched {
                                 wlan_wanted = saved.wlan;
                             }
@@ -2229,7 +2211,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::Wipe(chosen) => {
                         ensure!(eraser.is_none(), "erasing is under way already");
                         if decryptor.is_some() {
-                            app.report(app.state.lang.pick(DATA_OPENING), now);
+                            app.report(DATA_OPENING, now);
                             continue;
                         }
                         if !withhold(&mut transfer, &mut app, now)? {
@@ -2274,7 +2256,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         let went = match sh.waiting() {
                             Ok(true) => sh.change_to(&folder),
                             Ok(false) => {
-                                app.report(app.state.lang.pick(skyward_ui::fmt::TERMINAL_BUSY), now);
+                                app.report(skyward_ui::fmt::TERMINAL_BUSY, now);
                                 Ok(())
                             }
                             Err(e) => Err(e),
@@ -2640,7 +2622,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::Filesystem { name, action } => {
                         ensure!(eraser.is_none() && part_worker.is_none(), "work on partitions is under way already");
                         if name == DATA_PARTITION && decryptor.is_some() {
-                            app.report(app.state.lang.pick(DATA_OPENING), now);
+                            app.report(DATA_OPENING, now);
                             continue;
                         }
                         if name == DATA_PARTITION && !withhold(&mut transfer, &mut app, now)? {
@@ -2665,7 +2647,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::Backup { parts, place, compress, verify, sparse } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
                         if installer.is_some() {
-                            app.report(app.state.lang.pick(INSTALL_UNFINISHED), now);
+                            app.report(INSTALL_UNFINISHED, now);
                             continue;
                         }
                         let into = backups_in(place);
@@ -2699,7 +2681,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::Restore { place, name, parts } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
                         if installer.is_some() {
-                            app.report(app.state.lang.pick(INSTALL_UNFINISHED), now);
+                            app.report(INSTALL_UNFINISHED, now);
                             continue;
                         }
                         let task = backup::RestoreTask {
@@ -2881,7 +2863,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         // it, so what it read was nothing and the pages showed
                         // their own defaults. They are read again now that the
                         // storage is there.
-                        let saved = saved_settings(cfg, app.state.lang);
+                        let saved = saved_settings(cfg);
                         if let Some(saved) = &saved {
                             if !wlan_touched {
                                 wlan_wanted = saved.wlan;

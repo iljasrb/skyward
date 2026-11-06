@@ -14,6 +14,8 @@ anyhow = { workspace = true }
 ab_glyph = "0.2.32"
 # The stock status bar's outlines are filled as glyphs are.
 ab_glyph_rasterizer = "0.1.10"
+# The pages' texts are formatted from the language files at runtime.
+formatx = "0.2.0"
 icu_locale_core = { version = "2.4.0", features = ["alloc"] }
 # The recovery carries no time zone files, so the rules come built in.
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
@@ -32,6 +34,9 @@ tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "
 ttf-parser = "0.25.1"
 unicode-width = "0.2.2"
 vt100 = "0.18.1"
+
+[build-dependencies]
+serde_json = "1.0.145"
 
 [dev-dependencies]
 # The test that the typeface draws every text the pages write reads them

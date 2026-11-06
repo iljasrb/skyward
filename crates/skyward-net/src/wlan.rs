@@ -226,12 +226,12 @@ mod tests {
             bss(2, b"Skyward", -34, 5805),
             bss(3, b"", -30, 2462),
             bss(4, b"\0\0\0", -30, 2462),
-            bss(5, "Skyward客厅".as_bytes(), -50, 5180),
+            bss(5, "Skyward lounge".as_bytes(), -50, 5180),
             bss(6, b"\xff\xfe", -90, 2412),
         ];
         let n = networks(&found);
         let names: Vec<&str> = n.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, ["Skyward", "Skyward客厅", "\u{fffd}\u{fffd}"], "the strongest first, nameless ones left out");
+        assert_eq!(names, ["Skyward", "Skyward lounge", "\u{fffd}\u{fffd}"], "the strongest first, nameless ones left out");
         assert_eq!((n[0].signal, n[0].frequency), (-34, 5805));
         assert_eq!(n[0].bands, Bands { ghz2: true, ghz5: true, ghz6: false }, "both its access points' bands");
         assert_eq!(n[1].bands, Bands { ghz2: false, ghz5: true, ghz6: false });

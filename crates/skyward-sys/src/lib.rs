@@ -313,7 +313,7 @@ mod tests {
     fn a_cut_never_splits_a_character() {
         // Three bytes a character: a limit that lands inside one has to give
         // way to the boundary before it.
-        let line = "显示器属性显示器属性显示器属性";
+        let line = "Display properties display properties display properties";
         for p in split_at_words(line, 10) {
             assert!(std::str::from_utf8(p.as_bytes()).is_ok(), "{p:?} is not whole text");
         }

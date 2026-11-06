@@ -2,8 +2,6 @@
 
 # Skyward
 
-English | [简体中文](README.zh-CN.md)
-
 Skyward is a recovery written in Rust, from scratch.
 
 > This branch carries the fork's generic code. Device configurations, build
@@ -28,7 +26,7 @@ Skyward is a recovery written in Rust, from scratch.
 - WLAN
 - MTP file transfer, adb and fastbootd
 - Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
-- Light and dark themes; Simplified Chinese, Traditional Chinese and English
+- Light and dark themes; English
 
 ## Supported devices
 

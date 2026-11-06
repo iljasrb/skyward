@@ -918,6 +918,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "formatx"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8866fac38f53fc87fa3ae1b09ddd723e0482f8fa74323518b4c59df2c55a00a"
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2249,6 +2255,7 @@ dependencies = [
  "anyhow",
  "clap",
  "evdev",
+ "formatx",
  "libc",
  "procfs",
  "skyward-backup",
@@ -2494,11 +2501,13 @@ dependencies = [
  "anyhow",
  "drm",
  "drm-ffi",
+ "formatx",
  "icu_locale_core",
  "jiff",
  "libc",
  "png",
  "proc-macro2",
+ "serde_json",
  "skyward-info",
  "skyward-install",
  "skyward-net",

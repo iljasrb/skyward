@@ -248,7 +248,7 @@ mod tests {
         p.i64(1 << 40);
         p.bool(true);
         p.blob(&[1, 2, 3]);
-        p.string("路");
+        p.string("road");
         p.opt_blob(None);
         p.blob(&[]);
         assert_eq!(p.bytes().len() % 4, 0, "every value ends on a four-byte boundary");
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(r.i64().unwrap(), 1 << 40);
         assert!(r.bool().unwrap());
         assert_eq!(r.blob().unwrap(), vec![1, 2, 3]);
-        assert_eq!(r.string().unwrap(), "路");
+        assert_eq!(r.string().unwrap(), "road");
         assert_eq!(r.i32().unwrap(), -1, "a byte array left out");
         assert_eq!(r.blob().unwrap(), Vec::<u8>::new());
         assert_eq!(r.here(), p.bytes().len());

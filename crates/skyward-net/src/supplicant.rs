@@ -427,7 +427,7 @@ mod tests {
 
     /// Two access points as the 13 Ultra's supplicant listed them, the
     /// second named in Chinese.
-    const LISTED: &str = "id=33\nbssid=02:00:00:00:00:02\nfreq=5200\nlevel=-66\nflags=[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]\nssid=Skyward-Studio\n====\nid=34\nbssid=02:00:00:00:00:03\nfreq=5180\nlevel=-50\nflags=[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]\nssid=Skyward\\xe5\\xae\\xa2\\xe5\\x8e\\x85\n====\n";
+    const LISTED: &str = "id=33\nbssid=02:00:00:00:00:02\nfreq=5200\nlevel=-66\nflags=[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]\nssid=Skyward-Studio\n====\nid=34\nbssid=02:00:00:00:00:03\nfreq=5180\nlevel=-50\nflags=[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]\nssid=Skyward lounge\n====\n";
 
     #[test]
     fn access_points_are_read_one_block_each() {
@@ -438,7 +438,7 @@ mod tests {
             found[0],
             Bss { id: 33, bssid: "02:00:00:00:00:02".into(), frequency: 5200, signal: -66, security: Security::Psk, ssid: b"Skyward-Studio".to_vec() }
         );
-        assert_eq!(String::from_utf8(found[1].ssid.clone()).unwrap(), "Skyward客厅");
+        assert_eq!(String::from_utf8(found[1].ssid.clone()).unwrap(), "Skyward lounge");
         assert!(bss_list("").unwrap().is_empty(), "no access point found answers nothing");
         assert!(bss_list("id=1\nbssid=x\n====\n").is_err(), "a block missing a field is not an access point");
     }
@@ -455,10 +455,10 @@ mod tests {
 
     #[test]
     fn a_network_is_set_up_with_its_name_and_password_written_as_the_supplicant_takes_them() {
-        let wpa2 = network_commands(0, "Skyward客厅".as_bytes(), Security::Psk, "pass\"word", false).unwrap();
+        let wpa2 = network_commands(0, "Skyward lounge".as_bytes(), Security::Psk, "pass\"word", false).unwrap();
         assert_eq!(
             wpa2,
-            ["SET_NETWORK 0 ssid 536b7977617264e5aea2e58e85", "SET_NETWORK 0 key_mgmt WPA-PSK WPA-PSK-SHA256", "SET_NETWORK 0 psk \"pass\"word\""]
+            ["SET_NETWORK 0 ssid 536b7977617264206c6f756e6765", "SET_NETWORK 0 key_mgmt WPA-PSK WPA-PSK-SHA256", "SET_NETWORK 0 psk \"pass\"word\""]
         );
         let wpa3 = network_commands(2, b"Skyward",Security::Sae, "short", false).unwrap();
         assert_eq!(wpa3[1..], ["SET_NETWORK 2 key_mgmt SAE", "SET_NETWORK 2 sae_password 73686f7274", "SET_NETWORK 2 ieee80211w 2"]);
@@ -467,7 +467,7 @@ mod tests {
         assert!(both.contains(&"SET_NETWORK 1 sae_password 3132333435363738".to_string()));
         assert_eq!(network_commands(0, b"Skyward",Security::Open, "", false).unwrap()[1], "SET_NETWORK 0 key_mgmt NONE");
         assert!(network_commands(0, b"Skyward",Security::Psk, "1234567", false).is_err(), "a WPA2 password is 8 characters at least");
-        assert!(network_commands(0, b"Skyward",Security::Psk, "密码密码密码密码", false).is_err(), "a WPA2 password is ASCII");
+        assert!(network_commands(0, b"Skyward",Security::Psk, "pässwörd", false).is_err(), "a WPA2 password is ASCII");
         assert!(network_commands(0, b"Skyward",Security::Wep, "12345", false).is_err());
         let hidden = network_commands(3, b"Skyward", Security::Open, "", true).unwrap();
         assert_eq!(hidden, ["SET_NETWORK 3 ssid 536b7977617264", "SET_NETWORK 3 scan_ssid 1", "SET_NETWORK 3 key_mgmt NONE"]);

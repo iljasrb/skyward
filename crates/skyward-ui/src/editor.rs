@@ -401,9 +401,9 @@ mod tests {
 
     #[test]
     fn lines_wrap_at_the_width_by_the_columns_each_character_takes() {
-        let ed = Editor::new("/a".into(), "abcdefghij\nabcd\n中文字符\n\tx\n", 4, 20);
-        assert_eq!(ed.visible(), ["abcd", "efgh", "ij", "abcd", "中文", "字符", "\t", "x", ""]);
-        assert_eq!(advance('中', 0), 2);
+        let ed = Editor::new("/a".into(), "abcdefghij\nabcd\nＡＢＣ\n\tx\n", 4, 20);
+        assert_eq!(ed.visible(), ["abcd", "efgh", "ij", "abcd", "ＡＢ", "Ｃ", "\t", "x", ""]);
+        assert_eq!(advance('Ａ', 0), 2);
         assert_eq!(advance('\r', 0), 2, "shown as ^M");
         assert_eq!((advance('\t', 0), advance('\t', 1), advance('\t', 3)), (4, 3, 1), "a tab reaches the next stop");
         assert_eq!(notation('\r'), "^M");
@@ -434,8 +434,8 @@ mod tests {
         assert_eq!(ed.text(), "#!/bin/shecho hi\n", "at the start of a line, it joins the line before");
         assert_eq!(ed.cursor(), (0, 9));
         ed.backspace();
-        ed.insert('中');
-        assert_eq!(ed.text(), "#!/bin/s中echo hi\n");
+        ed.insert('Ａ');
+        assert_eq!(ed.text(), "#!/bin/sＡecho hi\n");
         assert_eq!(ed.cursor(), (0, 10), "a wide character takes two columns");
         ed.saved();
         assert!(!ed.changed);
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn a_tap_puts_the_cursor_between_the_nearest_characters() {
-        let mut ed = Editor::new("/a".into(), "abcdefghij\n中文", 4, 10);
+        let mut ed = Editor::new("/a".into(), "abcdefghij\nＡＢ", 4, 10);
         ed.place(0, 1.3);
         assert_eq!(ed.cursor(), (0, 1));
         ed.place(0, 1.7);
@@ -481,7 +481,7 @@ mod tests {
         ed.place(1, 9.0);
         assert_eq!(ed.cursor(), (1, 4), "past a row the line wraps after, the end of that row");
         ed.insert('x');
-        assert_eq!(ed.text(), "abcdefghxij\n中文", "what is typed there goes after the row's last character");
+        assert_eq!(ed.text(), "abcdefghxij\nＡＢ", "what is typed there goes after the row's last character");
         ed.place(2, 9.0);
         assert_eq!(ed.cursor(), (2, 3), "past the line's last row, its end");
         ed.place(3, 0.9);

@@ -162,7 +162,7 @@ pub mod kms {
         fn line(&self) -> String {
             let mut parts: Vec<String> = self.0.iter().map(|(name, (_, value))| format!("{name}={value}")).collect();
             parts.sort();
-            parts.join(" ")
+            parts.join("- Done")
         }
     }
 

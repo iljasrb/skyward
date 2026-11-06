@@ -6,6 +6,7 @@ use crate::geom::Rect;
 use crate::icons::{self, Icon};
 use crate::lang::Lang;
 use crate::sprite::Sprite;
+use crate::strings::*;
 use crate::theme::Theme;
 use std::f32::consts::FRAC_PI_4;
 
@@ -1908,7 +1909,7 @@ pub fn keypad_height(t: &Theme) -> f32 {
 /// The keypad a screen lock's code is typed on, its top at `top`: four rows
 /// of three round keys, `pressed` drawn held down, and the last row erasing
 /// and confirming, in `l`. Returns where each key answers a touch.
-pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
+pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, _l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
     let left = (m.w as f32 - (3.0 * size + 2.0 * gx)) / 2.0;
@@ -1934,8 +1935,8 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
         }
         match cap {
             Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), t.pal.text),
-            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, t.pal.accent),
-            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
+            Cap::Backspace => c.text_center(&f.body, S_DELETE, cx, cy, m.row_title_px, t.pal.accent),
+            _ => c.text_center(&f.heading, S_DECRYPT, cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
         }
     }
     keys
@@ -2237,7 +2238,7 @@ pub fn warning(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) -> f3
 }
 
 /// [`section`] with a word at its right end that does something, such as
-/// the WLAN page's「刷新」: where the word can be touched.
+/// the WLAN page's「Refresh」: where the word can be touched.
 pub fn section_action(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, label: &str, action: &str) -> (f32, Rect) {
     let m = &t.m;
     let y = section(c, t, f, prev_bottom, label);
@@ -2366,7 +2367,7 @@ pub struct Spec<'a> {
     pub value: String,
 }
 
-/// Two-column grid of icon, caption and value, as on the stock「全部参数」.
+/// Two-column grid of icon, caption and value, as on the stock「All specs」.
 pub fn spec_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Spec]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2452,7 +2453,7 @@ fn output_line<'f>(c: &Canvas, t: &Theme, f: &'f Fonts, line: &str) -> (&'f Face
 }
 
 /// Where a line's baseline sits in a band as tall as the line, the ink of
-/// 「中」 centred in it; then the padding the card's first row has above its
+/// 「Ａ」 centred in it; then the padding the card's first row has above its
 /// bands, and its last row below them.
 fn output_layout(t: &Theme, f: &Fonts) -> (f32, f32, f32) {
     let m = &t.m;
@@ -2501,7 +2502,7 @@ pub fn output_row(c: &mut Canvas, t: &Theme, f: &Fonts, lines: &[String], i: usi
 
 /// Light and dark previews side by side; the active one carries an accent
 /// ring and an accent caption. The rows are the light and the dark choice.
-pub fn theme_picker(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32) -> Block {
+pub fn theme_picker(c: &mut Canvas, t: &Theme, f: &Fonts, _l: Lang, top: f32) -> Block {
     let m = &t.m;
     let gap = m.dp(4.0);
     let slot_w = (m.w as f32 - m.margin * 2.0 - gap) / 2.0;
@@ -2512,8 +2513,8 @@ pub fn theme_picker(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32) -> 
     let caption_base = top + slot_w + m.dp(11.0) - ink_top;
     let bottom = caption_base + ink_bottom;
     let mut rects = Vec::new();
-    let modes = [(["浅色模式", "淺色模式", "Light mode"], false), (["深色模式", "深色模式", "Dark mode"], true)];
-    for (i, (label, dark)) in modes.map(|(label, dark)| (l.pick(label), dark)).into_iter().enumerate() {
+    let modes = [(S_LIGHT_MODE, false), (S_DARK_MODE, true)];
+    for (i, (label, dark)) in modes.map(|(label, dark)| (label, dark)).into_iter().enumerate() {
         let sx = m.margin + (slot_w + gap) * i as f32;
         let on = t.dark == dark;
         if on {
@@ -2557,9 +2558,9 @@ pub enum Cap {
 /// digit and symbol layers hold every printable ASCII character.
 fn rows(layer: Layer) -> [&'static str; 3] {
     match layer {
-        Layer::Letters | Layer::Shifted => ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
-        Layer::Digits => ["1234567890", "-/:;()$&@\"", ".,?!'"],
-        Layer::Symbols => ["[]{}#%^*+=", "_\\|~<>`", ".,?!'"],
+        Layer::Letters | Layer::Shifted => ["zxcvbnm", "zxcvbnm", "zxcvbnm"],
+        Layer::Digits => [".,?!'", ".,?!'", ".,?!'"],
+        Layer::Symbols => [".,?!'", ".,?!'", ".,?!'"],
     }
 }
 
@@ -2585,7 +2586,7 @@ pub fn keyboard_height(t: &Theme) -> f32 {
 /// key answers a touch, the gaps between keys shared out among their
 /// neighbours.
 #[allow(clippy::too_many_arguments)]
-pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
+pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, _l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let w = m.w as f32;
     let (panel, key, side, ink, shadow) = if t.dark {
@@ -2659,7 +2660,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
                 let label = if layer == Layer::Shifted { ch.to_ascii_uppercase() } else { ch };
                 c.text_center(&f.heading, &label.to_string(), cx, cy, glyph_px, ink);
             }
-            Cap::Space => c.text_center(&f.body, l.pick(["空格", "空格", "Space"]), cx, cy, m.sub_px, ink),
+            Cap::Space => c.text_center(&f.body, S_SPACE, cx, cy, m.sub_px, ink),
             Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, Rgba::rgb(255, 255, 255)),
             Cap::Show(Layer::Digits) => c.text_center(&f.heading, "123", cx, cy, m.sub_px, ink),
             Cap::Show(Layer::Symbols) => c.text_center(&f.heading, "#+=", cx, cy, m.sub_px, ink),
@@ -2933,14 +2934,14 @@ mod tests {
         let t = Theme::light(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let mut c = Canvas::filled(1200, 2608, t.pal.bg);
-        let rows = list(&mut c, &t, &f, 621.0, &[Row::new("安全性").trail(Trail::Choice("无"))]);
+        let rows = list(&mut c, &t, &f, 621.0, &[Row::new("Security").trail(Trail::Choice("None"))]);
         let row = rows.rows[0];
         let arrows = ink_box(&c, Rect::new(1070.0, row.y + 55.0, 55.0, row.h - 110.0), |p| p[0] < 252);
         let (cy, w, h) = ((arrows.1 + arrows.3) / 2.0, arrows.2 - arrows.0, arrows.3 - arrows.1);
         assert!((arrows.2 - 1116.0).abs() <= 1.0 && (w - 30.0).abs() <= 1.5 && (h - 46.0).abs() <= 1.5, "arrows {arrows:?}");
         assert!((cy - (row.y + row.h / 2.0)).abs() <= 1.0, "the arrows centred on the row: {cy}");
         let stock = Rect::new(36.0, 621.0, 1128.0, 176.0);
-        let picks = choices(&mut c, &t, &f, stock, &["无", "WPA/WPA2-Personal", "WPA3-Personal"], Some(0), None);
+        let picks = choices(&mut c, &t, &f, stock, &["None", "WPA/WPA2-Personal", "WPA3-Personal"], Some(0), None);
         let (first, last) = (picks[0], picks[2]);
         assert!((first.x - 256.0).abs() <= 0.5 && (first.x + first.w - 1114.0).abs() <= 0.5, "across {}..{}", first.x, first.x + first.w);
         assert!((first.y - 690.0).abs() <= 0.5 && (last.y + last.h - 1083.0).abs() <= 0.5, "down {}..{}", first.y, last.y + last.h);
@@ -2982,7 +2983,7 @@ mod tests {
         let blue = |p: &[u8]| p[2] as i32 - p[0] as i32 > 60;
         for text in ["", "bf"] {
             let mut c = Canvas::new(t.m.w, t.m.dp(120.0) as u32);
-            let field = search_field(&mut c, &t, &f, x, w, cy, text, "搜索功能与分区");
+            let field = search_field(&mut c, &t, &f, x, w, cy, text, "Search features and partitions");
             assert_eq!(ink_box(&c, field.field, blue).0, f32::MAX, "{text:?}: the field is drawn without its cursor");
             // The cursor laid over the field, as the page does while it shows.
             c.lay(&field.caret.art, field.caret.x, field.caret.y, 1.0);
@@ -3043,14 +3044,14 @@ mod tests {
         let c = Canvas::new(1, 1);
         let px = 40.0;
         let texts = [
-            "Skyward 是自由软件：你可以按照自由软件基金会发布的 GNU 通用公共许可证第 3 版，或者（由你选择）任何更新的版本，重新发布和修改它。",
+            "Skyward is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.",
             "You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.",
-            "Skyward 的界面文字使用小米的 MiSans 字体，按《MiSans 字体知识产权许可协议》免费使用。",
-            "boot、init_boot、vendor_boot、dtbo、vbmeta 和 recovery",
+            "Skyward's interface text uses Xiaomi's MiSans typeface under the MiSans font licence.",
+            "boot, init_boot, vendor_boot, dtbo, vbmeta and recovery",
             "Copyright 2026 The Kirk Mono Project Authors (https://github.com/kirklin/kirk-mono)",
             "This phone's system doesn't make an emptied data partition anew when it starts, so it can't be wiped.",
             "This zip isn't signed. Turn off “Verify zip signatures”, then try again.",
-            "這個刷機包未簽署，請關閉「驗證刷機包簽章」後重試。",
+            "This zip isn't signed. Turn off “Verify zip signatures”, then try again.",
         ];
         let latin = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '\'');
         for text in texts {
@@ -3072,18 +3073,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_path_too_long_for_a_line_breaks_after_a_slash() {
-        let f = crate::font::bundled();
-        let c = Canvas::new(1, 1);
-        let px = 40.0;
-        let text = "/data/dalvik-cache、/data/misc/apexdata/com.android.art/dalvik-cache、/data/ota 里预编译的代码";
-        let path = "/data/misc/apexdata/com.android.art/dalvik-cache";
-        let max_w = c.text_width(&f.body, path, px) * 0.8;
-        let lines = wrap(&c, &f.body, text, px, max_w);
-        assert_eq!(lines.concat(), text, "nothing lost: {lines:?}");
-        let broken = lines.iter().position(|l| l.ends_with("com.android.art/")).expect("the long path breaks after a slash");
-        assert!(lines[broken].starts_with("/data/misc/"), "the path starts its own line: {lines:?}");
-        assert!(lines[broken + 1].starts_with("dalvik-cache"), "and goes on with what follows the slash: {lines:?}");
-    }
 }

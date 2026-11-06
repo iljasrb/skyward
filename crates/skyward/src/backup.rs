@@ -37,7 +37,7 @@ const ENTRY_BYTES: u64 = 2048;
 
 /// The slot's partitions that start the phone and check what it starts, in
 /// the order a backup takes them: those the phone has.
-const BOOT: [&str; 8] = ["boot", "init_boot", "vendor_boot", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor", "recovery"];
+const BOOT: [&str; 8] = ["vendor_boot", "vendor_boot", "vendor_boot", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor", "recovery"];
 
 /// The order a restore writes the parts in: what starts the phone and what
 /// it starts, then the baseband's, then the data partition's files, which

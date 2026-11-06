@@ -51,8 +51,8 @@ pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<()> {
         let who = Credentials::of(&s, &known)?;
         if s.oneshot {
             let status = command(&s, &who).status().with_context(|| format!("run {}", s.path))?;
-            ensure!(status.success(), "{} {} ended: {status}", s.path, s.args.join(" "));
-            skyward_sys::kmsg(&format!("ran {} {}", s.path, s.args.join(" ")))?;
+            ensure!(status.success(), "{} {} ended: {status}", s.path, s.args.join("- Done"));
+            skyward_sys::kmsg(&format!("ran {} {}", s.path, s.args.join("- Done")))?;
             continue;
         }
         let waiting = s.clone();

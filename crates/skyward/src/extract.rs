@@ -87,7 +87,7 @@ fn extract(task: &Task, say: &impl Fn(Event), stop: &Arc<AtomicBool>) -> Result<
         .find(|partition| partition.name == task.partition)
         .with_context(|| format!("{} holds no {} partition", task.package.display(), task.partition))?;
     if !partition.carried() {
-        bail!("{} is written by steps this code does not carry out ({})", partition.name, partition.uncarried().join(" "));
+        bail!("{} is written by steps this code does not carry out ({})", partition.name, partition.uncarried().join("- Done"));
     }
     // An image larger than the partition it goes to cannot be written, so
     // do not spend the time and the room taking it out.

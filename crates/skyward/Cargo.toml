@@ -17,6 +17,7 @@ roots = ["dep:skyward-root", "skyward-ui/roots"]
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4.5.51", features = ["derive"] }
+formatx = "0.2.0"
 skyward-config = { path = "../skyward-config" }
 skyward-block = { path = "../skyward-block" }
 skyward-vab = { path = "../skyward-vab" }

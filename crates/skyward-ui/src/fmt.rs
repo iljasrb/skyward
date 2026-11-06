@@ -3,7 +3,7 @@ use crate::app::{
     TIME_ZONES,
 };
 use crate::lang::{Lang, Text};
-use crate::tr;
+use crate::strings::*;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
@@ -50,7 +50,7 @@ pub fn gb(bytes: u64) -> String {
     format!("{:.1}GB", bytes as f64 / 1e9)
 }
 
-/// `已用/总量` as the stock settings count it: everything that is not free
+/// `used/total` as the stock settings count it: everything that is not free
 /// is used, against the marketed size.
 pub fn storage_used(s: &Storage) -> Option<String> {
     let free = s.free?;
@@ -58,37 +58,20 @@ pub fn storage_used(s: &Storage) -> Option<String> {
     Some(format!("{used:.1}GB/{}", capacity(s.total)))
 }
 
-/// A count in Chinese numerals, a pair as 双, or 雙 in traditional
-/// characters.
-fn numeral(n: u32, traditional: bool) -> String {
-    const D: [&str; 10] = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
-    match n {
-        2 => (if traditional { "雙" } else { "双" }).into(),
-        0..=9 => D[n as usize].into(),
-        10 => "十".into(),
-        11..=19 => format!("十{}", D[(n % 10) as usize]),
-        20..=99 if n.is_multiple_of(10) => format!("{}十", D[(n / 10) as usize]),
-        20..=99 => format!("{}十{}", D[(n / 10) as usize], D[(n % 10) as usize]),
-        _ => n.to_string(),
-    }
-}
-
-/// `八核 最高 3.19GHz`, `Octa-core, up to 3.19GHz`
-pub fn cpu(l: Lang, c: &Cpu) -> String {
-    let cores = match (l, c.cores) {
-        (Lang::Hans, n) => format!("{}核", numeral(n, false)),
-        (Lang::Hant, n) => format!("{}核", numeral(n, true)),
-        (Lang::En, 1) => "Single-core".into(),
-        (Lang::En, 2) => "Dual-core".into(),
-        (Lang::En, 4) => "Quad-core".into(),
-        (Lang::En, 6) => "Hexa-core".into(),
-        (Lang::En, 8) => "Octa-core".into(),
-        (Lang::En, n) => format!("{n}-core"),
+/// `Octa-core, up to 3.19GHz`, `Octa-core, up to 3.19GHz`
+pub fn cpu(_l: Lang, c: &Cpu) -> String {
+    let cores = match c.cores {
+        1 => "Single-core".into(),
+        2 => "Dual-core".into(),
+        4 => "Quad-core".into(),
+        6 => "Hexa-core".into(),
+        8 => "Octa-core".into(),
+        n => format!("{n}-core"),
     };
     match c.max_khz {
         Some(khz) => {
             let ghz = format!("{:.2}", khz as f64 / 1e6);
-            tr!(l, "{cores} 最高 {ghz}GHz", "{cores} 最高 {ghz}GHz", "{cores}, up to {ghz}GHz")
+            crate::t!(S_UP_TO_GHZ, cores = cores, ghz = ghz)
         }
         None => cores,
     }
@@ -112,16 +95,16 @@ pub fn mah(uah: u64) -> String {
     format!("{}mAh", uah / 1000)
 }
 
-pub fn charge(l: Lang, c: Charge) -> &'static str {
-    l.pick(match c {
-        Charge::Charging => ["充电中", "充電中", "Charging"],
-        Charge::Discharging | Charge::NotCharging => ["未充电", "未充電", "Not charging"],
-        Charge::Full => ["已充满", "已充滿", "Full"],
-        Charge::Unknown => ["状态未知", "狀態不明", "Unknown"],
-    })
+pub fn charge(_l: Lang, c: Charge) -> &'static str {
+    match c {
+        Charge::Charging => S_CHARGING,
+        Charge::Discharging | Charge::NotCharging => S_NOT_CHARGING,
+        Charge::Full => S_FULL,
+        Charge::Unknown => S_UNKNOWN,
+    }
 }
 
-/// `74% · 充电中`
+/// `74% · Charging`
 pub fn level(l: Lang, b: &Battery) -> String {
     format!("{}% · {}", b.level, charge(l, b.charge))
 }
@@ -141,32 +124,32 @@ pub fn volts(uv: u64) -> String {
 
 /// The kernel's battery health in the language; a state it does not list
 /// shows as reported.
-pub fn health(l: Lang, h: &str) -> String {
+pub fn health(_l: Lang, h: &str) -> String {
     let text = match h {
-        "Good" => ["良好", "良好", "Good"],
-        "Overheat" | "Hot" => ["过热", "過熱", "Overheated"],
-        "Warm" => ["偏热", "偏熱", "Warm"],
-        "Cool" => ["偏冷", "偏冷", "Cool"],
-        "Cold" => ["过冷", "過冷", "Cold"],
-        "Dead" => ["损坏", "損壞", "Dead"],
-        "Over voltage" => ["电压过高", "電壓過高", "Over voltage"],
-        "Over current" => ["电流过大", "電流過大", "Over current"],
-        "Unspecified failure" => ["故障", "故障", "Failure"],
-        "Calibration required" => ["需要校准", "需要校正", "Needs calibration"],
-        "No battery" => ["未检测到电池", "未偵測到電池", "No battery"],
-        "Unknown" => ["未知", "不明", "Unknown"],
+        "Good" => S_GOOD,
+        "Overheat" | "Hot" => S_OVERHEATED,
+        "Warm" => S_WARM,
+        "Cool" => S_COOL,
+        "Cold" => S_COLD,
+        "Dead" => S_DEAD,
+        "Over voltage" => S_OVER_VOLTAGE,
+        "Over current" => S_OVER_CURRENT,
+        "Unspecified failure" => S_FAILURE,
+        "Calibration required" => S_NEEDS_CALIBRATION,
+        "No battery" => S_NO_BATTERY,
+        "Unknown" => S_UNKNOWN,
         other => return other.to_string(),
     };
-    l.pick(text).to_string()
+    text.to_string()
 }
 
-/// Health and remaining capacity against design, e.g. `良好 · 剩余容量 93%`.
+/// Health and remaining capacity against design, e.g. `Good · 93% of design capacity`.
 pub fn wear(l: Lang, b: &Battery) -> Option<String> {
     let state = b.health.as_deref().map(|h| health(l, h));
     let left = match (b.full, b.design) {
         (Some(full), Some(design)) if design > 0 => {
             let share = (full * 100 + design / 2) / design;
-            Some(tr!(l, "剩余容量 {share}%", "剩餘容量 {share}%", "Maximum capacity {share}%"))
+            Some(crate::t!(S_MAXIMUM_CAPACITY, share = share))
         }
         _ => None,
     };
@@ -180,187 +163,136 @@ pub fn android(l: Lang, release: &str, patch_level: Option<&PatchLevel>) -> Stri
     match patch_level {
         Some(p) => {
             let date = patch(l, p);
-            tr!(l, "{release} | Android 安全更新：{date}", "{release} | Android 安全性更新：{date}", "{release} | Android security update: {date}")
+            crate::t!(S_ANDROID_SECURITY_UPDATE, release = release, date = date)
         }
         None => release.to_string(),
     }
 }
 
-pub fn verified(l: Lang, state: &str) -> String {
+pub fn verified(_l: Lang, state: &str) -> String {
     let text = match state {
-        "green" => ["绿色 · 已通过官方密钥验证", "綠色 · 已通過官方金鑰驗證", "Green · Verified with the official key"],
-        "yellow" => ["黄色 · 已通过自定义密钥验证", "黃色 · 已通過自訂金鑰驗證", "Yellow · Verified with a custom key"],
-        "orange" => ["橙色 · 设备已解锁，不验证系统", "橙色 · 裝置已解鎖，不驗證系統", "Orange · Unlocked, so the system isn't verified"],
-        "red" => ["红色 · 验证失败", "紅色 · 驗證失敗", "Red · Verification failed"],
+        "green" => S_GREEN_VERIFIED_WITH_THE_OFFICIAL_KEY,
+        "yellow" => S_YELLOW_VERIFIED_WITH_A_CUSTOM_KEY,
+        "orange" => S_ORANGE_UNLOCKED_SO_THE_SYSTEM_ISNT_VERIFIED,
+        "red" => S_RED_VERIFICATION_FAILED,
         other => return other.to_string(),
     };
-    l.pick(text).to_string()
+    text.to_string()
 }
 
-pub fn snapshot(l: Lang, s: &SnapshotState) -> &'static str {
-    l.pick(match s {
-        SnapshotState::None => ["暂无待合并的更新", "沒有待合併的更新", "No update waiting to merge"],
-        SnapshotState::Snapshotted => ["更新已写入，等待合并", "更新已寫入，等待合併", "Update written, waiting to merge"],
-        SnapshotState::Merging => ["正在合并更新", "正在合併更新", "Merging the update"],
-        SnapshotState::MergeFailed => ["更新合并失败", "更新合併失敗", "The update failed to merge"],
-        SnapshotState::Unknown => ["无法读取更新状态", "無法讀取更新狀態", "Couldn't read the update's status"],
-    })
+pub fn snapshot(_l: Lang, s: &SnapshotState) -> &'static str {
+    match s {
+        SnapshotState::None => S_NO_UPDATE_WAITING_TO_MERGE,
+        SnapshotState::Snapshotted => S_UPDATE_WRITTEN_WAITING_TO_MERGE,
+        SnapshotState::Merging => S_MERGING_THE_UPDATE,
+        SnapshotState::MergeFailed => S_THE_UPDATE_FAILED_TO_MERGE,
+        SnapshotState::Unknown => S_COULDNT_READ_THE_UPDATES_STATUS,
+    }
 }
 
 /// Why super is off limits while an update is in flight; `None` when it is not.
-pub fn snapshot_note(l: Lang, s: &SnapshotState) -> Option<&'static str> {
+pub fn snapshot_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
     let text = match s {
         SnapshotState::None => return None,
         SnapshotState::Snapshotted | SnapshotState::Merging => {
-            ["更新合并完成前，暂不刷写 super 中的分区", "更新合併完成前，暫不刷寫 super 中的分割區", "Partitions in super aren't flashed until the update merges"]
+            S_PARTITIONS_IN_SUPER_ARENT_FLASHED_UNTIL_THE_UPDATE_MERGES
         }
-        SnapshotState::MergeFailed => [
-            "在系统中处理完成前，暂不刷写 super 中的分区",
-            "在系統中處理完成前，暫不刷寫 super 中的分割區",
-            "Partitions in super aren't flashed until the system deals with the update",
-        ],
-        SnapshotState::Unknown => [
-            "读取到更新状态前，暂不刷写 super 中的分区",
-            "讀取到更新狀態前，暫不刷寫 super 中的分割區",
-            "Partitions in super aren't flashed until the update's status can be read",
-        ],
+        SnapshotState::MergeFailed => S_PARTITIONS_IN_SUPER_ARENT_FLASHED_UNTIL_THE_SYSTEM_DEALS_WITH_THE_UPDATE,
+        SnapshotState::Unknown => S_PARTITIONS_IN_SUPER_ARENT_FLASHED_UNTIL_THE_UPDATES_STATUS_CAN_BE_READ,
     };
-    Some(l.pick(text))
+    Some(text)
 }
 
 /// The home page's warning of a battery too low to install on: how low it
 /// is, and what installing waits for.
-pub fn battery_low(l: Lang, level: u8, charging: bool) -> (String, String) {
+pub fn battery_low(_l: Lang, level: u8, charging: bool) -> (String, String) {
     let least = skyward_install::least_charge(charging);
     (
-        tr!(l, "电量仅剩 {level}%", "電量僅剩 {level}%", "Battery at {level}%"),
-        tr!(l, "充电至 {least}% 以上才能安装", "充電至 {least}% 以上才能安裝", "Charge it past {least}% to install"),
+        crate::t!(S_BATTERY_AT, level = level),
+        crate::t!(S_CHARGE_IT_PAST_TO_INSTALL, least = least),
     )
 }
 
 /// The home page's word that the phone restarts from the slot it does not
 /// run from now.
-pub fn next_boot(l: Lang, next: Slot, now: Slot) -> (String, String) {
+pub fn next_boot(_l: Lang, next: Slot, now: Slot) -> (String, String) {
     let (next, now) = (next.letter(), now.letter());
     (
-        tr!(l, "重启后从 {next} 槽位启动", "重新啟動後從 {next} 槽位啟動", "Restarts from slot {next}"),
-        tr!(l, "当前运行的是 {now} 槽位", "目前執行的是 {now} 槽位", "Running from slot {now} now"),
+        crate::t!(S_RESTARTS_FROM_SLOT, next = next),
+        crate::t!(S_RUNNING_FROM_SLOT_NOW, now = now),
     )
 }
 
 /// Why the slot to start next stays as an update in flight set it; `None`
 /// when none is.
-pub fn snapshot_slot_note(l: Lang, s: &SnapshotState) -> Option<&'static str> {
+pub fn snapshot_slot_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
     let text = match s {
         SnapshotState::None => return None,
         SnapshotState::Snapshotted | SnapshotState::Merging => {
-            ["更新合并完成前，暂不切换启动槽位。", "更新合併完成前，暫不切換啟動槽位。", "The boot slot isn't switched until the update merges."]
+            S_THE_BOOT_SLOT_ISNT_SWITCHED_UNTIL_THE_UPDATE_MERGES
         }
         SnapshotState::MergeFailed => {
-            ["在系统中处理完成前，暂不切换启动槽位。", "在系統中處理完成前，暫不切換啟動槽位。", "The boot slot isn't switched until the system deals with the update."]
+            S_THE_BOOT_SLOT_ISNT_SWITCHED_UNTIL_THE_SYSTEM_DEALS_WITH_THE_UPDATE
         }
         SnapshotState::Unknown => {
-            ["读取到更新状态前，暂不切换启动槽位。", "讀取到更新狀態前，暫不切換啟動槽位。", "The boot slot isn't switched until the update's status can be read."]
+            S_THE_BOOT_SLOT_ISNT_SWITCHED_UNTIL_THE_UPDATES_STATUS_CAN_BE_READ
         }
     };
-    Some(l.pick(text))
+    Some(text)
 }
 
 /// What an install script that writes to super does to an update in
 /// flight; `None` when none is known to be.
-pub fn snapshot_script_note(l: Lang, s: &SnapshotState) -> Option<&'static str> {
+pub fn snapshot_script_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
     let text = match s {
         SnapshotState::None | SnapshotState::Unknown => return None,
-        SnapshotState::Snapshotted | SnapshotState::Merging => [
-            "系统更新尚未完成合并。刷机包改写 super 中的分区，会导致这次更新无法完成。",
-            "系統更新尚未完成合併。刷機包改寫 super 中的分割區，會導致這次更新無法完成。",
-            "A system update hasn't finished merging. A flashable zip that rewrites partitions in super keeps it from ever finishing.",
-        ],
-        SnapshotState::MergeFailed => [
-            "系统更新合并失败，需在系统中处理。刷机包改写 super 中的分区，会导致这次更新无法完成。",
-            "系統更新合併失敗，需在系統中處理。刷機包改寫 super 中的分割區，會導致這次更新無法完成。",
-            "A system update failed to merge, and the system has to deal with it. A flashable zip that rewrites partitions in super keeps it from ever finishing.",
-        ],
+        SnapshotState::Snapshotted | SnapshotState::Merging => S_A_SYSTEM_UPDATE_HASNT_FINISHED_MERGING_A_FLASHABLE_ZIP_THAT_REWRITES_PARTITIONS_IN_SUPER_KEEPS_IT_FROM_EVER_FINISHING,
+        SnapshotState::MergeFailed => S_A_SYSTEM_UPDATE_FAILED_TO_MERGE_AND_THE_SYSTEM_HAS_TO_DEAL_WITH_IT_A_FLASHABLE_ZIP_THAT_REWRITES_PARTITIONS_IN_SUPER_KEEPS_IT_FROM_EVER_FINISHING,
     };
-    Some(l.pick(text))
+    Some(text)
 }
 
 /// Why the slot's partitions in super are not backed up while an update is
 /// in flight; `None` when none is.
-pub fn snapshot_backup_note(l: Lang, s: &SnapshotState) -> Option<&'static str> {
+pub fn snapshot_backup_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
     let text = match s {
         SnapshotState::None => return None,
         SnapshotState::Snapshotted | SnapshotState::Merging => {
-            ["更新合并完成前，暂不备份系统分区", "更新合併完成前，暫不備份系統分割區", "System partitions aren't backed up until the update merges"]
+            S_SYSTEM_PARTITIONS_ARENT_BACKED_UP_UNTIL_THE_UPDATE_MERGES
         }
         SnapshotState::MergeFailed => {
-            ["在系统中处理完成前，暂不备份系统分区", "在系統中處理完成前，暫不備份系統分割區", "System partitions aren't backed up until the system deals with the update"]
+            S_SYSTEM_PARTITIONS_ARENT_BACKED_UP_UNTIL_THE_SYSTEM_DEALS_WITH_THE_UPDATE
         }
         SnapshotState::Unknown => {
-            ["读取到更新状态前，暂不备份系统分区", "讀取到更新狀態前，暫不備份系統分割區", "System partitions aren't backed up until the update's status can be read"]
+            S_SYSTEM_PARTITIONS_ARENT_BACKED_UP_UNTIL_THE_UPDATES_STATUS_CAN_BE_READ
         }
     };
-    Some(l.pick(text))
+    Some(text)
 }
 
 /// Why backing up, or restoring, did not start.
-pub fn backup_refusal(l: Lang, r: &BackupRefusal, restore: bool) -> String {
+pub fn backup_refusal(_l: Lang, r: &BackupRefusal, restore: bool) -> String {
     match r {
         BackupRefusal::Room { needed, free } => {
             let (needed, free) = (gb(*needed), gb(*free));
-            tr!(
-                l,
-                "存储空间不足。备份需要 {needed}，可用空间为 {free}。",
-                "儲存空間不足。備份需要 {needed}，可用空間為 {free}。",
-                "Not enough storage. The backup needs {needed}, and {free} is free."
-            )
+            crate::t!(S_NOT_ENOUGH_STORAGE_THE_BACKUP_NEEDS_AND_IS_FREE, needed = needed, free = free)
         }
         BackupRefusal::Update(state) => {
-            let what = l.pick(match restore {
-                true => ["恢复启动分区和系统分区", "還原啟動分割區和系統分割區", "restored"],
-                false => ["备份系统分区", "備份系統分割區", "backed up"],
-            });
+            let what = match restore {
+                true => S_RESTORED,
+                false => S_BACKED_UP,
+            };
             let parts = if restore { "The boot and system partitions" } else { "System partitions" };
             match state {
-                SnapshotState::Snapshotted | SnapshotState::Merging => tr!(
-                    l,
-                    "更新合并完成前，暂不{what}。你可以在「安装」中查看。",
-                    "更新合併完成前，暫不{what}。你可以在「安裝」中查看。",
-                    "{parts} aren't {what} until the update merges. You can see it in Install."
-                ),
-                SnapshotState::MergeFailed => tr!(
-                    l,
-                    "更新合并失败。在系统中处理完成前，暂不{what}。",
-                    "更新合併失敗。在系統中處理完成前，暫不{what}。",
-                    "The update failed to merge. {parts} aren't {what} until the system deals with it."
-                ),
-                SnapshotState::Unknown => tr!(
-                    l,
-                    "无法读取更新状态，暂不{what}。",
-                    "無法讀取更新狀態，暫不{what}。",
-                    "{parts} aren't {what} while the update's status can't be read."
-                ),
+                SnapshotState::Snapshotted | SnapshotState::Merging => crate::t!(S_ARENT_UNTIL_THE_UPDATE_MERGES_YOU_CAN_SEE_IT_IN_INSTALL, parts = parts, what = what),
+                SnapshotState::MergeFailed => crate::t!(S_THE_UPDATE_FAILED_TO_MERGE_ARENT_UNTIL_THE_SYSTEM_DEALS_WITH_IT, parts = parts, what = what),
+                SnapshotState::Unknown => crate::t!(S_ARENT_WHILE_THE_UPDATES_STATUS_CANT_BE_READ, parts = parts, what = what),
                 SnapshotState::None => unreachable!("no update in flight holds anything back"),
             }
         }
-        BackupRefusal::OtherPhone(device) => tr!(
-            l,
-            "该备份来自其他设备（{device}），无法恢复到本机。",
-            "這份備份來自其他裝置（{device}），無法還原到本機。",
-            "This backup is from another device ({device}) and can't be restored to this phone."
-        ),
-        BackupRefusal::Resized(name) => tr!(
-            l,
-            "{name} 的大小与备份时不同，系统可能已更新。该备份中的系统分区无法恢复到当前系统。",
-            "{name} 的大小與備份時不同，系統可能已更新。這份備份中的系統分割區無法還原到目前的系統。",
-            "{name} isn't the size it was at the backup, so the system may have been updated. The backup's system partitions can't be restored to the current system."
-        ),
-        BackupRefusal::DataReset => l
-            .pick([
-                "备份后 data 分区已重新创建，例如恢复过出厂设置，该备份中的 data 分区无法恢复。",
-                "備份後 data 分割區已重新建立，例如曾恢復原廠設定，這份備份中的 data 分割區無法還原。",
-                "The data partition was made anew after the backup, as a factory reset does, so the backup's data partition can't be restored.",
-            ])
+        BackupRefusal::OtherPhone(device) => crate::t!(S_THIS_BACKUP_IS_FROM_ANOTHER_DEVICE_AND_CANT_BE_RESTORED_TO_THIS_PHONE, device = device),
+        BackupRefusal::Resized(name) => crate::t!(S_ISNT_THE_SIZE_IT_WAS_AT_THE_BACKUP_SO_THE_SYSTEM_MAY_HAVE_BEEN_UPDATED_THE_BACKUPS_SYSTEM_PARTITIONS_CANT_BE_RESTORED_TO_THE_CURRENT_SYSTEM, name = name),
+        BackupRefusal::DataReset => S_THE_DATA_PARTITION_WAS_MADE_ANEW_AFTER_THE_BACKUP_AS_A_FACTORY_RESET_DOES_SO_THE_BACKUPS_DATA_PARTITION_CANT_BE_RESTORED
             .into(),
     }
 }
@@ -368,58 +300,43 @@ pub fn backup_refusal(l: Lang, r: &BackupRefusal, restore: bool) -> String {
 /// What the install page says of the system update standing so, and the
 /// line under it on what comes next; `next` is the slot the bootloader
 /// starts next, where the boot control could tell.
-pub fn update(l: Lang, s: &Standing, next: Option<Slot>) -> (&'static str, Option<String>) {
-    let line = |text: Text| Some(l.pick(text).to_string());
+pub fn update(_l: Lang, s: &Standing, next: Option<Slot>) -> (&'static str, Option<String>) {
+    let line = |text: Text| Some(text.to_string());
     match s {
-        Standing::None => (l.pick(["暂无待合并的更新", "沒有待合併的更新", "No update waiting to merge"]), None),
+        Standing::None => (S_NO_UPDATE_WAITING_TO_MERGE, None),
         Standing::Unknown => (
-            l.pick(["无法读取更新状态", "無法讀取更新狀態", "Couldn't read the update's status"]),
-            line(["无法读取 /metadata 中的更新记录", "無法讀取 /metadata 中的更新記錄", "Couldn't read the update's records in /metadata"]),
+            S_COULDNT_READ_THE_UPDATES_STATUS,
+            line(S_COULDNT_READ_THE_UPDATES_RECORDS_IN_METADATA),
         ),
         Standing::Writing => (
-            l.pick(["更新未写入完成", "更新尚未寫入完成", "The update isn't fully written"]),
-            line(["启动系统后将继续安装", "啟動系統後將繼續安裝", "Installing goes on once the system starts"]),
+            S_THE_UPDATE_ISNT_FULLY_WRITTEN,
+            line(S_INSTALLING_GOES_ON_ONCE_THE_SYSTEM_STARTS),
         ),
         Standing::Installed(installed) => {
             let slot = installed.letter();
             let detail = match next {
-                Some(next) if next == *installed => tr!(
-                    l,
-                    "重启后将从槽位 {slot} 启动新系统，启动后自动合并",
-                    "重新啟動後將從槽位 {slot} 啟動新系統，啟動後自動合併",
-                    "After a reboot the new system starts from slot {slot}, and merges once it has started"
-                ),
-                Some(_) => tr!(
-                    l,
-                    "需在系统的「系统更新」中重启，才会从槽位 {slot} 启动新系统",
-                    "需在系統的「系統更新」中重新啟動，才會從槽位 {slot} 啟動新系統",
-                    "Reboot from the system's System update to start slot {slot}'s new system"
-                ),
-                None => tr!(
-                    l,
-                    "从槽位 {slot} 启动新系统后将自动合并",
-                    "從槽位 {slot} 啟動新系統後將自動合併",
-                    "Merges once slot {slot}'s new system starts"
-                ),
+                Some(next) if next == *installed => crate::t!(S_AFTER_A_REBOOT_THE_NEW_SYSTEM_STARTS_FROM_SLOT_AND_MERGES_ONCE_IT_HAS_STARTED, slot = slot),
+                Some(_) => crate::t!(S_REBOOT_FROM_THE_SYSTEMS_SYSTEM_UPDATE_TO_START_SLOT_S_NEW_SYSTEM, slot = slot),
+                None => crate::t!(S_MERGES_ONCE_SLOT_S_NEW_SYSTEM_STARTS, slot = slot),
             };
-            (l.pick(["更新已安装", "更新已安裝", "Update installed"]), Some(detail))
+            (S_UPDATE_INSTALLED, Some(detail))
         }
         Standing::Waiting => (
-            l.pick(["更新等待合并", "更新等待合併", "Update waiting to merge"]),
-            line(["启动新系统后将自动合并，也可以在此合并", "啟動新系統後將自動合併，也可以在此合併", "Merges once the new system starts, or can be merged here"]),
+            S_UPDATE_WAITING_TO_MERGE,
+            line(S_MERGES_ONCE_THE_NEW_SYSTEM_STARTS_OR_CAN_BE_MERGED_HERE),
         ),
         Standing::Compressed => (
-            l.pick(["更新等待合并", "更新等待合併", "Update waiting to merge"]),
-            line(["此类更新需在系统中合并，启动系统后将自动合并", "這類更新需在系統中合併，啟動系統後將自動合併", "An update of this kind merges in the system, once it starts"]),
+            S_UPDATE_WAITING_TO_MERGE,
+            line(S_AN_UPDATE_OF_THIS_KIND_MERGES_IN_THE_SYSTEM_ONCE_IT_STARTS),
         ),
-        Standing::Merging(_) => (l.pick(["正在合并更新", "正在合併更新", "Merging the update"]), None),
+        Standing::Merging(_) => (S_MERGING_THE_UPDATE, None),
         Standing::Failed(code) => (
-            l.pick(["更新合并失败", "更新合併失敗", "The update failed to merge"]),
-            Some(tr!(l, "重启后将继续合并（{code:?}）", "重新啟動後將繼續合併（{code:?}）", "Merging goes on after a reboot ({code:?})")),
+            S_THE_UPDATE_FAILED_TO_MERGE,
+            Some(crate::t!(S_MERGING_GOES_ON_AFTER_A_REBOOT, code = format!("{code:?}"))),
         ),
         Standing::Merged => (
-            l.pick(["更新已合并", "更新已合併", "Update merged"]),
-            line(["下次启动系统时将清理更新留下的文件", "下次啟動系統時將清除更新留下的檔案", "The files the update left are cleared when the system next starts"]),
+            S_UPDATE_MERGED,
+            line(S_THE_FILES_THE_UPDATE_LEFT_ARE_CLEARED_WHEN_THE_SYSTEM_NEXT_STARTS),
         ),
     }
 }
@@ -427,43 +344,43 @@ pub fn update(l: Lang, s: &Standing, next: Option<Slot>) -> (&'static str, Optio
 /// Where an update standing so is, beside the entry of its page.
 /// A build's stamp (`2026-10-30T19:37:12Z`) as the page shows it: the day,
 /// then the time to the minute; a build that was never stamped says so.
-pub fn build_date(l: Lang, stamp: &str) -> String {
+pub fn build_date(_l: Lang, stamp: &str) -> String {
     match stamp.get(..16) {
         Some(head) if stamp.len() == 20 && stamp.ends_with('Z') && stamp.as_bytes().get(10) == Some(&b'T') => {
             format!("{} {}", &head[..10], &head[11..16])
         }
-        _ => l.pick(["未知", "未知", "Unknown"]).to_string(),
+        _ => S_UNKNOWN.to_string(),
     }
 }
 
 /// Why writing the downloaded image over this recovery failed.
-pub fn install_failed(l: Lang, why: &str) -> String {
-    tr!(l, "写入失败：{why}", "寫入失敗：{why}", "Couldn't write it: {why}")
+pub fn install_failed(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_WRITE_IT, why = why)
 }
 
-pub fn data(l: Lang, d: &Data) -> &'static str {
-    l.pick(match d {
-        Data::Closed | Data::Opening | Data::Failed(_) => ["未挂载", "未掛載", "Not mounted"],
-        Data::Locked { .. } => ["未解密", "未解密", "Locked"],
-        Data::Open => ["已解密", "已解密", "Decrypted"],
-        Data::Erased => ["已清除", "已清除", "Wiped"],
-    })
+pub fn data(_l: Lang, d: &Data) -> &'static str {
+    match d {
+        Data::Closed | Data::Opening | Data::Failed(_) => S_NOT_MOUNTED,
+        Data::Locked { .. } => S_LOCKED,
+        Data::Open => S_DECRYPTED,
+        Data::Erased => S_WIPED,
+    }
 }
 
 /// A part of the phone erasing goes through, as its page names it.
-pub fn part(l: Lang, p: Part) -> &'static str {
-    l.pick(match p {
-        Part::Data => ["data 分区", "data 分割區", "data partition"],
-        Part::Cache => ["cache 分区", "cache 分割區", "cache partition"],
-        Part::Metadata => ["metadata 分区", "metadata 分割區", "metadata partition"],
-        Part::AppData => ["应用数据", "應用程式資料", "App data"],
-        Part::Media => ["内部存储", "內部儲存空間", "Internal storage"],
-        Part::AppCaches => ["应用缓存", "應用程式快取", "App caches"],
-        Part::SystemCaches => ["系统缓存", "系統快取", "System caches"],
-        Part::Art => ["ART 缓存", "ART 快取", "ART cache"],
-        Part::Logs => ["日志", "記錄", "Logs"],
-        Part::Updates => ["下载的更新包", "下載的更新檔", "Downloaded updates"],
-    })
+pub fn part(_l: Lang, p: Part) -> &'static str {
+    match p {
+        Part::Data => S_DATA_PARTITION,
+        Part::Cache => S_CACHE_PARTITION,
+        Part::Metadata => S_METADATA_PARTITION,
+        Part::AppData => S_APP_DATA,
+        Part::Media => S_INTERNAL_STORAGE,
+        Part::AppCaches => S_APP_CACHES,
+        Part::SystemCaches => S_SYSTEM_CACHES,
+        Part::Art => S_ART_CACHE,
+        Part::Logs => S_LOGS,
+        Part::Updates => S_DOWNLOADED_UPDATES,
+    }
 }
 
 /// A part of the phone erasing goes through, as an English sentence names
@@ -483,15 +400,6 @@ fn part_in_sentence(p: Part) -> &'static str {
     }
 }
 
-/// `before`, `inner` and `after` joined, with a space between Chinese and
-/// the Latin letters or digits at either end of `inner`, as the pages write
-/// them: 清除 ART 缓存失败.
-pub(crate) fn spaced(before: &str, inner: &str, after: &str) -> String {
-    let open = if inner.starts_with(|c: char| c.is_ascii()) && !before.ends_with(|c: char| c.is_ascii()) { " " } else { "" };
-    let close = if inner.ends_with(|c: char| c.is_ascii()) && !after.starts_with(|c: char| c.is_ascii()) { " " } else { "" };
-    format!("{before}{open}{inner}{close}{after}")
-}
-
 /// A name that opens an English title, as it reads within a sentence: its
 /// first letter small, unless the word is written all in capitals.
 fn in_sentence(name: &str) -> String {
@@ -508,104 +416,71 @@ fn in_sentence(name: &str) -> String {
 /// commas, each after the first as a sentence names it.
 pub fn list<'a>(l: Lang, names: impl IntoIterator<Item = &'a str>) -> String {
     let names: Vec<String> = names.into_iter().enumerate().map(|(k, n)| if l == Lang::En && k > 0 { in_sentence(n) } else { n.to_string() }).collect();
-    names.join(l.pick(["、", "、", ", "]))
+    names.join(S_TEXT_4)
 }
 
 /// Users by how the pages call them: the owner, then the others by number,
-/// as「机主、用户 999」, or as an English sentence names them, as "the owner
+/// as「the owner, user 999」, or as an English sentence names them, as "the owner
 /// and user 999".
-pub fn users(l: Lang, users: &[u32]) -> String {
+pub fn users(_l: Lang, users: &[u32]) -> String {
     let names: Vec<String> = users
         .iter()
         .map(|&u| match u {
-            0 => l.pick(["机主", "擁有者", "the owner"]).to_string(),
-            u => tr!(l, "用户 {u}", "使用者 {u}", "user {u}"),
+            0 => S_THE_OWNER.to_string(),
+            u => crate::t!(S_USER, u = u),
         })
         .collect();
-    match (l, names.as_slice()) {
-        (Lang::En, [.., last]) if names.len() > 1 => format!("{} and {last}", names[..names.len() - 1].join(", ")),
-        (Lang::En, _) => names.join(""),
-        _ => names.join("、"),
+    match names.as_slice() {
+        [.., last] if names.len() > 1 => format!("{} and {last}", names[..names.len() - 1].join(", ")),
+        _ => names.join(""),
     }
 }
 
 /// Why erasing did not start or stopped short, and what the system said of
 /// it when there is that.
 pub fn erase_stop(l: Lang, s: &EraseStop) -> (String, Option<String>) {
-    let said = |text: Text| l.pick(text).to_string();
+    let said = |text: Text| text.to_string();
     match s {
         EraseStop::Update(Hold::Unconfirmed) => (
-            said([
-                "当前槽位的系统更新尚未完成，暂无法清除。你可以在「安装」中合并后重试。",
-                "目前槽位的系統更新尚未完成，暫時無法清除。你可以在「安裝」中合併後重試。",
-                "The current slot's system update hasn't finished, so nothing can be wiped yet. Merge it in Install, then try again.",
-            ]),
+            said(S_THE_CURRENT_SLOTS_SYSTEM_UPDATE_HASNT_FINISHED_SO_NOTHING_CAN_BE_WIPED_YET_MERGE_IT_IN_INSTALL_THEN_TRY_AGAIN),
             None,
         ),
         EraseStop::Update(Hold::Merging) => (
-            said([
-                "系统更新正在合并，暂无法清除。你可以在「安装」中查看，合并完成后重试。",
-                "系統更新正在合併，暫時無法清除。你可以在「安裝」中查看，合併完成後重試。",
-                "A system update is merging, so nothing can be wiped yet. You can see it in Install; try again once it has merged.",
-            ]),
+            said(S_A_SYSTEM_UPDATE_IS_MERGING_SO_NOTHING_CAN_BE_WIPED_YET_YOU_CAN_SEE_IT_IN_INSTALL_TRY_AGAIN_ONCE_IT_HAS_MERGED),
             None,
         ),
         EraseStop::Update(Hold::MergeFailed) => (
-            said([
-                "系统更新合并失败，暂无法清除。请先启动系统处理后重试。",
-                "系統更新合併失敗，暫時無法清除。請先啟動系統處理後重試。",
-                "A system update failed to merge, so nothing can be wiped yet. Start the system to deal with it, then try again.",
-            ]),
+            said(S_A_SYSTEM_UPDATE_FAILED_TO_MERGE_SO_NOTHING_CAN_BE_WIPED_YET_START_THE_SYSTEM_TO_DEAL_WITH_IT_THEN_TRY_AGAIN),
             None,
         ),
         EraseStop::NotRebuilt => (
-            said([
-                "本机系统开机时不会重新创建已清空的 data 分区，无法清除。",
-                "本機系統開機時不會重新建立已清空的 data 分割區，無法清除。",
-                "This phone's system doesn't make an emptied data partition anew when it starts, so it can't be wiped.",
-            ]),
+            said(S_THIS_PHONES_SYSTEM_DOESNT_MAKE_AN_EMPTIED_DATA_PARTITION_ANEW_WHEN_IT_STARTS_SO_IT_CANT_BE_WIPED),
             None,
         ),
-        EraseStop::NoCache => (said(["本机没有 cache 分区。", "本機沒有 cache 分割區。", "This phone has no cache partition."]), None),
+        EraseStop::NoCache => (said(S_THIS_PHONE_HAS_NO_CACHE_PARTITION), None),
         EraseStop::Erased => (
-            said([
-                "data 分区已清空，下次开机时将重新创建，暂无可清除的内容。",
-                "data 分割區已清空，下次開機時將重新建立，目前沒有可清除的內容。",
-                "The data partition is empty and will be made anew when the phone next starts. There's nothing to wipe.",
-            ]),
+            said(S_THE_DATA_PARTITION_IS_EMPTY_AND_WILL_BE_MADE_ANEW_WHEN_THE_PHONE_NEXT_STARTS_THERES_NOTHING_TO_WIPE),
             None,
         ),
         EraseStop::Closed(why) => (
-            said(["无法打开 data 分区，未清除任何内容。", "無法開啟 data 分割區，未清除任何內容。", "Couldn't open the data partition, so nothing was wiped."]),
+            said(S_COULDNT_OPEN_THE_DATA_PARTITION_SO_NOTHING_WAS_WIPED),
             Some(why.clone()),
         ),
         EraseStop::Locked(locked) => {
             let who = users(l, locked);
-            let what = match l {
-                Lang::Hans => spaced("", &who, "的数据尚未解密，未清除任何内容。请先在「解密」中输入锁屏密码后重试。"),
-                Lang::Hant => spaced("", &who, "的資料尚未解密，未清除任何內容。請先在「解密」中輸入螢幕鎖定密碼後重試。"),
-                Lang::En => format!("The data of {who} isn't decrypted, so nothing was wiped. Enter the screen lock in Decrypt, then try again."),
-            };
+            let what = format!("The data of {who} isn't decrypted, so nothing was wiped. Enter the screen lock in Decrypt, then try again.");
             (what, None)
         }
         EraseStop::Failed(p, why) => {
-            let what = match l {
-                Lang::Hans => spaced("清除", part(l, *p), "失败。"),
-                Lang::Hant => spaced("清除", part(l, *p), "失敗。"),
-                Lang::En => format!("Couldn't wipe {}.", part_in_sentence(*p)),
-            };
+            let what = format!("Couldn't wipe {}.", part_in_sentence(*p));
             (what, Some(why.clone()))
         }
     }
 }
 
-/// How work on whole partitions of a kind is told of: the Chinese verb its
-/// sentences are built on, in simplified and in traditional characters,
-/// and English's own words for it.
+/// How work on whole partitions of a kind is told of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Verb {
-    hans: &'static str,
-    hant: &'static str,
     /// Under way: Repairing.
     going: &'static str,
     /// Done to a partition: repaired.
@@ -618,75 +493,64 @@ pub struct Verb {
 
 impl Verb {
     pub fn of(kind: &PartKind) -> Verb {
-        let (hans, hant, going, done, noun, base) = match kind {
-            PartKind::Disable => ("清除", "清除", "Wiping", "wiped", "Wipe", "wipe"),
-            PartKind::Unshare => ("处理", "處理", "Unsharing", "unshared", "Unsharing", "unshare"),
-            PartKind::Repair => ("修复", "修復", "Repairing", "repaired", "Repair", "repair"),
-            PartKind::Remake(_) => ("格式化", "格式化", "Formatting", "formatted", "Format", "format"),
+        let (going, done, noun, base) = match kind {
+            PartKind::Disable => ("Wiping", "wiped", "Wipe", "wipe"),
+            PartKind::Unshare => ("Unsharing", "unshared", "Unsharing", "unshare"),
+            PartKind::Repair => ("Repairing", "repaired", "Repair", "repair"),
+            PartKind::Remake(_) => ("Formatting", "formatted", "Format", "format"),
         };
-        Verb { hans, hant, going, done, noun, base }
+        Verb { going, done, noun, base }
     }
 
-    /// Under way: 正在修复, Repairing.
-    pub fn going(self, l: Lang) -> String {
-        let (hans, hant, going) = (self.hans, self.hant, self.going);
-        tr!(l, "正在{hans}", "正在{hant}", "{going}")
+    /// Under way: Repairing.
+    pub fn going(self, _l: Lang) -> String {
+        crate::t!(S_TEXT, going = self.going)
     }
 
-    /// Ended, with every partition done: 修复完成, Repair complete.
-    pub fn complete(self, l: Lang) -> String {
-        let (hans, hant, noun) = (self.hans, self.hant, self.noun);
-        tr!(l, "{hans}完成", "{hant}完成", "{noun} complete")
+    /// Ended, with every partition done: Repair complete.
+    pub fn complete(self, _l: Lang) -> String {
+        crate::t!(S_COMPLETE, noun = self.noun)
     }
 
-    /// Ended partway through the partitions: 清除未完成, Wipe incomplete.
-    pub fn incomplete(self, l: Lang) -> String {
-        let (hans, hant, noun) = (self.hans, self.hant, self.noun);
-        tr!(l, "{hans}未完成", "{hant}未完成", "{noun} incomplete")
+    /// Ended partway through the partitions: Wipe incomplete.
+    pub fn incomplete(self, _l: Lang) -> String {
+        crate::t!(S_INCOMPLETE, noun = self.noun)
     }
 
-    /// Gone wrong: 修复失败, Repair failed.
-    pub fn failed(self, l: Lang) -> String {
-        let (hans, hant, noun) = (self.hans, self.hant, self.noun);
-        tr!(l, "{hans}失败", "{hant}失敗", "{noun} failed")
+    /// Gone wrong: Repair failed.
+    pub fn failed(self, _l: Lang) -> String {
+        crate::t!(S_FAILED, noun = self.noun)
     }
 
-    /// A partition the work ended before: 未修复, Not repaired.
-    pub fn not_done(self, l: Lang) -> String {
-        let (hans, hant, done) = (self.hans, self.hant, self.done);
-        tr!(l, "未{hans}", "未{hant}", "Not {done}")
+    /// A partition the work ended before: Not repaired.
+    pub fn not_done(self, _l: Lang) -> String {
+        crate::t!(S_NOT, done = self.done)
     }
 
-    /// What the page asks while the work goes on: 修复完成前，请不要关机。
-    pub fn hold_on(self, l: Lang) -> String {
-        let (hans, hant) = (self.hans, self.hant);
-        tr!(l, "{hans}完成前，请不要关机。", "{hant}完成前，請不要關機。", "Don't power off until it's done.")
+    /// What the page asks while the work goes on.
+    pub fn hold_on(self, _l: Lang) -> String {
+        S_DONT_POWER_OFF_UNTIL_ITS_DONE.to_string()
     }
 
-    /// What could not be done to the partition `name`: 修复 vendor 失败,
-    /// Couldn't repair vendor.
-    pub fn failed_on(self, l: Lang, name: &str) -> String {
-        match l {
-            Lang::Hans => spaced(self.hans, name, "失败"),
-            Lang::Hant => spaced(self.hant, name, "失敗"),
-            Lang::En => format!("Couldn't {} {name}", self.base),
-        }
+    /// What could not be done to the partition `name`.
+    pub fn failed_on(self, _l: Lang, name: &str) -> String {
+        format!("Couldn't {} {name}", self.base)
     }
 }
 
 /// How a partition's work ended, as its row says it, `verb` telling of the
-/// work: 已修复, 修复失败.
+/// work: Repaired, Repair failed.
 pub fn item_end(l: Lang, end: &ItemEnd, verb: Verb) -> String {
     let text = match end {
-        ItemEnd::Erased => ["已清除", "已清除", "Wiped"],
-        ItemEnd::Unshared => ["已处理", "已處理", "Unshared"],
-        ItemEnd::NotShared(_) => ["无需处理", "無需處理", "Nothing to do"],
-        ItemEnd::Clean => ["未发现错误", "未發現錯誤", "No errors found"],
-        ItemEnd::Fixed => ["已修复", "已修復", "Repaired"],
-        ItemEnd::Made => ["已格式化", "已格式化", "Formatted"],
+        ItemEnd::Erased => S_WIPED,
+        ItemEnd::Unshared => S_UNSHARED,
+        ItemEnd::NotShared(_) => S_NOTHING_TO_DO,
+        ItemEnd::Clean => S_NO_ERRORS_FOUND,
+        ItemEnd::Fixed => S_REPAIRED,
+        ItemEnd::Made => S_FORMATTED,
         ItemEnd::Failed(_) => return verb.failed(l),
     };
-    l.pick(text).to_string()
+    text.to_string()
 }
 
 /// Why work on whole partitions stopped before going through them, on a
@@ -696,16 +560,16 @@ pub fn part_stop(l: Lang, stop: &PartStop, codename: &str) -> (String, Option<St
     match stop {
         PartStop::Refused(r) => (erase_request_refusal(l, r, codename), None),
         PartStop::Unmounted(base) => (
-            tr!(l, "请先在「挂载」中挂载 {base} 分区后重试。", "請先在「掛載」中掛載 {base} 分割區後重試。", "Mount the {base} partition in Mount, then try again."),
+            crate::t!(S_MOUNT_THE_PARTITION_IN_MOUNT_THEN_TRY_AGAIN, base = base),
             None,
         ),
-        PartStop::Failed(why) => (l.pick(UNEXPECTED).into(), Some(why.clone())),
+        PartStop::Failed(why) => (UNEXPECTED.into(), Some(why.clone())),
     }
 }
 
 /// What the pages say of an error they have no words of their own for,
 /// above what went wrong.
-const UNEXPECTED: Text = ["发生意外错误。", "發生未預期的錯誤。", "Something went wrong."];
+const UNEXPECTED: Text = S_SOMETHING_WENT_WRONG;
 
 /// A file size, `7.1GB` or `96.0MB`.
 pub fn bytes(n: u64) -> String {
@@ -720,14 +584,14 @@ pub fn bytes(n: u64) -> String {
 /// The months, as English names them.
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// A day of the calendar as the language writes it: `2026年5月8日`,
+/// A day of the calendar as the language writes it: `May 8, 2026`,
 /// `May 8, 2026`.
-fn day(l: Lang, year: i32, month: i32, d: i32) -> String {
+fn day(_l: Lang, year: i32, month: i32, d: i32) -> String {
     let name = MONTHS[(month - 1) as usize];
-    tr!(l, "{year}年{month}月{d}日", "{year}年{month}月{d}日", "{name} {d}, {year}")
+    crate::t!(S_TEXT_2, name = name, d = d, year = year)
 }
 
-/// `2026年4月1日`
+/// `April 1, 2026`
 pub fn patch(l: Lang, p: &PatchLevel) -> String {
     day(l, p.year.into(), p.month.into(), p.day.into())
 }
@@ -752,7 +616,7 @@ fn local(unix: i64, zone: usize) -> DateTime {
 }
 
 /// The day a Unix time falls on in the zone at `zone` in [`TIME_ZONES`],
-/// `2026年5月8日`.
+/// `May 8, 2026`.
 pub fn date(l: Lang, unix: i64, zone: usize) -> String {
     let d = local(unix, zone);
     day(l, d.year().into(), d.month().into(), d.day().into())
@@ -793,10 +657,10 @@ pub fn file_size(bytes: u64) -> String {
 }
 
 /// A Unix time in the zone at `zone` in [`TIME_ZONES`], to the minute:
-/// `2026年10月19日 02:31`, `October 19, 2026, 02:31`.
+/// `October 19, 2026, 02:31`, `October 19, 2026, 02:31`.
 pub fn datetime(l: Lang, unix: i64, zone: usize) -> String {
     let (date, clock) = (date(l, unix, zone), clock(unix, zone));
-    tr!(l, "{date} {clock}", "{date} {clock}", "{date}, {clock}")
+    crate::t!(S_TEXT_3, date = date, clock = clock)
 }
 
 /// The time of day in the zone at `zone` in [`TIME_ZONES`], `HH:MM`, as
@@ -849,114 +713,114 @@ pub fn file_line(l: Lang, f: &FileRow, now: i64, zone: usize) -> String {
         FileKind::Folder { items: Some(n) } => {
             let items = match (l, n) {
                 (Lang::En, 1) => "1 item".to_string(),
-                _ => tr!(l, "{n} 项", "{n} 項", "{n} items"),
+                _ => crate::t!(S_ITEMS, n = n),
             };
             format!("{}{DIVIDER}{items}", file_time(f.modified, true, now, zone))
         }
-        FileKind::Folder { items: None } => l.pick(["无法读取", "無法讀取", "Unreadable"]).to_string(),
+        FileKind::Folder { items: None } => S_UNREADABLE.to_string(),
         FileKind::File => format!("{}{DIVIDER}{}", file_time(f.modified, false, now, zone), file_size(f.size)),
-        FileKind::Link { target, .. } => tr!(l, "链接到 {target}", "連結到 {target}", "Link to {target}"),
+        FileKind::Link { target, .. } => crate::t!(S_LINK_TO, target = target),
         FileKind::Special => {
-            let what = l.pick(match f.mode & 0o170_000 {
-                0o020_000 => ["字符设备", "字元裝置", "Character device"],
-                0o060_000 => ["块设备", "區塊裝置", "Block device"],
-                0o010_000 => ["管道", "管道", "Pipe"],
-                _ => ["套接字", "通訊端", "Socket"],
-            });
+            let what = match f.mode & 0o170_000 {
+                0o020_000 => S_CHARACTER_DEVICE,
+                0o060_000 => S_BLOCK_DEVICE,
+                0o010_000 => S_PIPE,
+                _ => S_SOCKET,
+            };
             format!("{}{DIVIDER}{what}", file_time(f.modified, false, now, zone))
         }
     }
 }
 
-/// The parts a backup holds: `启动分区、系统分区`.
+/// The parts a backup holds: `boot, system`.
 pub fn parts(l: Lang, held: &[bool; 4]) -> String {
-    list(l, BACKUP_PARTS.iter().zip(held).filter(|(_, &on)| on).map(|(name, _)| l.pick(*name)))
+    list(l, BACKUP_PARTS.iter().zip(held).filter(|(_, &on)| on).map(|(name, _)| *name))
 }
 
 /// What an image is, and what it holds.
-pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, &'static str) {
-    const RECOVERY: Text = ["恢复模式镜像", "復原模式映像檔", "Recovery image"];
-    const BOOT: Text = ["启动镜像", "啟動映像檔", "Boot image"];
+pub fn image_kind(_l: Lang, kind: ImageKind) -> (&'static str, &'static str) {
+    const RECOVERY: Text = S_RECOVERY_IMAGE;
+    const BOOT: Text = S_BOOT_IMAGE;
     let (name, holds) = match kind {
         ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery } => {
-            (RECOVERY, ["包含内核和恢复模式 ramdisk", "包含核心和復原模式 ramdisk", "Holds a kernel and a recovery ramdisk"])
+            (RECOVERY, S_HOLDS_A_KERNEL_AND_A_RECOVERY_RAMDISK)
         }
         ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Recovery } => {
-            (RECOVERY, ["仅包含恢复模式 ramdisk", "僅包含復原模式 ramdisk", "Holds a recovery ramdisk alone"])
+            (RECOVERY, S_HOLDS_A_RECOVERY_RAMDISK_ALONE)
         }
         ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Generic } => {
-            (BOOT, ["包含内核和通用 ramdisk", "包含核心和通用 ramdisk", "Holds a kernel and a generic ramdisk"])
+            (BOOT, S_HOLDS_A_KERNEL_AND_A_GENERIC_RAMDISK)
         }
-        ImageKind::Boot { kernel: true, ramdisk: Ramdisk::None } => (BOOT, ["仅包含内核", "僅包含核心", "Holds a kernel alone"]),
-        ImageKind::Boot { kernel: false, .. } => (BOOT, ["仅包含通用 ramdisk", "僅包含通用 ramdisk", "Holds a generic ramdisk alone"]),
+        ImageKind::Boot { kernel: true, ramdisk: Ramdisk::None } => (BOOT, S_HOLDS_A_KERNEL_ALONE),
+        ImageKind::Boot { kernel: false, .. } => (BOOT, S_HOLDS_A_GENERIC_RAMDISK_ALONE),
         ImageKind::VendorBoot => {
-            (["vendor_boot 镜像", "vendor_boot 映像檔", "vendor_boot image"], ["包含厂商 ramdisk 和设备树", "包含廠商 ramdisk 和裝置樹", "Holds the vendor ramdisk and device tree"])
+            (S_VENDOR_BOOT_IMAGE, S_HOLDS_THE_VENDOR_RAMDISK_AND_DEVICE_TREE)
         }
-        ImageKind::Dtbo => (["dtbo 镜像", "dtbo 映像檔", "dtbo image"], ["包含设备树叠加层", "包含裝置樹疊加層", "Holds device tree overlays"]),
-        ImageKind::Vbmeta => (["vbmeta 镜像", "vbmeta 映像檔", "vbmeta image"], ["包含启动验证数据", "包含啟動驗證資料", "Holds verified boot data"]),
+        ImageKind::Dtbo => (S_DTBO_IMAGE, S_HOLDS_DEVICE_TREE_OVERLAYS),
+        ImageKind::Vbmeta => (S_VBMETA_IMAGE, S_HOLDS_VERIFIED_BOOT_DATA),
     };
-    (l.pick(name), l.pick(holds))
+    (name, holds)
 }
 
 /// What a partition an image can go to is for.
-pub fn partition_role(l: Lang, name: &str) -> &'static str {
-    l.pick(match name {
-        "boot" => ["内核", "核心", "Kernel"],
-        "init_boot" => ["通用 ramdisk", "通用 ramdisk", "Generic ramdisk"],
-        "recovery" => ["恢复模式", "復原模式", "Recovery"],
-        "vendor_boot" => ["厂商 ramdisk 和设备树", "廠商 ramdisk 和裝置樹", "Vendor ramdisk and device tree"],
-        "dtbo" => ["设备树叠加层", "裝置樹疊加層", "Device tree overlays"],
-        "vbmeta" => ["启动验证数据", "啟動驗證資料", "Verified boot data"],
-        "vbmeta_system" => ["系统分区的验证数据", "系統分割區的驗證資料", "Verification data of the system partitions"],
-        "vbmeta_vendor" => ["厂商分区的验证数据", "廠商分割區的驗證資料", "Verification data of the vendor partitions"],
-        _ => ["分区", "分割區", "Partition"],
-    })
-}
-
-/// `槽位 B`, `槽位 A 和 B`, `slot B`, `slots A and B`
-pub fn slots(l: Lang, slots: &[Slot]) -> String {
-    let letters: Vec<&str> = slots.iter().map(|s| s.letter()).collect();
-    let joined = letters.join(l.pick([" 和 ", " 和 ", " and "]));
-    match (l, slots.len()) {
-        (Lang::En, 1) => format!("slot {joined}"),
-        (Lang::En, _) => format!("slots {joined}"),
-        _ => format!("槽位 {joined}"),
+pub fn partition_role(_l: Lang, name: &str) -> &'static str {
+    match name {
+        "boot" => S_KERNEL,
+        "init_boot" => S_GENERIC_RAMDISK,
+        "recovery" => S_RECOVERY,
+        "vendor_boot" => S_VENDOR_RAMDISK_AND_DEVICE_TREE,
+        "dtbo" => S_DEVICE_TREE_OVERLAYS,
+        "vbmeta" => S_VERIFIED_BOOT_DATA,
+        "vbmeta_system" => S_VERIFICATION_DATA_OF_THE_SYSTEM_PARTITIONS,
+        "vbmeta_vendor" => S_VERIFICATION_DATA_OF_THE_VENDOR_PARTITIONS,
+        _ => S_PARTITION,
     }
 }
 
-/// How long the screen stays on with nothing touched: `30 秒`, `2 分钟`,
-/// or `永不`.
+/// `slot B`, `slots A and B`, `slot B`, `slots A and B`
+pub fn slots(_l: Lang, slots: &[Slot]) -> String {
+    let letters: Vec<&str> = slots.iter().map(|s| s.letter()).collect();
+    let joined = letters.join(S_AND);
+    if slots.len() == 1 {
+        format!("slot {joined}")
+    } else {
+        format!("slots {joined}")
+    }
+}
+
+/// How long the screen stays on with nothing touched: `30 seconds`, `2 minutes`,
+/// or `Never`.
 pub fn screen_off(l: Lang, after_ms: Option<u64>) -> String {
     match after_ms {
-        None => l.pick(["永不", "永不", "Never"]).into(),
+        None => S_NEVER.into(),
         Some(ms) if ms < 60_000 => match (l, ms / 1000) {
             (Lang::En, 1) => "1 second".into(),
-            (_, n) => tr!(l, "{n} 秒", "{n} 秒", "{n} seconds"),
+            (_, n) => crate::t!(S_SECONDS, n = n),
         },
         Some(ms) => match (l, ms / 60_000) {
             (Lang::En, 1) => "1 minute".into(),
-            (_, n) => tr!(l, "{n} 分钟", "{n} 分鐘", "{n} minutes"),
+            (_, n) => crate::t!(S_MINUTES, n = n),
         },
     }
 }
 
-/// A mount or unmount that failed, with why: `挂载 vendor 失败：…`
-pub fn mount_failure(l: Lang, m: &MountFailure) -> String {
+/// A mount or unmount that failed, with why: `Couldn't mount vendor: …`
+pub fn mount_failure(_l: Lang, m: &MountFailure) -> String {
     let (base, detail) = (&m.base, &m.detail);
     match m.mounting {
-        true => tr!(l, "挂载 {base} 失败：{detail}", "掛載 {base} 失敗：{detail}", "Couldn't mount {base}: {detail}"),
-        false => tr!(l, "卸载 {base} 失败：{detail}", "卸載 {base} 失敗：{detail}", "Couldn't unmount {base}: {detail}"),
+        true => crate::t!(S_COULDNT_MOUNT, base = base, detail = detail),
+        false => crate::t!(S_COULDNT_UNMOUNT, base = base, detail = detail),
     }
 }
 
 /// How another package is given to the installer from where this one came
 /// from: the computer sends it, or another file is chosen, as one is in
 /// place of a package the system named. English starts its sentence with it.
-fn give(l: Lang, source: Source) -> &'static str {
-    l.pick(match source {
-        Source::Computer | Source::Rescue => ["发送", "傳送", "Send"],
-        Source::File(_) | Source::Opened { .. } | Source::Asked { .. } => ["选择", "選擇", "Choose"],
-    })
+fn give(_l: Lang, source: Source) -> &'static str {
+    match source {
+        Source::Computer | Source::Rescue => S_SEND,
+        Source::File(_) | Source::Opened { .. } | Source::Asked { .. } => S_CHOOSE,
+    }
 }
 
 /// Why a package from `source` was not installed, for a phone with this
@@ -964,106 +828,35 @@ fn give(l: Lang, source: Source) -> &'static str {
 pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize) -> String {
     let give = give(l, source);
     match r {
-        Refusal::Unknown => tr!(
-            l,
-            "无法识别该文件，请{give} A/B 完整更新包、刷机包或分区镜像。",
-            "無法辨識這個檔案，請{give} A/B 完整更新檔、刷機包或分割區映像檔。",
-            "This file isn't recognized. {give} an A/B full OTA package, a flashable zip or a partition image."
-        ),
-        Refusal::Image => tr!(
-            l,
-            "无法安装分区镜像，请{give} A/B 完整更新包或刷机包。",
-            "無法安裝分割區映像檔，請{give} A/B 完整更新檔或刷機包。",
-            "A partition image can't be installed this way. {give} an A/B full OTA package or a flashable zip."
-        ),
-        Refusal::NotAb(kind) if kind.is_empty() => tr!(
-            l,
-            "该更新包未注明类型，请{give} A/B 完整更新包。",
-            "這個更新檔未註明類型，請{give} A/B 完整更新檔。",
-            "This package doesn't say its type. {give} an A/B full OTA package."
-        ),
-        Refusal::NotAb(kind) => tr!(
-            l,
-            "该更新包的类型为 {kind}，请{give} A/B 完整更新包。",
-            "這個更新檔的類型為 {kind}，請{give} A/B 完整更新檔。",
-            "This package's type is {kind}. {give} an A/B full OTA package."
-        ),
-        Refusal::OtherDevice(devices) => tr!(
-            l,
-            "该更新包适用于 {devices}，本机为 {codename}。",
-            "這個更新檔適用於 {devices}，本機為 {codename}。",
-            "This package is for {devices}, and this phone is {codename}."
-        ),
-        Refusal::OtherSerial => l
-            .pick([
-                "该更新包仅适用于指定序列号的设备，不包括本机。",
-                "這個更新檔僅適用於指定序號的裝置，不包括本機。",
-                "This package is only for devices with certain serial numbers, and this phone isn't one of them.",
-            ])
+        Refusal::Unknown => crate::t!(S_THIS_FILE_ISNT_RECOGNIZED_AN_A_B_FULL_OTA_PACKAGE_A_FLASHABLE_ZIP_OR_A_PARTITION_IMAGE, give = give),
+        Refusal::Image => crate::t!(S_A_PARTITION_IMAGE_CANT_BE_INSTALLED_THIS_WAY_AN_A_B_FULL_OTA_PACKAGE_OR_A_FLASHABLE_ZIP, give = give),
+        Refusal::NotAb(kind) if kind.is_empty() => crate::t!(S_THIS_PACKAGE_DOESNT_SAY_ITS_TYPE_AN_A_B_FULL_OTA_PACKAGE, give = give),
+        Refusal::NotAb(kind) => crate::t!(S_THIS_PACKAGES_TYPE_IS_AN_A_B_FULL_OTA_PACKAGE, kind = kind, give = give),
+        Refusal::OtherDevice(devices) => crate::t!(S_THIS_PACKAGE_IS_FOR_AND_THIS_PHONE_IS, devices = devices, codename = codename),
+        Refusal::OtherSerial => S_THIS_PACKAGE_IS_ONLY_FOR_DEVICES_WITH_CERTAIN_SERIAL_NUMBERS_AND_THIS_PHONE_ISNT_ONE_OF_THEM
             .into(),
-        Refusal::Incremental => tr!(
-            l,
-            "无法安装增量更新包，请{give}完整更新包。",
-            "無法安裝增量更新檔，請{give}完整更新檔。",
-            "An incremental OTA package can't be installed. {give} a full OTA package."
-        ),
+        Refusal::Incremental => crate::t!(S_AN_INCREMENTAL_OTA_PACKAGE_CANT_BE_INSTALLED_A_FULL_OTA_PACKAGE, give = give),
         Refusal::Older { package, installed } => {
             let (package, installed) = (date(l, *package, zone), date(l, *installed, zone));
-            tr!(
-                l,
-                "该更新包的构建日期为 {package}，早于当前系统的 {installed}。",
-                "這個更新檔的建置日期為 {package}，早於目前系統的 {installed}。",
-                "This package was built on {package}, before the current system, built on {installed}."
-            )
+            crate::t!(S_THIS_PACKAGE_WAS_BUILT_ON_BEFORE_THE_CURRENT_SYSTEM_BUILT_ON, package = package, installed = installed)
         }
-        Refusal::OlderPatch { package, installed } => tr!(
-            l,
-            "该更新包的安全补丁为 {package}，早于当前系统的 {installed}。",
-            "這個更新檔的安全性修補程式為 {package}，早於目前系統的 {installed}。",
-            "This package's security patch is {package}, older than the current system's {installed}."
-        ),
-        Refusal::NoPartition => l.pick(["本机没有可刷入该镜像的分区。", "本機沒有可刷入這個映像檔的分割區。", "This phone has no partition this image can be flashed to."]).into(),
+        Refusal::OlderPatch { package, installed } => crate::t!(S_THIS_PACKAGES_SECURITY_PATCH_IS_OLDER_THAN_THE_CURRENT_SYSTEMS, package = package, installed = installed),
+        Refusal::NoPartition => S_THIS_PHONE_HAS_NO_PARTITION_THIS_IMAGE_CAN_BE_FLASHED_TO.into(),
         Refusal::Battery { level, charging } => {
             let least = skyward_install::least_charge(*charging);
-            tr!(
-                l,
-                "电量仅剩 {level}%，请充电至 {least}% 以上后重试。",
-                "電量僅剩 {level}%，請充電至 {least}% 以上後重試。",
-                "The battery is at {level}%. Charge it past {least}%, then try again."
-            )
+            crate::t!(S_THE_BATTERY_IS_AT_CHARGE_IT_PAST_THEN_TRY_AGAIN, level = level, least = least)
         }
         Refusal::Pending(state) => {
             let standing = snapshot(l, state);
-            tr!(
-                l,
-                "{standing}。请重启到系统，完成上一次更新后重试。",
-                "{standing}。請重新啟動到系統，完成上一次更新後重試。",
-                "{standing}. Reboot to the system to finish the last update, then try again."
-            )
+            crate::t!(S_REBOOT_TO_THE_SYSTEM_TO_FINISH_THE_LAST_UPDATE_THEN_TRY_AGAIN, standing = standing)
         }
-        Refusal::OldHost => l
-            .pick([
-                "电脑上的 adb 版本过低，请更新 Android SDK Platform-Tools 后重试。",
-                "電腦上的 adb 版本過舊，請更新 Android SDK Platform-Tools 後重試。",
-                "The computer's adb is too old. Update Android SDK Platform-Tools, then try again.",
-            ])
+        Refusal::OldHost => S_THE_COMPUTERS_ADB_IS_TOO_OLD_UPDATE_ANDROID_SDK_PLATFORM_TOOLS_THEN_TRY_AGAIN
             .into(),
-        Refusal::Unsigned => l
-            .pick([
-                "该刷机包未签名，请关闭「验证刷机包签名」后重试。",
-                "這個刷機包未簽署，請關閉「驗證刷機包簽章」後重試。",
-                "This zip isn't signed. Turn off “Verify zip signatures”, then try again.",
-            ])
+        Refusal::Unsigned => S_THIS_ZIP_ISNT_SIGNED_TURN_OFF_VERIFY_ZIP_SIGNATURES_THEN_TRY_AGAIN
             .into(),
-        Refusal::Unverified => l
-            .pick([
-                "该刷机包未通过签名验证，请关闭「验证刷机包签名」后重试。",
-                "這個刷機包未通過簽章驗證，請關閉「驗證刷機包簽章」後重試。",
-                "This zip's signature didn't verify. Turn off “Verify zip signatures”, then try again.",
-            ])
+        Refusal::Unverified => S_THIS_ZIPS_SIGNATURE_DIDNT_VERIFY_TURN_OFF_VERIFY_ZIP_SIGNATURES_THEN_TRY_AGAIN
             .into(),
-        Refusal::Panicked => l
-            .pick(["暂无法安装该更新，请重启到系统后重试。", "暫時無法安裝這個更新，請重新啟動到系統後重試。", "This update can't be installed now. Reboot to the system, then try again."])
+        Refusal::Panicked => S_THIS_UPDATE_CANT_BE_INSTALLED_NOW_REBOOT_TO_THE_SYSTEM_THEN_TRY_AGAIN
             .into(),
         Refusal::NotBrick(_) | Refusal::NoSerial => unreachable!("only a request to erase partitions is refused as {r:?}"),
     }
@@ -1071,23 +864,18 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
 
 /// Why the system's request to erase the partitions it lists was not
 /// carried out, on a phone whose codename is `codename`.
-pub fn erase_request_refusal(l: Lang, r: &Refusal, codename: &str) -> String {
+pub fn erase_request_refusal(_l: Lang, r: &Refusal, codename: &str) -> String {
     match r {
-        Refusal::Unsigned => l.pick(["该请求未签名。", "這項要求未簽署。", "The request isn't signed."]).into(),
-        Refusal::Unverified => l.pick(["该请求未通过签名验证。", "這項要求未通過簽章驗證。", "The request's signature didn't verify."]).into(),
-        Refusal::NotBrick(kind) if kind.is_empty() => l.pick(["该请求未注明类型。", "這項要求未註明類型。", "The request doesn't say its type."]).into(),
-        Refusal::NotBrick(kind) => tr!(l, "该请求的类型为 {kind}。", "這項要求的類型為 {kind}。", "The request's type is {kind}."),
+        Refusal::Unsigned => S_THE_REQUEST_ISNT_SIGNED.into(),
+        Refusal::Unverified => S_THE_REQUESTS_SIGNATURE_DIDNT_VERIFY.into(),
+        Refusal::NotBrick(kind) if kind.is_empty() => S_THE_REQUEST_DOESNT_SAY_ITS_TYPE.into(),
+        Refusal::NotBrick(kind) => crate::t!(S_THE_REQUESTS_TYPE_IS, kind = kind),
         Refusal::OtherDevice(devices) => {
-            tr!(l, "该请求适用于 {devices}，本机为 {codename}。", "這項要求適用於 {devices}，本機為 {codename}。", "The request is for {devices}, and this phone is {codename}.")
+            crate::t!(S_THE_REQUEST_IS_FOR_AND_THIS_PHONE_IS, devices = devices, codename = codename)
         }
-        Refusal::OtherSerial => l
-            .pick([
-                "该请求仅适用于指定序列号的设备，不包括本机。",
-                "這項要求僅適用於指定序號的裝置，不包括本機。",
-                "The request is only for devices with certain serial numbers, and this phone isn't one of them.",
-            ])
+        Refusal::OtherSerial => S_THE_REQUEST_IS_ONLY_FOR_DEVICES_WITH_CERTAIN_SERIAL_NUMBERS_AND_THIS_PHONE_ISNT_ONE_OF_THEM
             .into(),
-        Refusal::NoSerial => l.pick(["该请求未注明设备序列号。", "這項要求未註明裝置序號。", "The request names no serial number."]).into(),
+        Refusal::NoSerial => S_THE_REQUEST_NAMES_NO_SERIAL_NUMBER.into(),
         other => unreachable!("a request to erase partitions is not refused as {other:?}"),
     }
 }
@@ -1095,63 +883,50 @@ pub fn erase_request_refusal(l: Lang, r: &Refusal, codename: &str) -> String {
 /// What went wrong installing a package from `source`, and the details
 /// behind it when there are any.
 pub fn failure(l: Lang, f: &Failure, source: Source) -> (String, Option<String>) {
-    let said = |text: Text| l.pick(text).to_string();
+    let said = |text: Text| text.to_string();
     match f {
         Failure::Engine(code) => {
             let what = match (Trouble::of(*code), source) {
                 (Trouble::Signature, _) => {
                     let give = give(l, source);
-                    tr!(
-                        l,
-                        "更新包签名验证失败，请{give}官方更新包。",
-                        "更新檔簽章驗證失敗，請{give}官方更新檔。",
-                        "The package's signature didn't verify. {give} an official package."
-                    )
+                    crate::t!(S_THE_PACKAGES_SIGNATURE_DIDNT_VERIFY_AN_OFFICIAL_PACKAGE, give = give)
                 }
-                (Trouble::Damaged, _) => said(["更新包已损坏，请重新下载。", "更新檔已損壞，請重新下載。", "The package is damaged. Download it again."]),
-                (Trouble::Older, _) => said(["更新包的版本过旧。", "更新檔的版本過舊。", "The package is too old."]),
-                (Trouble::NoSpace, _) => said(["super 分区空间不足。", "super 分割區空間不足。", "Not enough space in the super partition."]),
-                (Trouble::Transfer, Source::Computer | Source::Rescue) => said([
-                    "读取更新包失败，请检查数据线连接后重新发送。",
-                    "讀取更新檔失敗，請檢查傳輸線連接後重新傳送。",
-                    "Couldn't read the package. Check the cable, then send it again.",
-                ]),
+                (Trouble::Damaged, _) => said(S_THE_PACKAGE_IS_DAMAGED_DOWNLOAD_IT_AGAIN),
+                (Trouble::Older, _) => said(S_THE_PACKAGE_IS_TOO_OLD),
+                (Trouble::NoSpace, _) => said(S_NOT_ENOUGH_SPACE_IN_THE_SUPER_PARTITION),
+                (Trouble::Transfer, Source::Computer | Source::Rescue) => said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_CABLE_THEN_SEND_IT_AGAIN),
                 (Trouble::Transfer, Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. }) => {
-                    said(["读取更新包失败。", "讀取更新檔失敗。", "Couldn't read the package."])
+                    said(S_COULDNT_READ_THE_PACKAGE)
                 }
-                (Trouble::Transfer, Source::File(Place::UsbDrive) | Source::Opened { drive: true }) => said([
-                    "读取更新包失败，请检查 U 盘连接后重试。",
-                    "讀取更新檔失敗，請檢查 USB 隨身碟連接後重試。",
-                    "Couldn't read the package. Check the USB drive, then try again.",
-                ]),
-                (Trouble::Write, _) => said(["写入分区失败。", "寫入分割區失敗。", "Couldn't write a partition."]),
-                (Trouble::Verify, _) => said(["分区校验失败。", "分割區驗證失敗。", "A partition didn't verify."]),
-                (Trouble::PostInstall, _) => said(["完成安装失败。", "完成安裝失敗。", "Couldn't finish installing."]),
-                (Trouble::Unsupported, _) => said(["暂不支持该更新包的格式。", "尚不支援這個更新檔的格式。", "This package's format isn't supported."]),
-                (Trouble::Other, _) => said(["更新程序出错。", "更新程式發生錯誤。", "The updater ran into an error."]),
+                (Trouble::Transfer, Source::File(Place::UsbDrive) | Source::Opened { drive: true }) => said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN),
+                (Trouble::Write, _) => said(S_COULDNT_WRITE_A_PARTITION),
+                (Trouble::Verify, _) => said(S_A_PARTITION_DIDNT_VERIFY),
+                (Trouble::PostInstall, _) => said(S_COULDNT_FINISH_INSTALLING),
+                (Trouble::Unsupported, _) => said(S_THIS_PACKAGES_FORMAT_ISNT_SUPPORTED),
+                (Trouble::Other, _) => said(S_THE_UPDATER_RAN_INTO_AN_ERROR),
             };
-            (what, Some(tr!(l, "错误代码：{code}", "錯誤代碼：{code}", "Error code: {code}")))
+            (what, Some(crate::t!(S_ERROR_CODE, code = code)))
         }
         Failure::Script(code) => {
-            (tr!(l, "安装脚本运行失败，退出码为 {code}。", "安裝指令碼執行失敗，結束代碼為 {code}。", "The install script failed with exit code {code}."), None)
+            (crate::t!(S_THE_INSTALL_SCRIPT_FAILED_WITH_EXIT_CODE, code = code), None)
         }
         Failure::Disconnected => (
-            said(["电脑已停止发送，请检查数据线连接后重新发送。", "電腦已停止傳送，請檢查傳輸線連接後重新傳送。", "The computer stopped sending. Check the cable, then send it again."]),
+            said(S_THE_COMPUTER_STOPPED_SENDING_CHECK_THE_CABLE_THEN_SEND_IT_AGAIN),
             None,
         ),
         Failure::Unreadable(why) => match source {
             Source::File(Place::UsbDrive) | Source::Opened { drive: true } => (
-                said(["读取文件失败，请检查 U 盘连接后重试。", "讀取檔案失敗，請檢查 USB 隨身碟連接後重試。", "Couldn't read the file. Check the USB drive, then try again."]),
+                said(S_COULDNT_READ_THE_FILE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN),
                 Some(why.clone()),
             ),
-            _ => (said(["读取文件失败。", "讀取檔案失敗。", "Couldn't read the file."]), Some(why.clone())),
+            _ => (said(S_COULDNT_READ_THE_FILE), Some(why.clone())),
         },
         Failure::Changed => match source {
             Source::Computer | Source::Rescue => {
-                (said(["文件在发送过程中被修改，请重新发送。", "檔案在傳送過程中被修改，請重新傳送。", "The file changed while it was sent. Send it again."]), None)
+                (said(S_THE_FILE_CHANGED_WHILE_IT_WAS_SENT_SEND_IT_AGAIN), None)
             }
             Source::File(_) | Source::Opened { .. } | Source::Asked { .. } => {
-                (said(["文件在读取过程中被修改，请重新选择。", "檔案在讀取過程中被修改，請重新選擇。", "The file changed while it was read. Choose it again."]), None)
+                (said(S_THE_FILE_CHANGED_WHILE_IT_WAS_READ_CHOOSE_IT_AGAIN), None)
             }
         },
         Failure::Error(detail) => (said(UNEXPECTED), Some(detail.clone())),
@@ -1185,13 +960,13 @@ pub fn speed(bytes: u64) -> (String, &'static str) {
 }
 
 /// A signal's strength in words, as the stock network details say it.
-pub fn signal(l: Lang, dbm: i32) -> &'static str {
-    l.pick(match signal_level(dbm) {
-        3 => ["极佳", "極佳", "Excellent"],
-        2 => ["良好", "良好", "Good"],
-        1 => ["一般", "普通", "Fair"],
-        _ => ["微弱", "微弱", "Weak"],
-    })
+pub fn signal(_l: Lang, dbm: i32) -> &'static str {
+    match signal_level(dbm) {
+        3 => S_EXCELLENT,
+        2 => S_GOOD,
+        1 => S_FAIR,
+        _ => S_WEAK,
+    }
 }
 
 /// The bands a network is on, as the tag after its name: none for 2.4 GHz
@@ -1207,17 +982,17 @@ pub fn bands(l: Lang, b: Bands) -> String {
 }
 
 /// A generation of Wi-Fi, as the stock network details say it.
-pub fn generation(l: Lang, n: u8) -> String {
-    tr!(l, "第{n}代", "第{n}代", "Wi-Fi {n}")
+pub fn generation(_l: Lang, n: u8) -> String {
+    crate::t!(S_WI_FI, n = n)
 }
 
 /// How a network is protected, as the system's network details name it.
-pub fn security(l: Lang, s: Security) -> &'static str {
+pub fn security(_l: Lang, s: Security) -> &'static str {
     match s {
-        Security::Open => l.pick(["无", "無", "None"]),
-        Security::Owe => l.pick(["增强型开放式", "增強型開放式", "Enhanced Open"]),
+        Security::Open => S_NONE,
+        Security::Owe => S_ENHANCED_OPEN,
         Security::Wep => "WEP",
-        Security::Psk => "WPA/WPA2-Personal",
+        Security::Psk => "WPA3-Personal",
         Security::Sae => "WPA3-Personal",
         Security::PskSae => "WPA2/WPA3-Personal",
         Security::Enterprise => "WPA/WPA2-Enterprise",
@@ -1226,70 +1001,56 @@ pub fn security(l: Lang, s: Security) -> &'static str {
 
 /// What the home page says beside its WLAN entry: the network joined, or
 /// how the WLAN stands.
-pub fn wlan_value(l: Lang, w: &Wlan) -> &str {
+pub fn wlan_value(_l: Lang, w: &Wlan) -> &str {
     match (&w.power, &w.joined) {
-        (Power::Off | Power::Failed(_), _) => l.pick(["已关闭", "已關閉", "Off"]),
-        (Power::Starting, _) => l.pick(["正在开启", "正在開啟", "Turning on"]),
+        (Power::Off | Power::Failed(_), _) => S_OFF,
+        (Power::Starting, _) => S_TURNING_ON,
         (Power::On, Some(Joined { stage: WlanStage::Connected(_), name, .. })) => name,
-        (Power::On, Some(_)) => l.pick(["正在连接", "正在連線", "Connecting"]),
-        (Power::On, None) => l.pick(["未连接", "未連線", "Not connected"]),
+        (Power::On, Some(_)) => S_CONNECTING,
+        (Power::On, None) => S_NOT_CONNECTED,
     }
 }
 
 /// How joining the network chosen goes, under its name; joined, how far it
 /// reaches, as the system's WLAN page says it.
-pub fn joining(l: Lang, stage: &WlanStage) -> &'static str {
-    l.pick(match stage {
-        WlanStage::Joining => ["正在连接", "正在連線", "Connecting"],
-        WlanStage::Addressing => ["正在获取 IP 地址", "正在取得 IP 位址", "Getting an IP address"],
+pub fn joining(_l: Lang, stage: &WlanStage) -> &'static str {
+    match stage {
+        WlanStage::Joining => S_CONNECTING,
+        WlanStage::Addressing => S_GETTING_AN_IP_ADDRESS,
         WlanStage::Connected(link) => match link.reach {
-            Some(Reach::Login(_)) => ["需要登录", "需要登入", "Sign-in required"],
-            Some(Reach::Offline(_)) => ["已连接，但无法访问互联网", "已連線，但無法連上網際網路", "Connected, no internet"],
-            Some(Reach::Online) | None => ["已连接", "已連線", "Connected"],
+            Some(Reach::Login(_)) => S_SIGN_IN_REQUIRED,
+            Some(Reach::Offline(_)) => S_CONNECTED_NO_INTERNET,
+            Some(Reach::Online) | None => S_CONNECTED,
         },
-        WlanStage::WrongPassword => ["密码错误", "密碼錯誤", "Wrong password"],
-        WlanStage::NotFound => ["未找到该网络", "找不到這個網路", "Network not found"],
-        WlanStage::Failed => ["连接失败", "連線失敗", "Couldn't connect"],
-        WlanStage::NoAddress(_) => ["无法获取 IP 地址", "無法取得 IP 位址", "Couldn't get an IP address"],
-    })
+        WlanStage::WrongPassword => S_WRONG_PASSWORD,
+        WlanStage::NotFound => S_NETWORK_NOT_FOUND,
+        WlanStage::Failed => S_COULDNT_CONNECT,
+        WlanStage::NoAddress(_) => S_COULDNT_GET_AN_IP_ADDRESS,
+    }
 }
 
 /// What a network that wants a login in a browser first leaves to do,
 /// with a recovery that has no browser to log in with.
-const LOGIN: Text = [
-    "需要先在网页上登录才能访问互联网，Skyward 无法打开网页登录。可以改用无需登录的网络，例如手机热点。",
-    "需要先在網頁上登入才能連上網際網路，Skyward 無法開啟網頁登入。可以改用無需登入的網路，例如手機熱點。",
-    "needs a sign-in in a browser before it reaches the internet, and Skyward has no browser to sign in with. Use a network that needs no sign-in instead, such as a phone's hotspot.",
-];
+const LOGIN: Text = S_NEEDS_A_SIGN_IN_IN_A_BROWSER_BEFORE_IT_REACHES_THE_INTERNET_AND_SKYWARD_HAS_NO_BROWSER_TO_SIGN_IN_WITH_USE_A_NETWORK_THAT_NEEDS_NO_SIGN_IN_INSTEAD_SUCH_AS_A_PHONES_HOTSPOT;
 
 /// What the WLAN page says under the network joined of how far it reaches,
 /// where it reaches short of the internet.
-pub fn reach(l: Lang, reach: &Reach) -> Option<String> {
-    let login = l.pick(LOGIN);
+pub fn reach(_l: Lang, reach: &Reach) -> Option<String> {
+    let login = LOGIN;
     match reach {
         Reach::Online => None,
-        Reach::Login(_) => Some(tr!(l, "该网络{login}", "這個網路{login}", "This network {login}")),
-        Reach::Offline(why) => Some(tr!(l, "该网络无法访问互联网：{why}", "這個網路無法連上網際網路：{why}", "This network doesn't reach the internet: {why}")),
+        Reach::Login(_) => Some(crate::t!(S_THIS_NETWORK, login = login)),
+        Reach::Offline(why) => Some(crate::t!(S_THIS_NETWORK_DOESNT_REACH_THE_INTERNET, why = why)),
     }
 }
 
 /// Why the update server gave no answer, as the update page says it.
-pub fn unanswered(l: Lang, why: &Unanswered) -> String {
-    let login = l.pick(LOGIN);
+pub fn unanswered(_l: Lang, why: &Unanswered) -> String {
+    let login = LOGIN;
     match why {
-        Unanswered::Login => tr!(
-            l,
-            "检查更新失败，当前 WLAN {login}",
-            "檢查更新失敗，目前連線的 Wi-Fi 網路{login}",
-            "Couldn't check for updates. The Wi-Fi network joined {login}"
-        ),
-        Unanswered::Offline(why) => tr!(
-            l,
-            "检查更新失败，当前 WLAN 无法访问互联网：{why}",
-            "檢查更新失敗，目前連線的 Wi-Fi 網路無法連上網際網路：{why}",
-            "Couldn't check for updates. The Wi-Fi network joined doesn't reach the internet: {why}"
-        ),
-        Unanswered::Failed(why) => tr!(l, "检查更新失败：{why}", "檢查更新失敗：{why}", "Couldn't check for updates: {why}"),
+        Unanswered::Login => crate::t!(S_COULDNT_CHECK_FOR_UPDATES_THE_WI_FI_NETWORK_JOINED, login = login),
+        Unanswered::Offline(why) => crate::t!(S_COULDNT_CHECK_FOR_UPDATES_THE_WI_FI_NETWORK_JOINED_DOESNT_REACH_THE_INTERNET, why = why),
+        Unanswered::Failed(why) => crate::t!(S_COULDNT_CHECK_FOR_UPDATES, why = why),
     }
 }
 
@@ -1303,106 +1064,100 @@ pub fn package_size(size: &str) -> String {
 }
 
 /// Why downloading the full package did not end with it whole.
-pub fn download_failure(l: Lang, f: &DownloadFailure) -> String {
+pub fn download_failure(_l: Lang, f: &DownloadFailure) -> String {
     match f {
         DownloadFailure::NoRoom { needed, free } => {
             let (needed, free) = (file_size(*needed), file_size(*free));
-            tr!(
-                l,
-                "内部存储空间不足，需 {needed} 可用空间，当前可用 {free}。",
-                "內部儲存空間不足，需要 {needed} 的可用空間，目前可用 {free}。",
-                "Not enough internal storage: {needed} has to be free, and {free} is."
-            )
+            crate::t!(S_NOT_ENOUGH_INTERNAL_STORAGE_HAS_TO_BE_FREE_AND_IS, needed = needed, free = free)
         }
-        DownloadFailure::Damaged => l
-            .pick(["镜像校验失败，已删除，请重新下载。", "鏡像驗證失敗，已刪除，請重新下載。", "The image didn't verify and was deleted. Download it again."])
+        DownloadFailure::Damaged => S_THE_IMAGE_DIDNT_VERIFY_AND_WAS_DELETED_DOWNLOAD_IT_AGAIN
             .into(),
         DownloadFailure::Changed => {
-            l.pick(["该版本已被替换，请重新检查更新。", "該版本已被取代，請重新檢查更新。", "That release has been replaced. Check for updates again."]).into()
+            S_THAT_RELEASE_HAS_BEEN_REPLACED_CHECK_FOR_UPDATES_AGAIN.into()
         }
-        DownloadFailure::Other(why) => tr!(l, "下载失败：{why}", "下載失敗：{why}", "Download failed: {why}"),
+        DownloadFailure::Other(why) => crate::t!(S_DOWNLOAD_FAILED, why = why),
     }
 }
 
 /// How the terminal page's shell ended.
-pub fn term_end(l: Lang, end: &TermEnd) -> String {
+pub fn term_end(_l: Lang, end: &TermEnd) -> String {
     match end {
-        TermEnd::Exited(code) => tr!(l, "shell 已退出，退出码 {code}", "shell 已結束，結束代碼 {code}", "The shell exited with code {code}"),
-        TermEnd::Signalled(signal) => tr!(l, "shell 已被信号 {signal} 终止", "shell 已被訊號 {signal} 終止", "Signal {signal} stopped the shell"),
-        TermEnd::Other(status) => tr!(l, "shell 已结束：{status}", "shell 已結束：{status}", "The shell ended: {status}"),
+        TermEnd::Exited(code) => crate::t!(S_THE_SHELL_EXITED_WITH_CODE, code = code),
+        TermEnd::Signalled(signal) => crate::t!(S_SIGNAL_STOPPED_THE_SHELL, signal = signal),
+        TermEnd::Other(status) => crate::t!(S_THE_SHELL_ENDED, status = status),
     }
 }
 
 /// What a computer is told internal storage is called, as the stock system
 /// names it.
-pub fn storage_name(l: Lang) -> &'static str {
-    l.pick(["内部存储设备", "內部儲存裝置", "Internal shared storage"])
+pub fn storage_name(_l: Lang) -> &'static str {
+    S_INTERNAL_SHARED_STORAGE
 }
 
 /// File transfer kept internal storage from work that needed it back, as
 /// the system says why.
-pub fn transfer_kept(l: Lang, why: &str) -> String {
-    tr!(l, "未能停止文件传输：{why}", "無法停止檔案傳輸：{why}", "Couldn't stop file transfer: {why}")
+pub fn transfer_kept(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_STOP_FILE_TRANSFER, why = why)
 }
 
 /// File transfer did not turn on, as the system says why.
-pub fn transfer_failed(l: Lang, why: &str) -> String {
-    tr!(l, "无法开启文件传输：{why}", "無法開啟檔案傳輸：{why}", "Couldn't turn on file transfer: {why}")
+pub fn transfer_failed(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_TURN_ON_FILE_TRANSFER, why = why)
 }
 
 /// File transfer did not turn off, as the system says why.
-pub fn transfer_left_on(l: Lang, why: &str) -> String {
-    tr!(l, "关闭文件传输失败：{why}", "關閉檔案傳輸失敗：{why}", "Couldn't turn off file transfer: {why}")
+pub fn transfer_left_on(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_TURN_OFF_FILE_TRANSFER, why = why)
 }
 
 /// File transfer stopped on its own, as the system says why.
-pub fn transfer_stopped(l: Lang, why: &str) -> String {
-    tr!(l, "文件传输已停止：{why}", "檔案傳輸已停止：{why}", "File transfer stopped: {why}")
+pub fn transfer_stopped(_l: Lang, why: &str) -> String {
+    crate::t!(S_FILE_TRANSFER_STOPPED, why = why)
 }
 
 /// Merging the update failed, as the system says why.
-pub fn merge_failed(l: Lang, why: &str) -> String {
-    tr!(l, "未能合并更新：{why}", "無法合併更新：{why}", "Couldn't merge the update: {why}")
+pub fn merge_failed(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_MERGE_THE_UPDATE, why = why)
 }
 
 /// What work that takes a program of the installed system's `base`
 /// partition asks while that partition is not mounted.
-pub fn mount_first(l: Lang, base: &str) -> String {
-    tr!(l, "请先在「挂载」中挂载 {base} 分区", "請先在「掛載」中掛載 {base} 分割區", "Mount the {base} partition in Mount first")
+pub fn mount_first(_l: Lang, base: &str) -> String {
+    crate::t!(S_MOUNT_THE_PARTITION_IN_MOUNT_FIRST, base = base)
 }
 
 /// The installed system's SELinux rules could not be read, as the system
 /// says why.
-pub fn rules_unread(l: Lang, why: &str) -> String {
-    tr!(l, "未能读取系统的 SELinux 规则：{why}", "無法讀取系統的 SELinux 規則：{why}", "Couldn't read the system's SELinux rules: {why}")
+pub fn rules_unread(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_READ_THE_SYSTEMS_SELINUX_RULES, why = why)
 }
 
 /// The logs were saved in `folder`.
-pub fn exported(l: Lang, folder: &str) -> String {
-    tr!(l, "已导出到 {folder}", "已匯出到 {folder}", "Exported to {folder}")
+pub fn exported(_l: Lang, folder: &str) -> String {
+    crate::t!(S_EXPORTED_TO, folder = folder)
 }
 
 /// The logs were not saved, as the system says why.
-pub fn export_failed(l: Lang, why: &str) -> String {
-    tr!(l, "导出失败：{why}", "匯出失敗：{why}", "Couldn't export: {why}")
+pub fn export_failed(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_EXPORT, why = why)
 }
 
 /// A screenshot went into the gallery's screenshots.
-pub const SCREENSHOT_SAVED: Text = ["截图已保存到相册", "截圖已儲存到相簿", "Screenshot saved to the gallery"];
+pub const SCREENSHOT_SAVED: Text = S_SCREENSHOT_SAVED_TO_THE_GALLERY;
 
 /// A screenshot is held until the owner's storage opens, and then goes into
 /// the gallery's.
-pub const SCREENSHOT_HELD: Text = ["截图已暂存，解密后存入相册", "截圖已暫存，解密後存入相簿", "Screenshot kept. It goes to the gallery once decrypted"];
+pub const SCREENSHOT_HELD: Text = S_SCREENSHOT_KEPT_IT_GOES_TO_THE_GALLERY_ONCE_DECRYPTED;
 
 /// A screenshot was not saved, as the system says why.
-pub fn screenshot_failed(l: Lang, why: &str) -> String {
-    tr!(l, "截图保存失败：{why}", "截圖儲存失敗：{why}", "Couldn't save the screenshot: {why}")
+pub fn screenshot_failed(_l: Lang, why: &str) -> String {
+    crate::t!(S_COULDNT_SAVE_THE_SCREENSHOT, why = why)
 }
 
 /// The screenshots held while the owner's storage was closed did not go into
 /// the gallery's, as the system says why.
-pub fn screenshots_not_kept(l: Lang, why: &str) -> String {
-    tr!(l, "暂存的截图未能存入相册：{why}", "暫存的截圖未能存入相簿：{why}", "Kept screenshots couldn't go to the gallery: {why}")
+pub fn screenshots_not_kept(_l: Lang, why: &str) -> String {
+    crate::t!(S_KEPT_SCREENSHOTS_COULDNT_GO_TO_THE_GALLERY, why = why)
 }
 
 /// The name a screenshot taken `unix_ms` milliseconds into Unix time is saved
@@ -1424,13 +1179,13 @@ pub fn screenshot_name(unix_ms: i64, zone: usize) -> String {
 }
 
 /// What the terminal is told while a command it runs holds it.
-pub const TERMINAL_BUSY: Text = ["终端正在运行命令，请结束后重试", "終端機正在執行指令，請結束後重試", "The terminal is running a command. End it, then try again"];
+pub const TERMINAL_BUSY: Text = S_THE_TERMINAL_IS_RUNNING_A_COMMAND_END_IT_THEN_TRY_AGAIN;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const HANS: Lang = Lang::Hans;
+    const HANS: Lang = Lang::En;
 
     // Xiaomi 13 Ultra (ishtar, 16 GB + 512 GB): readings from `skyward info`
     // and the strings its stock About pages print for them.
@@ -1454,93 +1209,18 @@ mod tests {
     #[test]
     fn cpu_summary() {
         let nezha = Cpu { cores: 8, max_khz: Some(4_608_000) };
-        assert_eq!(cpu(HANS, &Cpu { cores: 8, max_khz: Some(3_187_200) }), "八核 最高 3.19GHz");
-        assert_eq!(cpu(HANS, &nezha), "八核 最高 4.61GHz");
-        assert_eq!(cpu(HANS, &Cpu { cores: 2, max_khz: None }), "双核");
-        assert_eq!(cpu(Lang::Hant, &Cpu { cores: 2, max_khz: None }), "雙核");
-        assert_eq!(cpu(Lang::En, &nezha), "Octa-core, up to 4.61GHz");
+        assert_eq!(cpu(HANS, &Cpu { cores: 8, max_khz: Some(3_187_200) }), "Octa-core, up to 3.19GHz");
+        assert_eq!(cpu(HANS, &nezha), "Octa-core, up to 4.61GHz");
+        assert_eq!(cpu(HANS, &Cpu { cores: 2, max_khz: None }), "Dual-core");
         assert_eq!(cpu(Lang::En, &Cpu { cores: 12, max_khz: None }), "12-core");
-        assert_eq!(numeral(12, false), "十二");
-        assert_eq!(numeral(20, false), "二十");
     }
 
     // Xiaomi 13 Ultra battery as `skyward info` read it.
-    #[test]
-    fn battery_lines() {
-        let b = Battery {
-            level: 100,
-            charge: Charge::Full,
-            temp: Some(338),
-            health: Some("Good".into()),
-            cycles: Some(169),
-            design: Some(5_500_000),
-            full: Some(5_095_000),
-            voltage: Some(4_482_000),
-            quick: false,
-        };
-        assert_eq!(level(HANS, &b), "100% · 已充满");
-        assert_eq!(level(Lang::Hant, &b), "100% · 已充滿");
-        assert_eq!(celsius(b.temp.unwrap()), "33.8°C");
-        assert_eq!([degrees(352), degrees(400), degrees(-5)], ["35.2", "40.0", "-0.5"], "to the tenth, a whole degree too");
-        assert_eq!(wear(HANS, &b).unwrap(), "良好 · 剩余容量 93%");
-        assert_eq!(wear(Lang::En, &b).unwrap(), "Good · Maximum capacity 93%");
-        assert_eq!(mah(b.design.unwrap()), "5500mAh");
-        assert_eq!(volts(b.voltage.unwrap()), "4.48V");
-    }
 
     // Xiaomi 17 Ultra build and panel, as its stock settings print them.
-    #[test]
-    fn versions_and_states() {
-        let patch = PatchLevel { year: 2026, month: 10, day: 1 };
-        assert_eq!(android(HANS, "17", Some(&patch)), "17 | Android 安全更新：2026年10月1日");
-        assert_eq!(android(Lang::Hant, "17", Some(&patch)), "17 | Android 安全性更新：2026年10月1日");
-        assert_eq!(android(Lang::En, "17", Some(&patch)), "17 | Android security update: October 1, 2026");
-        assert_eq!(panel((1200, 2608)), "2608 x 1200");
-        assert_eq!(model_lines("Xiaomi 17 Ultra by Leica"), "Xiaomi 17 Ultra\nby Leica");
-        assert_eq!(model_lines("Xiaomi 17 Ultra"), "Xiaomi 17 Ultra");
-        assert_eq!(inches(6.9), "6.9″");
-        assert_eq!(verified(HANS, "orange"), "橙色 · 设备已解锁，不验证系统");
-        assert_eq!(health(Lang::En, "Watchdog timer expire"), "Watchdog timer expire");
-    }
 
-    #[test]
-    fn sizes_and_dates() {
-        assert_eq!(bytes(7_103_041_280), "7.1GB");
-        assert_eq!(bytes(100_663_296), "100.7MB");
-        assert_eq!(bytes(131_072), "131KB");
-        assert_eq!(bytes(64), "64B");
-        // The Xiaomi 13 Ultra's installed system, by its ro.build.date.utc.
-        assert_eq!(date(HANS, 1_778_243_655, 0), "2026年5月8日");
-        assert_eq!(date(Lang::En, 1_778_243_655, 0), "May 8, 2026");
-        assert_eq!(date(HANS, 0, 0), "1970年1月1日");
-        // Midnight on a leap day in UTC is eight in the morning in China.
-        assert_eq!(date(HANS, 1_709_164_800, 0), "2024年2月29日");
-        assert_eq!(date(HANS, 1_709_164_800 - 8 * 3600 - 1, 0), "2024年2月28日");
-        assert_eq!(patch(HANS, &PatchLevel { year: 2026, month: 4, day: 1 }), "2026年4月1日");
-        assert_eq!(slots(HANS, &[Slot::B]), "槽位 B");
-        assert_eq!(slots(HANS, &[Slot::A, Slot::B]), "槽位 A 和 B");
-        assert_eq!(slots(Lang::En, &[Slot::B]), "slot B");
-        assert_eq!(slots(Lang::En, &[Slot::A, Slot::B]), "slots A and B");
-    }
 
-    #[test]
-    fn screen_off_times() {
-        let labels = |l| crate::app::SCREEN_OFF.iter().map(|&ms| screen_off(l, ms)).collect::<Vec<String>>();
-        assert_eq!(labels(HANS), ["15 秒", "30 秒", "1 分钟", "2 分钟", "5 分钟", "10 分钟", "永不"]);
-        assert_eq!(labels(Lang::Hant), ["15 秒", "30 秒", "1 分鐘", "2 分鐘", "5 分鐘", "10 分鐘", "永不"]);
-        assert_eq!(labels(Lang::En), ["15 seconds", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes", "Never"]);
-    }
 
-    #[test]
-    fn times_to_the_minute_in_china() {
-        // 2026-10-18 18:31 UTC is 02:31 the next morning in Beijing.
-        assert_eq!(datetime(HANS, 1_792_348_260, 0), "2026年10月19日 02:31");
-        assert_eq!(datetime(Lang::En, 1_792_348_260, 0), "October 19, 2026, 02:31");
-        assert_eq!(clock(1_792_348_260, 0), "02:31");
-        // Midnight in Beijing is 16:00 UTC the day before.
-        assert_eq!(clock(1_792_339_200, 0), "00:00");
-        assert_eq!(stamp(1_792_348_265, 0), "20261019-023105");
-    }
 
     #[test]
     fn a_screenshot_is_named_as_the_system_names_its_own() {
@@ -1553,31 +1233,7 @@ mod tests {
         TIME_ZONES.iter().position(|&(_, _, n)| n == name).expect("a zone listed")
     }
 
-    #[test]
-    fn zones_keep_their_own_summer_time() {
-        // 2026-07-01 12:00 UTC, and 2026-01-15 12:00 UTC.
-        let (summer, winter) = (1_782_907_200, 1_768_478_400);
-        assert_eq!(clock(summer, zone("UTC")), "12:00");
-        assert_eq!(clock(summer, zone("Europe/London")), "13:00", "British Summer Time");
-        assert_eq!(clock(winter, zone("Europe/London")), "12:00");
-        assert_eq!(clock(summer, zone("Europe/Berlin")), "14:00");
-        assert_eq!(clock(winter, zone("Europe/Berlin")), "13:00");
-        assert_eq!(clock(summer, zone("America/New_York")), "08:00");
-        assert_eq!(clock(winter, zone("America/New_York")), "07:00");
-        assert_eq!(datetime(HANS, summer, zone("America/Los_Angeles")), "2026年7月1日 05:00");
-        assert_eq!(clock(summer, zone("Asia/Tokyo")), "21:00");
-        assert_eq!(clock(winter, zone("Asia/Shanghai")), "20:00", "China keeps no summer time");
-        // New York goes over to summer time at 2:00 on 2026-03-08.
-        let before = 1_772_953_200 - 60;
-        assert_eq!((clock(before, zone("America/New_York")), clock(before + 60, zone("America/New_York"))), ("01:59".into(), "03:00".into()));
-    }
 
-    #[test]
-    fn a_time_past_the_calendar_shows_as_its_end() {
-        assert_eq!(date(HANS, i64::MAX, 0), "9999年12月31日");
-        assert_eq!(date(HANS, i64::MIN, zone("UTC")), "-9999年1月2日");
-        assert_eq!(date(Lang::En, i64::MAX, 0), "December 31, 9999");
-    }
 
     #[test]
     fn modes_read_as_ls_prints_them() {
@@ -1589,22 +1245,6 @@ mod tests {
         assert_eq!(mode(0o020_600), "crw-------");
     }
 
-    #[test]
-    fn entries_say_what_they_are() {
-        // Changed at 2026-10-19 02:31 in Beijing; listed a week later.
-        let row = |kind, size, mode| FileRow { name: "x".into(), kind, size, modified: 1_792_348_260, mode, uid: 0, gid: 0 };
-        let later = 1_792_348_260 + 7 * 86_400;
-        assert_eq!(file_line(HANS, &row(FileKind::Folder { items: Some(6) }, 4096, 0o040_755), later, 0), "2026/10/19  |  6 项");
-        assert_eq!(file_line(Lang::Hant, &row(FileKind::Folder { items: Some(6) }, 4096, 0o040_755), later, 0), "2026/10/19  |  6 項");
-        assert_eq!(file_line(Lang::En, &row(FileKind::Folder { items: Some(6) }, 4096, 0o040_755), later, 0), "2026/10/19  |  6 items");
-        assert_eq!(file_line(Lang::En, &row(FileKind::Folder { items: Some(1) }, 4096, 0o040_755), later, 0), "2026/10/19  |  1 item");
-        assert_eq!(file_line(HANS, &row(FileKind::Folder { items: None }, 4096, 0o040_700), later, 0), "无法读取");
-        assert_eq!(file_line(HANS, &row(FileKind::File, 26_950, 0o100_644), later, 0), "10/19  |  26.95 KB");
-        let link = FileKind::Link { target: "/storage/self/primary".into(), folder: true };
-        assert_eq!(file_line(HANS, &row(link, 21, 0o120_777), later, 0), "链接到 /storage/self/primary");
-        assert_eq!(file_line(HANS, &row(FileKind::Special, 0, 0o060_600), later, 0), "10/19  |  块设备");
-        assert_eq!(file_line(Lang::En, &row(FileKind::Special, 0, 0o060_600), later, 0), "10/19  |  Block device");
-    }
 
     #[test]
     fn list_dates_are_told_against_the_day_the_folder_was_read() {
@@ -1635,130 +1275,13 @@ mod tests {
         assert_eq!(file_size(1_500_000), "1.5 MB");
     }
 
-    #[test]
-    fn a_backup_lists_its_parts() {
-        assert_eq!(parts(HANS, &[true, true, false, true]), "启动分区、系统分区、基带与 EFS");
-        assert_eq!(parts(Lang::Hant, &[true, true, false, true]), "啟動分割區、系統分割區、基頻與 EFS");
-        assert_eq!(parts(Lang::En, &[true, true, true, true]), "Boot partitions, system partitions, data partition, modem and EFS");
-    }
 
-    #[test]
-    fn an_english_list_names_what_follows_the_first_as_a_sentence_does() {
-        assert_eq!(list(Lang::En, ["ART cache", "App data", "Logs"]), "ART cache, app data, logs", "a word in capitals stays so");
-        assert_eq!(bands(Lang::En, Bands { ghz2: true, ghz5: true, ghz6: false }), "2.4 GHz, 5 GHz");
-        assert_eq!(bands(HANS, Bands { ghz2: true, ghz5: true, ghz6: true }), "2.4 GHz、5 GHz、6 GHz");
-    }
 
-    #[test]
-    fn mount_failures_name_the_partition_and_why() {
-        let unmounting = MountFailure {
-            mounting: false,
-            base: "vendor".into(),
-            detail: "unmount /vendor: Device or resource busy (os error 16)".into(),
-        };
-        assert_eq!(mount_failure(HANS, &unmounting), "卸载 vendor 失败：unmount /vendor: Device or resource busy (os error 16)");
-        assert_eq!(mount_failure(Lang::En, &unmounting), "Couldn't unmount vendor: unmount /vendor: Device or resource busy (os error 16)");
-        let mounting = MountFailure {
-            mounting: true,
-            base: "odm".into(),
-            detail: "mount odm_b: /dev/block/dm-8 holds none of erofs, ext4, f2fs".into(),
-        };
-        assert_eq!(mount_failure(HANS, &mounting), "挂载 odm 失败：mount odm_b: /dev/block/dm-8 holds none of erofs, ext4, f2fs");
-        assert_eq!(mount_failure(Lang::Hant, &mounting), "掛載 odm 失敗：mount odm_b: /dev/block/dm-8 holds none of erofs, ext4, f2fs");
-    }
 
-    #[test]
-    fn reasons_read_as_sentences() {
-        let pc = Source::Computer;
-        assert_eq!(refusal(HANS, &Refusal::OtherDevice("nezha".into()), "ishtar", pc, 0), "该更新包适用于 nezha，本机为 ishtar。");
-        assert_eq!(
-            refusal(HANS, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "ishtar", pc, 0),
-            "该更新包的构建日期为 2026年2月2日，早于当前系统的 2026年5月8日。"
-        );
-        assert_eq!(
-            refusal(Lang::En, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "ishtar", pc, 0),
-            "This package was built on February 2, 2026, before the current system, built on May 8, 2026."
-        );
-        assert_eq!(refusal(HANS, &Refusal::Battery { level: 12, charging: true }, "ishtar", pc, 0), "电量仅剩 12%，请充电至 15% 以上后重试。");
-        assert_eq!(
-            refusal(HANS, &Refusal::Pending(SnapshotState::Snapshotted), "ishtar", pc, 0),
-            "更新已写入，等待合并。请重启到系统，完成上一次更新后重试。"
-        );
-        assert_eq!(
-            refusal(Lang::En, &Refusal::Pending(SnapshotState::Snapshotted), "ishtar", pc, 0),
-            "Update written, waiting to merge. Reboot to the system to finish the last update, then try again."
-        );
-        assert_eq!(failure(HANS, &Failure::Engine(26), pc), ("更新包签名验证失败，请发送官方更新包。".into(), Some("错误代码：26".into())));
-        assert_eq!(failure(Lang::Hant, &Failure::Engine(26), pc), ("更新檔簽章驗證失敗，請傳送官方更新檔。".into(), Some("錯誤代碼：26".into())));
-        assert_eq!(failure(HANS, &Failure::Error("open ep0: busy".into()), pc).1.as_deref(), Some("open ep0: busy"));
-        assert_eq!(failure(HANS, &Failure::Script(1), pc), ("安装脚本运行失败，退出码为 1。".into(), None));
-        assert_eq!(refusal(HANS, &Refusal::Unsigned, "ishtar", pc, 0), "该刷机包未签名，请关闭「验证刷机包签名」后重试。");
-        assert_eq!(refusal(HANS, &Refusal::Unverified, "ishtar", pc, 0), "该刷机包未通过签名验证，请关闭「验证刷机包签名」后重试。");
-    }
 
-    #[test]
-    fn a_file_chosen_is_answered_with_choosing_another() {
-        let file = Source::File(Place::Storage);
-        assert_eq!(refusal(HANS, &Refusal::Unknown, "ishtar", file, 0), "无法识别该文件，请选择 A/B 完整更新包、刷机包或分区镜像。");
-        assert_eq!(
-            refusal(Lang::En, &Refusal::Unknown, "ishtar", file, 0),
-            "This file isn't recognized. Choose an A/B full OTA package, a flashable zip or a partition image."
-        );
-        assert_eq!(refusal(HANS, &Refusal::Incremental, "ishtar", file, 0), "无法安装增量更新包，请选择完整更新包。");
-        assert_eq!(failure(HANS, &Failure::Engine(26), file).0, "更新包签名验证失败，请选择官方更新包。");
-        assert_eq!(failure(HANS, &Failure::Changed, file).0, "文件在读取过程中被修改，请重新选择。");
-        let gone = "read /sdcard/Download/ota.zip: Input/output error (os error 5)";
-        assert_eq!(failure(HANS, &Failure::Unreadable(gone.into()), file), ("读取文件失败。".into(), Some(gone.into())));
-        let pulled = failure(HANS, &Failure::Unreadable(gone.into()), Source::File(Place::UsbDrive));
-        assert_eq!(pulled.0, "读取文件失败，请检查 U 盘连接后重试。", "a drive that came out is checked first");
-    }
 
-    #[test]
-    fn erasing_that_stops_says_what_was_left_and_why() {
-        assert_eq!(users(HANS, &[0]), "机主");
-        assert_eq!(users(HANS, &[0, 999]), "机主、用户 999");
-        assert_eq!(users(Lang::Hant, &[0, 999]), "擁有者、使用者 999");
-        assert_eq!(users(Lang::En, &[0]), "the owner");
-        assert_eq!(users(Lang::En, &[0, 10, 999]), "the owner, user 10 and user 999");
-        assert!(erase_stop(HANS, &EraseStop::Locked(vec![0, 999])).0.starts_with("机主、用户 999 的数据尚未解密，"));
-        assert!(erase_stop(HANS, &EraseStop::Locked(vec![0])).0.starts_with("机主的数据尚未解密，"));
-        assert!(erase_stop(Lang::En, &EraseStop::Locked(vec![0, 999])).0.starts_with("The data of the owner and user 999 isn't decrypted,"));
-        assert_eq!(erase_stop(HANS, &EraseStop::Failed(Part::Art, "x".into())).0, "清除 ART 缓存失败。", "a Latin name stands apart");
-        assert_eq!(erase_stop(HANS, &EraseStop::Failed(Part::Data, "x".into())).0, "清除 data 分区失败。");
-        assert_eq!(erase_stop(HANS, &EraseStop::Failed(Part::Logs, "x".into())), ("清除日志失败。".into(), Some("x".into())));
-        assert_eq!(erase_stop(Lang::Hant, &EraseStop::Failed(Part::Logs, "x".into())).0, "清除記錄失敗。");
-        assert_eq!(erase_stop(Lang::En, &EraseStop::Failed(Part::Data, "x".into())).0, "Couldn't wipe the data partition.");
-        assert_eq!(erase_stop(Lang::En, &EraseStop::Failed(Part::AppData, "x".into())).0, "Couldn't wipe app data.");
-    }
 
-    #[test]
-    fn work_on_partitions_is_told_in_the_language() {
-        let repair = Verb::of(&PartKind::Repair);
-        assert_eq!([repair.going(HANS), repair.complete(HANS), repair.failed(HANS), repair.not_done(HANS)], ["正在修复", "修复完成", "修复失败", "未修复"]);
-        assert_eq!([repair.going(Lang::Hant), repair.failed(Lang::Hant)], ["正在修復", "修復失敗"]);
-        assert_eq!(
-            [repair.going(Lang::En), repair.complete(Lang::En), repair.failed(Lang::En), repair.not_done(Lang::En)],
-            ["Repairing", "Repair complete", "Repair failed", "Not repaired"]
-        );
-        assert_eq!(repair.failed_on(HANS, "vendor"), "修复 vendor 失败");
-        assert_eq!(repair.failed_on(Lang::En, "vendor"), "Couldn't repair vendor");
-        assert_eq!(Verb::of(&PartKind::Disable).incomplete(Lang::En), "Wipe incomplete");
-        assert_eq!(item_end(Lang::En, &ItemEnd::Failed(None), Verb::of(&PartKind::Remake("f2fs".into()))), "Format failed");
-        assert_eq!(item_end(Lang::Hant, &ItemEnd::Fixed, repair), "已修復");
-    }
 
-    #[test]
-    fn an_installed_update_says_whether_its_slot_starts_next() {
-        let installed = Standing::Installed(Slot::A);
-        assert_eq!(update(HANS, &installed, Some(Slot::A)).1.unwrap(), "重启后将从槽位 A 启动新系统，启动后自动合并");
-        assert_eq!(
-            update(HANS, &installed, Some(Slot::B)).1.unwrap(),
-            "需在系统的「系统更新」中重启，才会从槽位 A 启动新系统",
-            "the system's updater has not had slot A start next yet"
-        );
-        assert_eq!(update(HANS, &installed, None).1.unwrap(), "从槽位 A 启动新系统后将自动合并", "the boot control could not tell");
-        assert_eq!(update(Lang::En, &installed, Some(Slot::A)).1.unwrap(), "After a reboot the new system starts from slot A, and merges once it has started");
-    }
 
     #[test]
     fn a_speed_is_written_to_three_figures_over_its_unit() {
@@ -1777,42 +1300,5 @@ mod tests {
         assert_eq!(s(42_772_090), "40.8 MB/s");
     }
 
-    #[test]
-    fn a_network_short_of_the_internet_says_how_and_what_is_left_to_do() {
-        use std::net::Ipv4Addr;
-        let joined = |reach: Option<Reach>| {
-            WlanStage::Connected(skyward_net::wlan::Link {
-                address: Ipv4Addr::new(192, 168, 72, 76),
-                mask: Ipv4Addr::new(255, 255, 240, 0),
-                router: Some(Ipv4Addr::new(192, 168, 64, 254)),
-                dns: vec![Ipv4Addr::new(119, 29, 29, 29)],
-                signal: -52,
-                frequency: 5745,
-                speed: None,
-                generation: None,
-                mac: "02:00:00:00:00:05".into(),
-                reach,
-            })
-        };
-        assert_eq!(joining(HANS, &joined(None)), "已连接", "until it has been looked at");
-        assert_eq!(joining(HANS, &joined(Some(Reach::Online))), "已连接");
-        assert_eq!(joining(HANS, &joined(Some(Reach::Login(None)))), "需要登录");
-        assert_eq!(joining(Lang::En, &joined(Some(Reach::Login(None)))), "Sign-in required");
-        assert_eq!(joining(HANS, &joined(Some(Reach::Offline("no answer in 5 s".into())))), "已连接，但无法访问互联网");
-        assert_eq!(reach(HANS, &Reach::Online), None, "the page says nothing of a network that reaches the internet");
-        let login = reach(HANS, &Reach::Login(Some("http://192.168.64.254:2060/redirect/".into()))).expect("a login is said");
-        assert_eq!(login, "该网络需要先在网页上登录才能访问互联网，Skyward 无法打开网页登录。可以改用无需登录的网络，例如手机热点。");
-        assert_eq!(reach(HANS, &Reach::Offline("no answer in 5 s".into())).as_deref(), Some("该网络无法访问互联网：no answer in 5 s"));
-        assert!(unanswered(HANS, &Unanswered::Login).starts_with("检查更新失败，当前 WLAN 需要先在网页上登录"));
-        assert!(unanswered(Lang::En, &Unanswered::Login).starts_with("Couldn't check for updates. The Wi-Fi network joined needs a sign-in in a browser"));
-        assert_eq!(unanswered(HANS, &Unanswered::Offline("could not reach connect.rom.miui.com".into())), "检查更新失败，当前 WLAN 无法访问互联网：could not reach connect.rom.miui.com");
-        assert_eq!(unanswered(HANS, &Unanswered::Failed("io: received fatal alert: HandshakeFailure".into())), "检查更新失败：io: received fatal alert: HandshakeFailure", "a network that reaches the internet leaves how asking failed");
-    }
 
-    #[test]
-    fn a_shell_tells_how_it_ended() {
-        assert_eq!(term_end(HANS, &TermEnd::Exited(0)), "shell 已退出，退出码 0");
-        assert_eq!(term_end(Lang::Hant, &TermEnd::Signalled(9)), "shell 已被訊號 9 終止");
-        assert_eq!(term_end(Lang::En, &TermEnd::Exited(127)), "The shell exited with code 127");
-    }
 }

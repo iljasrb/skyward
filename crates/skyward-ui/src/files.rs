@@ -499,12 +499,12 @@ mod tests {
         let two = name_lines(&f.heading, px, "1d9bf122-130e-4db7-ae55-460c84819f0e.pdf", w);
         assert_eq!(two.len(), 2, "{two:?}");
         assert_eq!(two.concat(), "1d9bf122-130e-4db7-ae55-460c84819f0e.pdf", "nothing is left out of two lines");
-        let long = "2021一带一路暨金砖大赛之物联网技术及其在智慧城市与工业互联网领域的应用创新赛表彰文件.pdf";
+        let long = "A very long report file name about the internet of things and smart cities.pdf";
         let lines = name_lines(&f.heading, px, long, w);
         let c = Canvas::new(0, 0);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(long.starts_with(&lines[0]), "the first line is the start: {lines:?}");
-        assert!(lines[1].contains('…') && lines[1].ends_with("文件.pdf"), "the middle goes, the end stays: {lines:?}");
+        assert!(lines[1].contains('…') && lines[1].ends_with("cities.pdf"), "the middle goes, the end stays: {lines:?}");
         for line in &lines {
             assert!(c.text_width(&f.heading, line, px) <= w, "{line:?} fits");
         }
@@ -612,12 +612,12 @@ mod tests {
     fn the_path_goes_up_by_its_capsules_and_shows_its_end_when_long() {
         let f = crate::font::bundled();
         let t = Theme::light(1440, 3200, 3.5);
-        let path = strip(&t, &f, "根目录", "/system/bin");
+        let path = strip(&t, &f, "Root", "/system/bin");
         let ups: Vec<Action> = path.hits.iter().map(|h| h.action).collect();
         assert_eq!(ups, [Action::OpenAncestor(0), Action::OpenAncestor(1)], "the root and system go up; bin is where we are");
-        let place = strip(&t, &f, "内部存储", "Download");
+        let place = strip(&t, &f, "Internal storage", "boot.img");
         assert_eq!(place.hits.iter().map(|h| h.action).collect::<Vec<_>>(), [Action::OpenAncestor(0)], "a place's top goes up");
-        let deep = strip(&t, &f, "根目录", "/data/media/0/Android/data/com.example.something.long/files/cache/images");
+        let deep = strip(&t, &f, "Root", "/data/media/0/Android/data/com.example.something.long/files/cache/images");
         let last = deep.hits.last().expect("the capsules before the folder shown");
         assert!(last.rect.x + last.rect.w < t.m.w as f32, "the end shows");
         assert!(deep.hits[0].rect.x < 0.0, "the start runs off the left edge");

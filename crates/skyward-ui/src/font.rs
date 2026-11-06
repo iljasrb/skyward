@@ -100,14 +100,14 @@ impl Face {
         self.font.glyph_id(ch).0 != 0
     }
 
-    /// Vertical ink extent of the reference ideograph 「中」 relative to the
+    /// Vertical ink extent of the reference glyph 「｜」 relative to the
     /// baseline (negative is above). Rows centre text on this, as the stock
     /// settings do.
     pub fn ink(&self, em_px: f32) -> (f32, f32) {
         if let Some(&ink) = self.known.borrow().inks.get(&em_px.to_bits()) {
             return ink;
         }
-        let ink = self.bounds('中', em_px);
+        let ink = self.bounds('｜', em_px);
         self.known.borrow_mut().inks.insert(em_px.to_bits(), ink);
         ink
     }
@@ -252,7 +252,7 @@ impl FontInfo {
         let version = needed(ttf_parser::name_id::VERSION)?;
         Ok(FontInfo {
             family: needed(ttf_parser::name_id::FAMILY)?,
-            // "Version 4.009" names the version twice in a row labelled 版本.
+            // "Version 4.009" names the version twice in a row labelled version.
             version: version.strip_prefix("Version ").unwrap_or(&version).to_string(),
             copyright: name(ttf_parser::name_id::COPYRIGHT_NOTICE),
         })

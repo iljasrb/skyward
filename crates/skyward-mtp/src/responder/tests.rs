@@ -24,7 +24,7 @@ fn device() -> Device {
 }
 
 fn storage(top: &Path) -> Storage {
-    Storage { top: top.to_path_buf(), description: "内部共享存储空间".into() }
+    Storage { top: top.to_path_buf(), description: "Internal shared storage".into() }
 }
 
 fn cmd(code: u16, params: &[u32]) -> Command {
@@ -162,7 +162,7 @@ fn a_session_opens_once_and_the_storage_needs_one() {
     let (total, free) = (rd.u64().unwrap(), rd.u64().unwrap());
     assert!(total > 0 && free <= total);
     rd.u32().unwrap();
-    assert_eq!(rd.string().as_deref(), Some("内部共享存储空间"));
+    assert_eq!(rd.string().as_deref(), Some("Internal shared storage"));
     assert_eq!(rd.string().as_deref(), Some(""));
     assert_eq!(r.answer(&cmd(op::GET_STORAGE_INFO, &[0x0002_0001]), None).code, response::INVALID_STORAGE_ID);
     assert_eq!(r.answer(&cmd(op::CLOSE_SESSION, &[]), None).code, response::OK);
@@ -337,12 +337,12 @@ fn a_file_sent_is_made_where_asked_with_its_time() {
     fs::create_dir(at.join("Download")).unwrap();
     let mut r = open(&at);
     let download = find(&mut r, 0xFFFF_FFFF, "Download");
-    let (h, done) = send(&mut r, download, "报告.txt", b"hello", 5);
+    let (h, done) = send(&mut r, download, "report.txt", b"hello", 5);
     assert_eq!(done.code, response::OK, "{:?}", done.why);
-    assert_eq!(fs::read(at.join("Download/报告.txt")).unwrap(), b"hello");
-    assert_eq!(fs::metadata(at.join("Download/报告.txt")).unwrap().mtime(), 1_792_584_900, "the time the computer gave");
+    assert_eq!(fs::read(at.join("Download/report.txt")).unwrap(), b"hello");
+    assert_eq!(fs::metadata(at.join("Download/report.txt")).unwrap().mtime(), 1_792_584_900, "the time the computer gave");
     assert_eq!(handles(&mut r, download, 0), [h], "listed under the handle it was given");
-    assert_eq!(info(&mut r, h).name, "报告.txt");
+    assert_eq!(info(&mut r, h).name, "report.txt");
     let (top, done) = send(&mut r, PARENT_ROOT, "top.txt", b"", 0);
     assert_eq!(done.code, response::OK);
     assert_eq!(info(&mut r, top).parent, 0);
@@ -402,9 +402,9 @@ fn folders_are_made_and_names_are_checked() {
         r.incoming(&c);
         r.answer(&c, Some(&object_info(format, 0, name, "")))
     };
-    let made = make(&mut r, PARENT_ROOT, format::ASSOCIATION, "新建文件夹");
+    let made = make(&mut r, PARENT_ROOT, format::ASSOCIATION, "New folder");
     assert_eq!(made.code, response::OK);
-    assert!(at.join("新建文件夹").is_dir());
+    assert!(at.join("New folder").is_dir());
     let send_cmd = cmd(op::SEND_OBJECT, &[]);
     assert!(matches!(r.incoming(&send_cmd), Incoming::Dataset), "a folder sends nothing");
     assert_eq!(r.answer(&send_cmd, Some(&[])).code, response::OK);
@@ -496,9 +496,9 @@ fn device_properties_are_described_read_and_set() {
     let set = cmd(op::SET_DEVICE_PROP_VALUE, &[u32::from(device::DEVICE_FRIENDLY_NAME)]);
     assert!(matches!(r.incoming(&set), Incoming::Dataset));
     let mut w = Writer::new();
-    w.string("Kirk 的手机");
+    w.string("Kirk's phone");
     assert_eq!(r.answer(&set, Some(&w.into_bytes())).code, response::OK);
-    assert_eq!(name(&mut r), "Kirk 的手机");
+    assert_eq!(name(&mut r), "Kirk's phone");
     assert_eq!(r.answer(&cmd(op::RESET_DEVICE_PROP_VALUE, &[u32::from(device::DEVICE_FRIENDLY_NAME)]), None).code, response::OK);
     assert_eq!(name(&mut r), "Phone");
     let battery = dataset(r.answer(&cmd(op::GET_DEVICE_PROP_DESC, &[u32::from(device::BATTERY_LEVEL)]), None));

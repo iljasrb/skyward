@@ -18,19 +18,10 @@ use skyward_vab::{BootSlots, FailureCode, Hold, Slot, SnapshotState, Standing};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 mod matcher;
 
 const CLOCK: &str = "23:46";
-
-/// The language the pages are drawn in, as `--lang` names its locale;
-/// simplified Chinese where it names none.
-static LANG: OnceLock<Lang> = OnceLock::new();
-
-fn lang() -> Lang {
-    *LANG.get().expect("the language is chosen before any page is drawn")
-}
 
 /// What a shell in the recovery writes for a few commands, colours and all.
 const SHELL_SAMPLE: &[u8] = b"ishtar:/ # getprop ro.product.device\r\nishtar\r\n\
@@ -46,12 +37,12 @@ ishtar:/ # ";
 /// A script as the editor shows it: an indented line, a comment in
 /// Chinese, and lines long enough to wrap.
 const EDITOR_SAMPLE: &str = "#!/system/bin/sh\n\
-# 开机完成后调整调度器与刷新率\n\
+# Adjust the scheduler and refresh rate after boot\n\
 for cpu in /sys/devices/system/cpu/cpu[0-7]; do\n\
 \techo schedutil > $cpu/cpufreq/scaling_governor\n\
 done\n\
 setprop persist.vendor.display.enable_optimize_refresh 1\n\
-echo \"调度器已调整，刷新率设置写入 /data/local/tmp/refresh.log\" >> /data/local/tmp/refresh.log\n";
+echo \"Scheduler adjusted; refresh rate written to /data/local/tmp/refresh.log\" >> /data/local/tmp/refresh.log\n";
 
 /// What fsck.f2fs says as it repairs a data partition with one check that
 /// failed and was fixed.
@@ -114,11 +105,6 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let out = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("preview-out"));
     std::fs::create_dir_all(&out)?;
-    let lang = match args.iter().position(|a| a == "--lang") {
-        Some(k) => Lang::for_locale(args.get(k + 1).ok_or_else(|| anyhow!("--lang needs a locale"))?)?,
-        None => Lang::Hans,
-    };
-    LANG.set(lang).expect("the language is chosen once");
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let font_path = font_path()?;
@@ -168,7 +154,7 @@ fn main() -> Result<()> {
     ];
     for (name, screen, dark, info, data, pattern) in shots {
         let mut app = App::new(screen, w, h, ppd);
-        app.state.lang = lang;
+        app.state.lang = Lang::En;
         app.state.dark = dark;
         app.state.data = data;
         app.state.pattern = pattern.to_vec();
@@ -218,7 +204,7 @@ fn main() -> Result<()> {
                 overwriting: false,
             },
         ),
-        ("35-sideload-flashing", false, Install::Flashing { partition: "boot", stage: Some(Stage::Flashing { done: 300, total: 800 }) }),
+        ("35-sideload-flashing", false, Install::Flashing { partition: "vendor_boot", stage: Some(Stage::Flashing { done: 300, total: 800 }) }),
         ("36-sideload-installed", false, Install::Finished { outcome: Outcome::Installed { slot: Slot::A, wipe: false }, damage: None }),
         ("96-sideload-light-wipes", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true }),
         ("18-install-ready", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: false }),
@@ -296,8 +282,8 @@ fn main() -> Result<()> {
     // What a backup of the slot's partitions and the baseband goes through.
     let plan = || -> Vec<(String, u64)> {
         [
-            ("boot", 100_663_296),
-            ("init_boot", 8_388_608),
+            ("vendor_boot", 100_663_296),
+            ("vendor_boot", 8_388_608),
             ("vendor_boot", 100_663_296),
             ("dtbo", 25_165_824),
             ("vbmeta", 65_536),
@@ -337,12 +323,12 @@ fn main() -> Result<()> {
     // their lines out; the failing one stops on writing vendor.
     let said = |failed: bool| -> Vec<String> {
         let mut lines = vec![
-            " ",
+            "- Done",
             "******************************",
             "  Example ROM 2.1 for ishtar",
             "******************************",
-            " ",
-            "- 正在检查设备型号",
+            "- Done",
+            "- Checking the device model",
             "- Mounting system and vendor",
             "- Flashing boot to /dev/block/by-name/boot_b",
             "- Flashing dtbo and vendor_boot to the inactive slot, which takes a few seconds on most devices",
@@ -350,7 +336,7 @@ fn main() -> Result<()> {
             "  system_b       1.17 GiB   written",
         ];
         lines.extend(match failed {
-            false => ["  vendor_b       1.96 GiB   written", "- Cleaning up", "- Done"].as_slice(),
+            false => ["- Done", "- Done", "- Done"].as_slice(),
             true => ["! Could not write vendor_b", "! Installation aborted"].as_slice(),
         });
         lines.into_iter().map(String::from).collect()
@@ -364,7 +350,7 @@ fn main() -> Result<()> {
     let adding = |app: &mut App, name: &str, security: Security, field: Field, choosing: bool| {
         app.state.adding = Some(Adding { name: name.into(), security, field, choosing });
     };
-    let pages: [PageShot; 160] = [
+    let pages: [PageShot; 159] = [
         ("11-install-light-locked", Screen::Install, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         }),
@@ -387,7 +373,7 @@ fn main() -> Result<()> {
             app.state.install = Install::Checking { size: 7_103_043_868, stage: None };
         }),
         ("19-choose-storage-light", Screen::Choose(Place::Storage), false, &|app| {
-            app.set_place(Place::Storage, "Download".into(), Ok(sample_download()), LISTED)
+            app.set_place(Place::Storage, "boot.img".into(), Ok(sample_download()), LISTED)
         }),
         ("19-choose-storage-dark-empty", Screen::Choose(Place::Storage), true, &|app| {
             app.set_place(Place::Storage, "Download/Skyward".into(), Ok(vec![file("notes.txt", 2_048, LISTED - 600)]), LISTED)
@@ -775,7 +761,6 @@ fn main() -> Result<()> {
             app.term_output(b"ishtar:/ # exit\r\n");
             app.term_ended(TermEnd::Exited(0));
         }),
-        ("55-language-light", Screen::Language, false, &|_| {}),
         ("56-time-zone-light", Screen::TimeZone, false, &|_| {}),
         ("56-time-zone-dark-london", Screen::TimeZone, true, &|app| app.state.time_zone = 5),
         ("57-logs-light", Screen::Logs, false, &|_| {}),
@@ -830,7 +815,7 @@ fn main() -> Result<()> {
             app.set_files("/sdcard/Download".into(), Ok(sample_download()), LISTED);
             app.state.clip = Some(Clip { op: FileOp::Move, path: "/sdcard/README.txt".into() });
         }),
-        ("77-folder-info-dark", Screen::FileInfo, true, &|app| in_download(app, "安装包")),
+        ("77-folder-info-dark", Screen::FileInfo, true, &|app| in_download(app, "Install packages")),
         ("78-file-info-light-deleting", Screen::FileInfo, false, &|app| {
             in_download(app, "README.txt");
             app.state.asking_delete = true;
@@ -1028,7 +1013,7 @@ fn main() -> Result<()> {
     let wanting = DeviceInfo { battery, snapshot: SnapshotState::Snapshotted, ..info.clone() };
     for (name, dark) in [("188-home-notices-light", false), ("189-home-notices-dark", true)] {
         let mut app = App::new(Screen::Home, w, h, ppd);
-        app.state.lang = lang;
+        app.state.lang = Lang::En;
         app.state.dark = dark;
         app.set_boot_slots(Ok(BootSlots { active: Slot::A, bootable: [true, true], successful: [true, true] }));
         let path = out.join(format!("{name}.png"));
@@ -1227,9 +1212,9 @@ fn sample_download() -> Vec<FileRow> {
     let (today, this_year, earlier) = (LISTED - 4 * 3600, 1_790_380_800, 1_667_692_800);
     vec![
         folder("Skyward", 3, today),
-        folder("安装包", 68, this_year),
+        folder("Install packages", 68, this_year),
         file("1d9bf122-130e-4db7-ae55-460c84819f0e.pdf", 1_090_000, this_year),
-        file("2021一带一路暨金砖大赛之物联网技术及其在智慧城市与工业互联网领域的应用创新赛表彰文件.pdf", 634_960, earlier),
+        file("A very long report file name about the internet of things and smart cities.pdf", 634_960, earlier),
         file("OTA_ishtar_OS3.0.305.0.WMACNXM_20260412_full_package_signed_for_recovery_install.zip", 7_014_220_000, this_year),
         file("README.txt", 900, today),
         file("skyward-recovery-ishtar.img", 104_857_600, today),
@@ -1247,12 +1232,12 @@ fn sample_types() -> Vec<FileRow> {
         ("app-release.apk", 11_300_000),
         ("recovery.log", 486_000),
         ("VID_20261020_201512.mp4", 182_400_000),
-        ("会议录音.m4a", 8_900_000),
+        ("Meeting recording.m4a", 8_900_000),
         ("build.prop", 3_200),
-        ("年度报告.docx", 268_000),
-        ("预算.xlsx", 54_000),
-        ("方案汇报.pptx", 6_100_000),
-        ("用户手册.pdf", 2_300_000),
+        ("Annual report.docx", 268_000),
+        ("Budget.xlsx", 54_000),
+        ("Presentation.pptx", 6_100_000),
+        ("User manual.pdf", 2_300_000),
         ("persist.bak", 33_554_432),
     ]
     .into_iter()
@@ -1311,13 +1296,13 @@ fn nearby() -> Vec<Network> {
         n("Skyward-Guest", -36, 2447, Some(5180), Security::Psk),
         n("Skyward-IoT", -38, 2447, None, Security::Psk),
         n("Skyward-Lab", -45, 2452, None, Security::Psk),
-        n("Skyward客厅", -50, 5180, None, Security::Psk),
+        n("Skyward lounge", -50, 5180, None, Security::Psk),
         n("Skyward-Mesh", -62, 2452, None, Security::Psk),
         n("Skyward-Office", -68, 2412, None, Security::Psk),
         n("Skyward-5G", -68, 5745, None, Security::Psk),
         n("Skyward-Family", -71, 2462, None, Security::Sae),
         n("Skyward-Garage", -77, 2437, None, Security::Psk),
-        n("Skyward书房", -80, 2437, None, Security::Psk),
+        n("Skyward study", -80, 2437, None, Security::Psk),
         n("Skyward-Open", -84, 2412, None, Security::Open),
     ]
 }
@@ -1372,7 +1357,7 @@ fn online(app: &mut App) {
 /// open, its owner's own files with it.
 fn opened(screen: Screen, w: u32, h: u32, ppd: f32) -> App {
     let mut app = App::new(screen, w, h, ppd);
-    app.state.lang = lang();
+    app.state.lang = Lang::En;
     app.state.data = Data::Open;
     app
 }
@@ -1454,16 +1439,16 @@ fn calibrate(fonts: &Fonts, t: &Theme) -> Result<Canvas> {
     for (i, w) in weights.iter().enumerate() {
         let face = fonts.face(*w)?;
         let top = 10.0 + 200.0 * i as f32;
-        c.text_top(&face, "设置", 10.0, top, m.title_px, ink, None);
-        c.text_top(&face, "蓝牙", 210.0, top, m.row_title_px, ink, None);
-        c.text_top(&face, "亮度", 340.0, top, m.sub_px, ink, None);
-        c.text_top(&face, "登录小米账号", 440.0, top, m.account_title_px, ink, None);
+        c.text_top(&face, "Settings", 10.0, top, m.title_px, ink, None);
+        c.text_top(&face, "Bluetooth", 210.0, top, m.row_title_px, ink, None);
+        c.text_top(&face, "Brightness", 340.0, top, m.sub_px, ink, None);
+        c.text_top(&face, "Sign in to Xiaomi account", 440.0, top, m.account_title_px, ink, None);
         let b = top + 110.0;
-        c.text_top(&face, "享受更多小米服务", 10.0, b, m.sub_px, ink, None);
-        c.text_top(&face, "已开启", 340.0, b, m.sub_px, ink, None);
-        c.text_top(&face, "搜索系统设置项", 480.0, b, m.row_title_px, ink, None);
+        c.text_top(&face, "Enjoy more Xiaomi services", 10.0, b, m.sub_px, ink, None);
+        c.text_top(&face, "On", 340.0, b, m.sub_px, ink, None);
+        c.text_top(&face, "Search settings", 480.0, b, m.row_title_px, ink, None);
         c.text(&face, "15:29", 840.0, b + m.status_px * 0.72, m.status_px, ink, None);
-        c.text_top(&face, "新版本", 1010.0, b, m.badge_px, ink, None);
+        c.text_top(&face, "New version", 1010.0, b, m.badge_px, ink, None);
         // The stock wordmark is set at a 136.5 px em on the 3.5 px/dp
         // reference panel.
         c.text(&face, "H", 1100.0, top + 105.0, 136.5, ink, None);

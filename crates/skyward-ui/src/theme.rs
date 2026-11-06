@@ -333,7 +333,7 @@ const DARK: Palette = Palette {
     shadow: Rgba::rgb(0, 0, 0).with_alpha(77),
 };
 
-// Sampled from the stock「我的设备」page: in light mode the cards are
+// Sampled from the stock「My device」page: in light mode the cards are
 // the ordinary settings cards; in dark mode they are white at low opacity
 // over the field.
 const LIGHT_HERO: Hero = Hero {

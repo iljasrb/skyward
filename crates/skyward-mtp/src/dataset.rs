@@ -227,11 +227,11 @@ mod tests {
     #[test]
     fn numbers_and_strings_read_back_as_written() {
         let mut w = Writer::new();
-        w.u8(7).u16(0x1234).u32(0xDEAD_BEEF).u64(1 << 40).string("相册 📷 photos").string("");
+        w.u8(7).u16(0x1234).u32(0xDEAD_BEEF).u64(1 << 40).string("Album 📷 photos").string("");
         let bytes = w.into_bytes();
         let mut r = Reader::new(&bytes);
         assert_eq!((r.u8(), r.u16(), r.u32(), r.u64()), (Some(7), Some(0x1234), Some(0xDEAD_BEEF), Some(1 << 40)));
-        assert_eq!(r.string().as_deref(), Some("相册 📷 photos"));
+        assert_eq!(r.string().as_deref(), Some("Album 📷 photos"));
         assert_eq!(r.string().as_deref(), Some(""));
         assert!(r.rest().is_empty());
         assert_eq!(r.u8(), None, "nothing is left");

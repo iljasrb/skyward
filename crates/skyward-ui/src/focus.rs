@@ -173,7 +173,7 @@ mod tests {
             hit(100.0, 400.0, Action::Pattern),
             hit(100.0, 500.0, Action::Open(Screen::Install)),
         ];
-        let mut frame = Frame::new(&t, Canvas::new(1440, 3200), page, "页面", 300.0);
+        let mut frame = Frame::new(&t, Canvas::new(1440, 3200), page, "Page", 300.0);
         frame.pinned = Some(Pinned { canvas: Canvas::new(1440, 100), top: 300.0, hits: vec![hit(400.0, 10.0, Action::OpenAncestor(1)), hit(50.0, 10.0, Action::OpenAncestor(0))] });
         frame.rows = Some(Rows { edges: vec![1000.0, 1100.0, 1200.0], action: Some(Action::OpenEntry) });
         frame.dock = Some(Dock { canvas: Canvas::new(1440, 200), hits: vec![hit(800.0, 20.0, Action::Paste), hit(100.0, 20.0, Action::Unpick)] });
@@ -205,9 +205,9 @@ mod tests {
     #[test]
     fn a_control_is_found_again_where_it_was_on_the_page_drawn_anew() {
         let t = theme();
-        let twice = vec![hit(100.0, 400.0, Action::Unavailable("暂不支持")), hit(100.0, 900.0, Action::Unavailable("暂不支持"))];
-        let spots = spots(&t, &Frame::new(&t, Canvas::new(1440, 3200), twice, "页面", 300.0));
-        let lower = Spot { stop: Stop::Hit(Action::Unavailable("暂不支持")), group: Group::Page, rect: Rect::new(100.0, 880.0, 100.0, 50.0) };
+        let twice = vec![hit(100.0, 400.0, Action::Unavailable("Not supported")), hit(100.0, 900.0, Action::Unavailable("Not supported"))];
+        let spots = spots(&t, &Frame::new(&t, Canvas::new(1440, 3200), twice, "Page", 300.0));
+        let lower = Spot { stop: Stop::Hit(Action::Unavailable("Not supported")), group: Group::Page, rect: Rect::new(100.0, 880.0, 100.0, 50.0) };
         assert_eq!(find(&spots, &lower).map(|k| spots[k].rect.y), Some(900.0), "the nearer of two doing the same");
         assert_eq!(find(&spots, &Spot { group: Group::Dock, ..lower }), None, "on the page, not in the dock");
         assert_eq!(find(&spots, &Spot { stop: Stop::Back, ..lower }), None);
