@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "android")]
 mod adbwifi;
 #[cfg(target_os = "android")]
+mod avbctl;
+#[cfg(target_os = "android")]
 mod backup;
 #[cfg(target_os = "android")]
 mod decrypt;
@@ -31,6 +33,8 @@ mod readings;
 mod recovery;
 #[cfg(target_os = "android")]
 mod relabel;
+#[cfg(target_os = "android")]
+mod resetprop;
 #[cfg(all(feature = "roots", target_os = "android"))]
 mod apatch;
 #[cfg(all(feature = "roots", target_os = "android"))]
@@ -222,10 +226,18 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
-    // init starts the recovery service by path with no arguments.
+    // init starts the recovery service by path with no arguments. The
+    // recovery binary also answers to the names install scripts use for
+    // the tools a recovery gives them.
     let started_as = std::env::args().next().unwrap_or_default();
-    if Path::new(&started_as).file_name().is_some_and(|n| n == "recovery") {
-        return recovery();
+    let name = Path::new(&started_as).file_name().map(|n| n.to_string_lossy().into_owned());
+    match name.as_deref() {
+        Some("recovery") => return recovery(),
+        #[cfg(target_os = "android")]
+        Some("avbctl") => return avbctl::run(),
+        #[cfg(target_os = "android")]
+        Some("resetprop") => return resetprop::run(),
+        _ => {}
     }
     match Cli::parse().cmd {
         Cmd::Info { config } => info(&config),

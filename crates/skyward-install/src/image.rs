@@ -252,7 +252,7 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
 /// then fails with `EPERM`. The flag is the device's own, and it can be
 /// cleared, which is what this does. Anything that is not a block device --
 /// the files the tests write on a computer -- keeps whatever it had.
-fn writable(f: &File) -> Result<()> {
+pub(crate) fn writable(f: &File) -> Result<()> {
     use std::os::fd::AsRawFd;
     let clear: libc::c_int = 0;
     if unsafe { libc::ioctl(f.as_raw_fd(), BLKROSET as _, &clear) } != 0 {
