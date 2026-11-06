@@ -370,6 +370,19 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         assert!(partition_size(&path).is_err(), "too short to end in a footer");
     }
 
+    #[test]
+    fn the_tools_are_the_ones_their_readme_names() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tools");
+        for (name, want) in [
+            ("7za", "9fcf394605239be338075856f40277397cf8c5f497226ad45764ca9013c703d9"),
+            ("zstd", "b2b5618b51c0a9c5913b7d67a6fd2f50edc57293d8eb6a6c270cf994f9601720"),
+        ] {
+            let got = Sha256::digest(std::fs::read(dir.join(name)).unwrap());
+            let got: String = got.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn tools_are_put_in_system_bin() {
