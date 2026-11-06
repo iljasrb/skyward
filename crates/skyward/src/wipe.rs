@@ -48,14 +48,14 @@ const SHARED_APP_FOLDERS: [&str; 2] = ["Android/data", "Android/media"];
 /// The caches the system keeps for itself: the apps it has parsed, the
 /// resources of the overlays it applies, and /cache, which on phones with
 /// no cache partition is this folder.
-const SYSTEM_CACHES: [&str; 3] = ["/data/cache", "/data/cache", "/data/cache"];
+const SYSTEM_CACHES: [&str; 3] = ["/data/system/package_cache", "/data/resource-cache", "/data/cache"];
 
 /// Where ART keeps on the data partition what it compiles ahead of time:
 /// the system's own apps, what the ART module compiles for the boot
 /// classpath and the system server, and what is compiled for the slot an
 /// update was installed to. The system compiles all of it again as it
 /// needs it.
-const ART_CACHES: [&str; 3] = ["/data/ota", "/data/ota", "/data/ota"];
+const ART_CACHES: [&str; 3] = ["/data/dalvik-cache", "/data/misc/apexdata/com.android.art/dalvik-cache", "/data/ota"];
 
 /// Where every Android phone keeps logs and dumps: crashes, programs that
 /// stopped answering, the system's dropbox of reports, logcat kept across

@@ -667,7 +667,7 @@ fn mount_firmware(partition: &str) -> Result<()> {
 /// made under a build it does not know, and refuses them. The recovery's
 /// property files leave these out so that they can be set here instead.
 #[cfg(target_os = "android")]
-const BUILD_VERSION: [&str; 3] = ["ro.vendor.build.security_patch", "ro.vendor.build.security_patch", "ro.vendor.build.security_patch"];
+const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
 
 /// Set each of [`BUILD_VERSION`] to the installed system's value. An earlier
 /// run of the recovery service may have set it already, and init sets such
@@ -928,7 +928,7 @@ fn slot() -> Result<()> {
 fn update() -> Result<()> {
     let slot = booted_slot()?;
     println!("standing {:?}", skyward_vab::standing(slot)?);
-    for kind in ["user", "user", "user"] {
+    for kind in ["snapshot", "snapshot-merge", "user"] {
         println!("target {kind} {:?}", skyward_block::dm::target_version(kind)?);
     }
     let Some(snaps) = skyward_vab::snapshots::Snapshots::lock(false)? else {

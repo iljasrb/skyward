@@ -10120,7 +10120,7 @@ mod tests {
         assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Install]);
         assert_eq!(app.state.install, Install::Scripting { stage: None, running: false });
         app.install(Event::Running, 1000);
-        for line in ["- Done", "- Done", "- Done"] {
+        for line in ["- Flashing boot", " ", "- Done"] {
             app.install(Event::Print(line.into()), 1000);
         }
         app.install(Event::Progress(Stage::Script { thousandths: 500 }), 1000);

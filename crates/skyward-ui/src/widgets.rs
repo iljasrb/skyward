@@ -2558,9 +2558,9 @@ pub enum Cap {
 /// digit and symbol layers hold every printable ASCII character.
 fn rows(layer: Layer) -> [&'static str; 3] {
     match layer {
-        Layer::Letters | Layer::Shifted => ["zxcvbnm", "zxcvbnm", "zxcvbnm"],
-        Layer::Digits => [".,?!'", ".,?!'", ".,?!'"],
-        Layer::Symbols => [".,?!'", ".,?!'", ".,?!'"],
+        Layer::Letters | Layer::Shifted => ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+        Layer::Digits => ["1234567890", "-/:;()$&@\"", ".,?!'"],
+        Layer::Symbols => ["[]{}#%^*+=", "_\\|~<>`", ".,?!'"],
     }
 }
 

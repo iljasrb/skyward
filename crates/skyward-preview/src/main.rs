@@ -336,7 +336,7 @@ fn main() -> Result<()> {
             "  system_b       1.17 GiB   written",
         ];
         lines.extend(match failed {
-            false => ["- Done", "- Done", "- Done"].as_slice(),
+            false => ["  vendor_b       1.96 GiB   written", "- Cleaning up", "- Done"].as_slice(),
             true => ["! Could not write vendor_b", "! Installation aborted"].as_slice(),
         });
         lines.into_iter().map(String::from).collect()
@@ -1072,7 +1072,13 @@ fn finger_on(app: &mut App, f: &Fonts, info: &DeviceInfo, action: Action, at: u6
     let t = app.theme();
     let rect = match action {
         Action::Back => widgets::back_rect(&t),
-        _ => app.frame(f, info).hits.iter().find(|h| h.action == action).expect("the control is on the page").rect,
+        _ => app
+            .frame(f, info)
+            .hits
+            .iter()
+            .find(|h| h.action == action)
+            .unwrap_or_else(|| panic!("the control {action:?} is on the page"))
+            .rect,
     };
     let (x, y) = rect.centre();
     app.touch(Touch::Down(x, y), f, at);
