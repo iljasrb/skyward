@@ -43,6 +43,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(S_BACKUP, HOME, Screen::Backup, &["beifen", "bf", "backup"]),
     entry(S_RESTORE, HOME, Screen::Restore, &["huifu", "hf", "restore"]),
     entry(MOUNT, HOME, Screen::Mount, &["guazai", "gz", "mount", "umount"]),
+    entry(S_CLOUD_STORAGE, HOME, Screen::Cloud, &["cloud", "webdav", "storage"]),
     entry(S_WIPE_DATA, HOME, Screen::Wipe, &["qingchushuju", "qcsj", "wipe", "format", "geshihua", "gsh"]),
     entry(ADVANCED, HOME, Screen::Advanced, &["gaoji", "gj", "advanced"]),
     entry(S_FILE_MANAGER, ADVANCED, Screen::Files, &["wenjianguanli", "wjgl", "files", "file"]),

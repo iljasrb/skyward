@@ -25,6 +25,8 @@ pub enum Icon {
     Restore,
     /// A memory card, its corner cut and its contacts along its top.
     Mount,
+    /// A cloud, as the cloud storage shows it.
+    Cloud,
     /// A bin with two slots cut in it, its lid and the lid's handle.
     Wipe,
     /// A nut, as the stock Settings' app settings show it.
@@ -155,6 +157,11 @@ const RESTORE: &[Part] = &[
     add(Shape::Line("M4.95,9.2L10.65,9.55L7.95,13.95Z", 1.0)),
     add(Shape::Line("M14.9,10.2V14.3L17.6,15.9", 2.1)),
 ];
+
+const CLOUD: &[Part] = &[add(Shape::Fill(
+    "M8,20.5C5.2,20.5 3,18.3 3,15.5C3,13 4.8,11 7.2,10.5C8.1,7.7 10.7,5.6 14,5.6C17.7,5.6 20.8,8.5 21.1,12.2\
+     C23.3,12.6 25,14.5 25,16.7C25,19.3 22.9,21.4 20.3,21.4H8Z",
+))];
 
 const MOUNT: &[Part] = &[
     // The card's cut corner is rounded as its other corners are, by a thin
@@ -343,6 +350,7 @@ fn outline(icon: Icon) -> (&'static [Part], f32) {
         Icon::Backup => (BACKUP, 1.0),
         Icon::Restore => (RESTORE, 1.0),
         Icon::Mount => (MOUNT, 1.0),
+        Icon::Cloud => (CLOUD, 1.0),
         Icon::Wipe => (WIPE, 1.0),
         Icon::Gear => (GEAR, 1.0),
         Icon::Power => (POWER, 1.0),
@@ -489,11 +497,12 @@ fn path(d: &str) -> tiny_skia::Path {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 21] = [
+    const ALL: [Icon; 22] = [
         Icon::Install,
         Icon::Backup,
         Icon::Restore,
         Icon::Mount,
+        Icon::Cloud,
         Icon::Wipe,
         Icon::Gear,
         Icon::Power,

@@ -8,9 +8,10 @@ use skyward_net::release::{Release, Unanswered};
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Link, Network, Power, Stage as Joining, Traffic, Wlan};
 use skyward_ui::app::{
-    Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, Damage, Data, DownloadEnd,
-    DownloadJob, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, Install, ItemEnd, JobEnd, Key, Keys,
-    MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, Source, TermEnd, Touch, UsbDrive, UsbLink, SCREEN_OFF,
+    Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, CloudInfo, CloudStatus, Damage,
+    Data, DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, Install, ItemEnd,
+    JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, Secret, Source, TermEnd, Touch, UsbDrive,
+    UsbLink, SCREEN_OFF,
 };
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
 use skyward_ui::{editor, fmt, pages, Canvas, Ctx, Fonts, Lang, Theme};
@@ -350,7 +351,7 @@ fn main() -> Result<()> {
     let adding = |app: &mut App, name: &str, security: Security, field: Field, choosing: bool| {
         app.state.adding = Some(Adding { name: name.into(), security, field, choosing });
     };
-    let pages: [PageShot; 159] = [
+    let pages: [PageShot; 161] = [
         ("11-install-light-locked", Screen::Install, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         }),
@@ -695,11 +696,11 @@ fn main() -> Result<()> {
         }),
         ("179-file-info-dark-image", Screen::FileInfo, true, &|app| in_download(app, "skyward-recovery-ishtar.img")),
         ("180-install-opened-light-checking", Screen::Installing, false, &|app| {
-            app.state.source = Source::Opened { drive: false };
+            app.state.source = Source::Opened { place: Place::Storage };
             app.state.install = Install::Checking { size: 7_014_220_000, stage: None };
         }),
         ("181-install-opened-dark-usb", Screen::Installing, true, &|app| {
-            app.state.source = Source::Opened { drive: true };
+            app.state.source = Source::Opened { place: Place::UsbDrive };
             app.state.install = Install::Checking { size: 104_857_600, stage: None };
         }),
         ("143-update-light-offline", Screen::Update, false, &|app| {
@@ -882,6 +883,24 @@ fn main() -> Result<()> {
         ("99-erase-dark-locked", Screen::Erase, true, &|app| {
             app.erase_started(false, false, vec![Part::AppData, Part::AppCaches]);
             app.erase_ended(Err(EraseStop::Locked(vec![0, 999])), 0);
+        }),
+        ("21-cloud-light", Screen::Cloud, false, &|app| {
+            app.state.cloud.settings.address = "https://dav.example.com/remote.php/dav/files/me/".into();
+            app.state.cloud.settings.username = "me".into();
+            app.state.cloud.settings.password = Secret("secret".into());
+            app.state.cloud.settings.folder = "Skyward".into();
+            app.state.cloud.status = CloudStatus::Ready;
+            app.state.cloud.info = Some(CloudInfo { server: Some("dav.example.com".into()), free: Some(48 << 30) });
+        }),
+        ("21-cloud-dark-mounted", Screen::Cloud, true, &|app| {
+            app.state.cloud.settings.address = "https://dav.example.com/remote.php/dav/files/me/".into();
+            app.state.cloud.settings.username = "me".into();
+            app.state.cloud.settings.password = Secret("secret".into());
+            app.state.cloud.settings.folder = "Skyward".into();
+            app.state.cloud.status = CloudStatus::Mounted;
+            app.state.cloud.mounted = true;
+            app.state.cloud.saved = true;
+            app.state.cloud.info = Some(CloudInfo { server: Some("dav.example.com".into()), free: Some(48 << 30) });
         }),
     ];
     for (name, screen, dark, set) in pages {

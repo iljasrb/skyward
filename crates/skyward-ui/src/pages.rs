@@ -1,7 +1,8 @@
 use crate::app::{
-    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, DownloadJob, EraseStop,
-    Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place,
-    Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS,
+    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, CloudField, CloudState, CloudStatus, Confirm, Damage, Data, Dock,
+    DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit,
+    Install, JobEnd, Keys, Pick, Place, Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
+    ADB_WIFI_PORT, BACKUP_PARTS,
     DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
     WIPES, installs,
 };
@@ -67,6 +68,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Reboot => reboot(cx),
         Screen::Wipe => wipe(cx),
         Screen::Mount => mount(cx),
+        Screen::Cloud => cloud(cx),
         Screen::Install => install(cx),
         Screen::Choose(place) => choose(cx, place),
         Screen::PackageImages => package_images(cx),
@@ -143,7 +145,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::Restore => (S_SLIDE_TO_RESTORE, true),
         Confirm::Slot => (S_SLIDE_TO_SWITCH, true),
         Confirm::FactoryReset => (S_SLIDE_TO_FACTORY_RESET, true),
-        Confirm::DeleteEntry | Confirm::DeleteBackup => (S_SLIDE_TO_DELETE, true),
+        Confirm::DeleteEntry | Confirm::DeleteBackup | Confirm::CloudForget => (S_SLIDE_TO_DELETE, true),
         Confirm::Install => (INSTALL, false),
         Confirm::InstallWipe => (S_SLIDE_TO_INSTALL_AND_WIPE, true),
         Confirm::RunScript => (INSTALL, true),
@@ -295,6 +297,7 @@ pub fn home(cx: &Ctx) -> Frame {
         Row::new(S_BACKUP).icon(BLUE, Icon::Backup),
         Row::new(S_RESTORE).icon(PURPLE, Icon::Restore),
         Row::new(S_MOUNT).icon(SLATE, Icon::Mount),
+        Row::new(S_CLOUD_STORAGE).icon(BLUE, Icon::Cloud).trail(Trail::Value(cloud_value(l, &cx.state.cloud))),
         Row::new(DECRYPT).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
     ]);
     out.extend(hits(&tools.rows, &[
@@ -302,6 +305,7 @@ pub fn home(cx: &Ctx) -> Frame {
         Action::Open(Screen::Backup),
         Action::Open(Screen::Restore),
         Action::Open(Screen::Mount),
+        Action::Open(Screen::Cloud),
         Action::Open(Screen::Decrypt),
     ]));
     y = tools.bottom + t.m.card_gap;
@@ -463,6 +467,115 @@ pub fn mount(cx: &Ctx) -> Frame {
     };
 
     Frame::new(t, fit(c, t, bottom), out, S_MOUNT, top)
+}
+
+/// The cloud storage: the server, the way in, and whether it is mounted.
+pub fn cloud(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let cloud = &s.cloud;
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let mut caret = None;
+    let mut y = widgets::section_first(&mut c, t, f, top, S_SERVER);
+    let field = |y: f32| Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    y = widgets::section(&mut c, t, f, y, S_ADDRESS);
+    let (below, here) = widgets::text_field(&mut c, t, f, y, &cloud.settings.address);
+    out.push(Hit { rect: field(y), action: Action::CloudField(CloudField::Address) });
+    if cloud.field == Some(CloudField::Address) {
+        caret = Some(here);
+    }
+    y = widgets::section(&mut c, t, f, below, S_USERNAME);
+    let (below, here) = widgets::text_field(&mut c, t, f, y, &cloud.settings.username);
+    out.push(Hit { rect: field(y), action: Action::CloudField(CloudField::Username) });
+    if cloud.field == Some(CloudField::Username) {
+        caret = Some(here);
+    }
+    y = widgets::section(&mut c, t, f, below, S_PASSWORD);
+    let shown = match cloud.show_password {
+        true => cloud.settings.password.0.clone(),
+        false => "•".repeat(cloud.settings.password.0.chars().count()),
+    };
+    let (below, here) = widgets::text_field(&mut c, t, f, y, &shown);
+    out.push(Hit { rect: field(y), action: Action::CloudField(CloudField::Password) });
+    if cloud.field == Some(CloudField::Password) {
+        caret = Some(here);
+    }
+    let show = widgets::list(&mut c, t, f, below + m.card_gap, &[Row::new(S_SHOW_PASSWORD).trail(Trail::Switch(cloud.show_password))]);
+    out.extend(hits(&show.rows, &[Action::Toggle(Switch::ShowCloudPassword)]));
+    y = widgets::section(&mut c, t, f, show.bottom, S_FOLDER);
+    let (below, here) = widgets::text_field(&mut c, t, f, y, &cloud.settings.folder);
+    out.push(Hit { rect: field(y), action: Action::CloudField(CloudField::Folder) });
+    if cloud.field == Some(CloudField::Folder) {
+        caret = Some(here);
+    }
+    y = below;
+    if cloud.settings.address.trim().to_ascii_lowercase().starts_with("http://") {
+        y = widgets::footnote(&mut c, t, f, y, S_THE_ADDRESS_IS_NOT_ENCRYPTED_ANYONE_ON_THE_WAY_CAN_READ_IT);
+    } else if !cloud.settings.address.trim().is_empty() {
+        y = widgets::footnote(&mut c, t, f, y, S_THE_SERVERS_CERTIFICATE_IS_NOT_VERIFIED_ONLY_CONNECT_TO_A_SERVER_YOU_TRUST);
+    }
+    let (title, detail, color) = match &cloud.status {
+        CloudStatus::NotSetUp => (S_NOT_SET_UP, S_ENTER_THE_ADDRESS_OF_A_WEBDAV_SERVER, SLATE),
+        CloudStatus::Ready => (S_READY, S_THE_SERVER_ANSWERS, GREEN),
+        CloudStatus::Testing => (S_TESTING, S_ASKING_THE_SERVER, ORANGE),
+        CloudStatus::Mounting => (S_MOUNTING, S_MOUNTING_THE_SERVER, ORANGE),
+        CloudStatus::Mounted => (S_MOUNTED, S_MOUNTED_AT_CLOUD, GREEN),
+        CloudStatus::Unmounting => (S_UNMOUNTING, S_LETTING_THE_SERVER_GO, ORANGE),
+        CloudStatus::Failed(why) => (S_CANT_CONNECT, why.as_str(), RED),
+    };
+    let detail = match (cloud.status == CloudStatus::Ready || cloud.status == CloudStatus::Mounted, &cloud.info) {
+        (true, Some(info)) => match (&info.server, info.free.map(fmt::gb)) {
+            (Some(server), Some(free)) => crate::t!(S_SERVER_FREE, server = server, free = free),
+            (Some(server), None) => server.clone(),
+            (None, Some(free)) => crate::t!(S_FREE, free = free),
+            (None, None) => detail.to_string(),
+        },
+        _ => detail.to_string(),
+    };
+    y = widgets::section(&mut c, t, f, y, S_STATUS);
+    y = widgets::list(&mut c, t, f, y, &[standing(title, color, Icon::Cloud, &detail)]).bottom;
+    let mut rows = Vec::new();
+    let mut acts = Vec::new();
+    if !cloud.busy() {
+        rows.push(Row::new(S_TEST_CONNECTION).trail(Trail::None));
+        acts.push(Action::CloudTest);
+        if cloud.mounted {
+            rows.push(Row::new(S_UNMOUNT).trail(Trail::None));
+            acts.push(Action::CloudUnmount);
+        } else {
+            rows.push(Row::new(S_MOUNT).trail(Trail::None));
+            acts.push(Action::CloudMount);
+        }
+    }
+    let actions = widgets::list(&mut c, t, f, y + m.card_gap, &rows);
+    out.extend(hits(&actions.rows, &acts));
+    y = actions.bottom;
+    if cloud.saved || cloud.pending_save || cloud.configured() {
+        let forget = widgets::list(&mut c, t, f, y + m.card_gap, &[Row::new(S_FORGET).tint(t.pal.danger).trail(Trail::None)]);
+        out.extend(hits(&forget.rows, &[Action::Confirm(Confirm::CloudForget)]));
+        y = forget.bottom;
+    }
+    if matches!(s.data, Data::Closed | Data::Opening | Data::Failed(_)) {
+        y = widgets::footnote(&mut c, t, f, y, S_CLOUD_SETTINGS_LOAD_AFTER_THE_DATA_PARTITION_IS_DECRYPTED_WHAT_IS_TYPED_NOW_LASTS_UNTIL_A_RESTART);
+    } else if cloud.saved {
+        y = widgets::footnote(&mut c, t, f, y, S_THE_CLOUD_SETTINGS_ARE_KEPT_ON_THE_DATA_PARTITION);
+    }
+    let _ = l;
+    if cloud.field.is_some() {
+        keyboard_hits(&mut c, t, f, s, S_DONE_2, &mut out);
+    }
+    Frame { caret, ..Frame::new(t, fit(c, t, y), out, S_CLOUD_STORAGE, top) }
+}
+
+/// What the home page says of the cloud storage beside its row.
+fn cloud_value(_l: Lang, cloud: &CloudState) -> &'static str {
+    match (cloud.mounted, cloud.configured()) {
+        (true, _) => S_MOUNTED,
+        (false, true) => S_NOT_MOUNTED,
+        (false, false) => S_NOT_SET_UP,
+    }
 }
 
 /// Who made the recovery, as the About page names them under its version.
@@ -897,8 +1010,14 @@ pub fn install(cx: &Ctx) -> Frame {
         Some(UsbDrive::Unreadable(_)) => USB_DRIVE_UNREADABLE,
         None => USB_DRIVE_WANTED,
     };
+    let cloud = match (cx.state.cloud.mounted, cx.state.cloud.configured()) {
+        (true, _) => S_CHOOSE_A_PACKAGE_OR_IMAGE_IN_CLOUD_STORAGE,
+        (false, true) => S_CLOUD_STORAGE_NOT_MOUNTED,
+        (false, false) => S_SET_UP_CLOUD_STORAGE,
+    };
     rows.push(Row::new(install_title(l, Source::File(Place::Storage))).icon(BLUE, Icon::Phone).subtitle(storage));
     rows.push(Row::new(install_title(l, Source::File(Place::UsbDrive))).icon(PURPLE, Icon::UsbDrive).subtitle(usb));
+    rows.push(Row::new(install_title(l, Source::File(Place::Cloud))).icon(BLUE, Icon::Cloud).subtitle(cloud));
     let sideload = S_RUN_ADB_SIDELOAD_ON_THE_COMPUTER;
     rows.push(Row::new(install_title(l, Source::Computer)).icon(GREEN, Icon::Usb).subtitle(sideload));
     // A whole system package taken apart: each image it holds comes out,
@@ -910,7 +1029,8 @@ pub fn install(cx: &Ctx) -> Frame {
     );
     let methods = widgets::list(&mut c, t, f, y, &rows);
     let from_usb = Action::Open(Screen::Choose(Place::UsbDrive));
-    out.extend(hits(&methods.rows, &[from_storage, from_usb, Action::Sideload, Action::OpenPackageImages]));
+    let from_cloud = Action::Open(Screen::Choose(Place::Cloud));
+    out.extend(hits(&methods.rows, &[from_storage, from_usb, from_cloud, Action::Sideload, Action::OpenPackageImages]));
     let what = S_INSTALLS_A_B_FULL_OTA_PACKAGES_AND_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_A_SYSTEM_UPDATE_INSTALLS_TO_THE_OTHER_SLOT_WHICH_STARTS_AFTER_A_REBOOT_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES;
     let y = widgets::footnote(&mut c, t, f, methods.bottom, what);
     let y = widgets::section(&mut c, t, f, y, S_OPTIONS);
@@ -990,6 +1110,7 @@ fn install_title(_l: Lang, source: Source) -> &'static str {
         Source::Computer => S_INSTALL_FROM_A_COMPUTER,
         Source::File(Place::Storage) => S_INSTALL_FROM_INTERNAL_STORAGE,
         Source::File(Place::UsbDrive) => S_INSTALL_FROM_A_USB_DRIVE,
+        Source::File(Place::Cloud) => S_INSTALL_FROM_CLOUD_STORAGE,
         Source::Opened { .. } => S_INSTALL_FROM_FILE_MANAGER,
         Source::Asked { security: false } => S_INSTALL_A_SYSTEM_UPDATE,
         Source::Asked { security: true } => S_INSTALL_A_SECURITY_UPDATE,
@@ -1002,6 +1123,7 @@ fn place_name(_l: Lang, place: Place) -> &'static str {
     match place {
         Place::Storage => S_INTERNAL_STORAGE,
         Place::UsbDrive => S_USB_DRIVE,
+        Place::Cloud => S_CLOUD_STORAGE,
     }
 }
 
@@ -1178,8 +1300,15 @@ pub fn installing(cx: &Ctx) -> Frame {
             let note = match s.source {
                 Source::Computer => S_KEEP_THE_CABLE_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL_AND_ENDS_ADB_SIDELOAD_ON_THE_COMPUTER,
                 Source::Rescue => S_KEEP_THE_CABLE_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL_AND_LEAVES_RESCUE_MODE,
-                Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. } => S_GOING_BACK_CANCELS_THE_INSTALL,
-                Source::File(Place::UsbDrive) | Source::Opened { drive: true } => S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL,
+                Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. } => {
+                    S_GOING_BACK_CANCELS_THE_INSTALL
+                }
+                Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
+                    S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL
+                }
+                Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud } => {
+                    S_KEEP_CLOUD_STORAGE_MOUNTED_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL
+                }
             };
             widgets::footnote(&mut c, t, f, y, note)
         }
@@ -1189,8 +1318,11 @@ pub fn installing(cx: &Ctx) -> Frame {
             let y = widgets::list(&mut c, t, f, top, &[standing(READING_FILE, GREEN, Icon::Install, &detail)]).bottom;
             match s.source {
                 Source::Computer | Source::Rescue => widgets::footnote(&mut c, t, f, y, KEEP_CABLE),
-                Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. } => y,
-                Source::File(Place::UsbDrive) | Source::Opened { drive: true } => widgets::footnote(&mut c, t, f, y, KEEP_DRIVE),
+                Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. } => y,
+                Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => widgets::footnote(&mut c, t, f, y, KEEP_DRIVE),
+                Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud } => {
+                    widgets::footnote(&mut c, t, f, y, S_KEEP_CLOUD_STORAGE_MOUNTED)
+                }
             }
         }
         Install::Choosing(choice) => {
@@ -1287,11 +1419,14 @@ pub fn installing(cx: &Ctx) -> Frame {
             let y = widgets::progress_card(&mut c, t, f, top, &title, &detail, done);
             let keep = match s.source {
                 Source::Computer | Source::Rescue => S_KEEP_THE_CABLE_IN_UNTIL_ITS_FLASHED,
-                Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. } => {
+                Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. } => {
                     S_DONT_POWER_OFF_UNTIL_ITS_FLASHED
                 }
-                Source::File(Place::UsbDrive) | Source::Opened { drive: true } => {
+                Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
                     S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_FLASHED
+                }
+                Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud } => {
+                    S_KEEP_CLOUD_STORAGE_MOUNTED_UNTIL_ITS_FLASHED
                 }
             };
             widgets::footnote(&mut c, t, f, y, keep)
@@ -1365,11 +1500,14 @@ fn until_installed(_l: Lang, source: Source) -> &'static str {
         Source::Computer | Source::Rescue => {
             S_KEEP_THE_CABLE_IN_AND_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
         }
-        Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. } => {
+        Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. } => {
             S_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
         }
-        Source::File(Place::UsbDrive) | Source::Opened { drive: true } => {
+        Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
             S_KEEP_THE_USB_DRIVE_IN_AND_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
+        }
+        Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud } => {
+            S_KEEP_CLOUD_STORAGE_MOUNTED_AND_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
         }
     }
 }
@@ -1699,11 +1837,20 @@ pub fn backup(cx: &Ctx) -> Frame {
         Some(UsbDrive::Unreadable(_)) => USB_DRIVE_UNREADABLE,
         None => USB_DRIVE_WANTED,
     };
+    let cloud = match (s.cloud.mounted, s.cloud.configured()) {
+        (true, _) => S_MOUNTED,
+        (false, true) => S_NOT_MOUNTED,
+        (false, false) => S_NOT_SET_UP,
+    };
     let places = widgets::list(&mut c, t, f, y, &[
         Row::new(place_name(l, Place::Storage)).subtitle(&storage).trail(Trail::Check(s.backup_to == Place::Storage)),
         Row::new(place_name(l, Place::UsbDrive)).subtitle(usb).trail(Trail::Check(s.backup_to == Place::UsbDrive)),
+        Row::new(place_name(l, Place::Cloud)).subtitle(cloud).trail(Trail::Check(s.backup_to == Place::Cloud)),
     ]);
-    out.extend(hits(&places.rows, &[Action::BackupTo(Place::Storage), Action::BackupTo(Place::UsbDrive)]));
+    out.extend(hits(
+        &places.rows,
+        &[Action::BackupTo(Place::Storage), Action::BackupTo(Place::UsbDrive), Action::BackupTo(Place::Cloud)],
+    ));
     let y = widgets::section(&mut c, t, f, places.bottom, S_OPTIONS);
     let options = widgets::list(&mut c, t, f, y, &[
         Row::new(S_COMPRESS).subtitle(S_SMALLER_AND_SLOWER_TO_MAKE).trail(Trail::Switch(s.compress)),
@@ -1748,7 +1895,10 @@ pub fn restore(cx: &Ctx) -> Frame {
         out.extend(list.rows.iter().enumerate().map(|(k, &rect)| Hit { rect, action: Action::OpenBackup(k) }));
         list.bottom
     };
-    let note = S_BACKUPS_ARE_LOOKED_FOR_IN_THE_SKYWARD_BACKUPS_FOLDERS_OF_INTERNAL_STORAGE_AND_THE_USB_DRIVE_INTERNAL_STORAGE_NEEDS_THE_DATA_PARTITION_DECRYPTED_FIRST;
+    let note = match s.cloud.mounted {
+        true => S_BACKUPS_ARE_LOOKED_FOR_IN_THE_SKYWARD_BACKUPS_FOLDERS_OF_INTERNAL_STORAGE_THE_USB_DRIVE_AND_CLOUD_STORAGE_INTERNAL_STORAGE_NEEDS_THE_DATA_PARTITION_DECRYPTED_FIRST,
+        false => S_BACKUPS_ARE_LOOKED_FOR_IN_THE_SKYWARD_BACKUPS_FOLDERS_OF_INTERNAL_STORAGE_AND_THE_USB_DRIVE_INTERNAL_STORAGE_NEEDS_THE_DATA_PARTITION_DECRYPTED_FIRST,
+    };
     let bottom = widgets::footnote(&mut c, t, f, bottom, note);
     Frame::new(t, fit(c, t, bottom), out, S_RESTORE, top)
 }
@@ -1934,6 +2084,7 @@ pub fn backup_job(cx: &Ctx) -> Frame {
                     let saved = match job.place {
                         Place::Storage => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_IN_INTERNAL_STORAGE, name = name),
                         Place::UsbDrive => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_ON_THE_USB_DRIVE, name = name),
+                        Place::Cloud => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_IN_CLOUD_STORAGE, name = name),
                     };
                     (BACKUP_COMPLETE, GREEN, saved)
                 }
@@ -1957,6 +2108,7 @@ pub fn backup_job(cx: &Ctx) -> Frame {
     let keep = match job.place {
         Place::Storage => S_DONT_POWER_OFF,
         Place::UsbDrive => S_KEEP_THE_USB_DRIVE_IN_AND_DONT_POWER_OFF,
+        Place::Cloud => S_KEEP_CLOUD_STORAGE_MOUNTED_AND_DONT_POWER_OFF,
     };
     match &job.outcome {
         None => {
@@ -2830,6 +2982,7 @@ pub fn choose(cx: &Ctx, place: Place) -> Frame {
             unreadable = crate::t!(S_USE_A_USB_DRIVE_FORMATTED_AS_FAT32_OR_EXFAT, why = why);
             Some((USB_DRIVE_UNREADABLE, unreadable.as_str()))
         }
+        (Place::Cloud, _) if !s.cloud.mounted => Some((S_CLOUD_STORAGE_NOT_MOUNTED, S_MOUNT_CLOUD_STORAGE_FIRST)),
         _ => None,
     };
     let empty = S_NOTHING_HERE_TO_INSTALL;

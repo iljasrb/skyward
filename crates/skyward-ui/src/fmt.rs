@@ -895,10 +895,15 @@ pub fn failure(l: Lang, f: &Failure, source: Source) -> (String, Option<String>)
                 (Trouble::Older, _) => said(S_THE_PACKAGE_IS_TOO_OLD),
                 (Trouble::NoSpace, _) => said(S_NOT_ENOUGH_SPACE_IN_THE_SUPER_PARTITION),
                 (Trouble::Transfer, Source::Computer | Source::Rescue) => said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_CABLE_THEN_SEND_IT_AGAIN),
-                (Trouble::Transfer, Source::File(Place::Storage) | Source::Opened { drive: false } | Source::Asked { .. }) => {
+                (Trouble::Transfer, Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. }) => {
                     said(S_COULDNT_READ_THE_PACKAGE)
                 }
-                (Trouble::Transfer, Source::File(Place::UsbDrive) | Source::Opened { drive: true }) => said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN),
+                (Trouble::Transfer, Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive }) => {
+                    said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN)
+                }
+                (Trouble::Transfer, Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud }) => {
+                    said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_CLOUD_CONNECTION_THEN_TRY_AGAIN)
+                }
                 (Trouble::Write, _) => said(S_COULDNT_WRITE_A_PARTITION),
                 (Trouble::Verify, _) => said(S_A_PARTITION_DIDNT_VERIFY),
                 (Trouble::PostInstall, _) => said(S_COULDNT_FINISH_INSTALLING),
@@ -915,8 +920,12 @@ pub fn failure(l: Lang, f: &Failure, source: Source) -> (String, Option<String>)
             None,
         ),
         Failure::Unreadable(why) => match source {
-            Source::File(Place::UsbDrive) | Source::Opened { drive: true } => (
+            Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => (
                 said(S_COULDNT_READ_THE_FILE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN),
+                Some(why.clone()),
+            ),
+            Source::File(Place::Cloud) | Source::Opened { place: Place::Cloud } => (
+                said(S_COULDNT_READ_THE_FILE_CHECK_THE_CLOUD_CONNECTION_THEN_TRY_AGAIN),
                 Some(why.clone()),
             ),
             _ => (said(S_COULDNT_READ_THE_FILE), Some(why.clone())),

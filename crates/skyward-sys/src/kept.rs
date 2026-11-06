@@ -65,6 +65,30 @@ pub fn write(root: impl AsRef<Path>, folder: &str, name: &str, text: &str) -> Re
     Ok(path)
 }
 
+/// Write `text` as `folder/name` for the recovery alone: the folder is
+/// closed to everyone else, and so is the file. The file it wrote is
+/// returned.
+pub fn write_secret(root: impl AsRef<Path>, folder: &str, name: &str, text: &str) -> Result<PathBuf> {
+    let path = root.as_ref().join(SKYWARD).join(folder).join(name);
+    let dir = path.parent().expect("a kept file is in a folder");
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).with_context(|| format!("keep {} to the recovery", dir.display()))?;
+    swap(&path, text).with_context(|| format!("write {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).with_context(|| format!("keep {} to the recovery", path.display()))?;
+    Ok(path)
+}
+
+/// Take `folder/name` away, if it is there.
+pub fn remove(root: impl AsRef<Path>, folder: &str, name: &str) -> Result<()> {
+    let path = root.as_ref().join(SKYWARD).join(folder).join(name);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
 /// Put `text` in `path` whole: written beside it, flushed, and then moved
 /// over it in one step.
 fn swap(path: &Path, text: &str) -> Result<()> {
@@ -101,6 +125,19 @@ mod tests {
         swap(&path, "brightness = 0.7\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "brightness = 0.7\n", "the newer one is there whole");
         assert!(!path.with_extension("writing").exists(), "and the file it was written in is gone");
+    }
+
+    #[test]
+    fn a_secret_is_kept_to_the_recovery_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_secret(dir.path(), "cloud", "values", "password = \"secret\"\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "password = \"secret\"\n");
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        remove(dir.path(), "cloud", "values").unwrap();
+        assert!(!path.exists());
+        remove(dir.path(), "cloud", "values").unwrap();
     }
 
     #[test]

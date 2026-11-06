@@ -50,8 +50,9 @@ const RESTORE_ORDER: [Part; 4] = [Part::Boot, Part::System, Part::Efs, Part::Dat
 /// service bind to the secure world, which an older copy would not open;
 /// and what the system makes again, its caches, compiled code and the
 /// updates it downloaded.
-const DATA_SKIPPED: [&str; 20] = [
+const DATA_SKIPPED: [&str; 21] = [
     "media",
+    "skyward/cloud",
     "lost+found",
     "per_boot",
     "unencrypted",

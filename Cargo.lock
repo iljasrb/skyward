@@ -2261,6 +2261,7 @@ dependencies = [
  "skyward-backup",
  "skyward-binder",
  "skyward-block",
+ "skyward-cloud",
  "skyward-config",
  "skyward-crypto",
  "skyward-files",
@@ -2309,6 +2310,26 @@ dependencies = [
  "libc",
  "procfs",
  "zerocopy",
+]
+
+[[package]]
+name = "skyward-cloud"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "libc",
+ "percent-encoding",
+ "polyfuse-kernel",
+ "rustls",
+ "serde",
+ "skyward-block",
+ "skyward-net",
+ "tempfile",
+ "toml",
+ "url",
+ "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
@@ -2519,6 +2540,7 @@ dependencies = [
  "ttf-parser",
  "unicode-width",
  "vt100",
+ "zeroize",
 ]
 
 [[package]]

@@ -36,6 +36,9 @@ pub enum Screen {
     Wipe,
     /// Mounting and unmounting the slot's partitions.
     Mount,
+    /// A WebDAV server used as a folder: its address, the way in, and
+    /// whether it is mounted.
+    Cloud,
     Install,
     /// A place's folders and the files in them that can be installed, to
     /// choose one.
@@ -262,6 +265,9 @@ pub const DOWNLOADS: &str = "downloaded_rom";
 /// Where the USB drive plugged in is shown.
 pub const USB_DRIVE: &str = "/mnt/usb";
 
+/// Where the cloud storage is mounted.
+pub const CLOUD: &str = "/mnt/cloud";
+
 /// What a USB drive plugged in that cannot be read is said to be, and what
 /// is asked for while none is plugged in.
 pub const USB_DRIVE_UNREADABLE: Text = S_THIS_USB_DRIVE_CANT_BE_READ;
@@ -295,6 +301,79 @@ pub struct Secret(pub String);
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Secret({} characters)", self.0.chars().count())
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+/// A WebDAV server and the way in, as the cloud page shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CloudSettings {
+    pub address: String,
+    pub username: String,
+    pub password: Secret,
+    pub folder: String,
+}
+
+/// A field of the cloud page the keyboard types into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloudField {
+    Address,
+    Username,
+    Password,
+    Folder,
+}
+
+/// How the cloud storage stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CloudStatus {
+    #[default]
+    NotSetUp,
+    Ready,
+    Testing,
+    Mounting,
+    Mounted,
+    Unmounting,
+    Failed(String),
+}
+
+/// What the server said about itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CloudInfo {
+    pub server: Option<String>,
+    pub free: Option<u64>,
+}
+
+/// The cloud page's choices and how the mount stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CloudState {
+    pub settings: CloudSettings,
+    pub field: Option<CloudField>,
+    pub show_password: bool,
+    pub status: CloudStatus,
+    pub mounted: bool,
+    /// The settings on the data partition are the ones shown.
+    pub saved: bool,
+    /// The settings were typed while the data partition was closed, and
+    /// wait for it to open to be saved.
+    pub pending_save: bool,
+    pub info: Option<CloudInfo>,
+}
+
+impl CloudState {
+    /// Whether an address has been typed.
+    pub fn configured(&self) -> bool {
+        !self.settings.address.trim().is_empty()
+    }
+
+    /// Whether the page is waiting for the runtime.
+    pub fn busy(&self) -> bool {
+        matches!(self.status, CloudStatus::Testing | CloudStatus::Mounting | CloudStatus::Unmounting)
     }
 }
 
@@ -343,6 +422,21 @@ pub enum Place {
     /// A USB drive plugged into the port, which the runtime shows read
     /// only.
     UsbDrive,
+    /// A WebDAV server mounted while the cloud page says it is.
+    Cloud,
+}
+
+impl Place {
+    /// The place a full path is in, by where it starts.
+    pub fn of_path(path: &str) -> Place {
+        if path == USB_DRIVE || path.starts_with(&format!("{USB_DRIVE}/")) {
+            Place::UsbDrive
+        } else if path == CLOUD || path.starts_with(&format!("{CLOUD}/")) {
+            Place::Cloud
+        } else {
+            Place::Storage
+        }
+    }
 }
 
 /// The images a system package holds, and how taking one out stands.
@@ -386,8 +480,8 @@ pub enum Source {
     Computer,
     /// A file chosen in a place.
     File(Place),
-    /// A file opened in the file manager; `drive` for one on the USB drive.
-    Opened { drive: bool },
+    /// A file opened in the file manager, in the place it is in.
+    Opened { place: Place },
     /// A package on the phone the system asked to be installed before the
     /// recovery started; `security` for a security update.
     Asked { security: bool },
@@ -821,6 +915,9 @@ pub enum Switch {
     AdbWifi,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
+    /// Show the cloud storage's password rather than a dot for each
+    /// character.
+    ShowCloudPassword,
 }
 
 /// Whether a computer can reach adbd over the network joined, as the runtime last told it: adbd holds the
@@ -1136,6 +1233,8 @@ pub enum Confirm {
     DeleteEntry,
     /// Delete the backup the restore page shows.
     DeleteBackup,
+    /// Forget the saved cloud settings.
+    CloudForget,
     /// Install the update that waits to be agreed to.
     Install,
     /// Install an update that erases all user data after it.
@@ -1467,6 +1566,14 @@ pub enum Action {
     BackupTo(Place),
     /// Open a backup found, by its place in the list, to restore it.
     OpenBackup(usize),
+    /// Type into this field of the cloud page.
+    CloudField(CloudField),
+    /// Ask the server whether it answers and is a folder.
+    CloudTest,
+    /// Mount the cloud storage with the settings shown.
+    CloudMount,
+    /// Unmount the cloud storage.
+    CloudUnmount,
     /// Tick or untick a part of the backup being restored.
     RestorePart(usize),
     /// Stop backing up, or checking a backup before it is restored.
@@ -2020,6 +2127,10 @@ pub struct State {
     /// of the drive.
     pub usb_drive: Option<UsbDrive>,
     pub drive: Folder,
+    /// The WebDAV server, and whether it is mounted.
+    pub cloud: CloudState,
+    /// The folder of the cloud storage a file to install is chosen in.
+    pub cloud_folder: Folder,
     /// The entry the file page describes.
     pub file: Option<FileRow>,
     pub fastboot: Fastboot,
@@ -2152,6 +2263,8 @@ impl Default for State {
             choose_package: false,
             usb_drive: None,
             drive: Folder::new(""),
+            cloud: CloudState::default(),
+            cloud_folder: Folder::new(""),
             file: None,
             fastboot: Fastboot { running: false, link: UsbLink::Unplugged },
             erase: Erase::default(),
@@ -2211,6 +2324,7 @@ impl State {
             Screen::Files => &self.files,
             Screen::Choose(Place::Storage) => &self.storage,
             Screen::Choose(Place::UsbDrive) => &self.drive,
+            Screen::Choose(Place::Cloud) => &self.cloud_folder,
             other => unreachable!("{other:?} lists no folder"),
         }
     }
@@ -2220,6 +2334,7 @@ impl State {
             Screen::Files => &mut self.files,
             Screen::Choose(Place::Storage) => &mut self.storage,
             Screen::Choose(Place::UsbDrive) => &mut self.drive,
+            Screen::Choose(Place::Cloud) => &mut self.cloud_folder,
             other => unreachable!("{other:?} lists no folder"),
         }
     }
@@ -2230,6 +2345,7 @@ impl State {
         match place {
             Place::Storage => self.data.storage_open(),
             Place::UsbDrive => self.usb_drive == Some(UsbDrive::Shown),
+            Place::Cloud => self.cloud.mounted,
         }
     }
 
@@ -2325,6 +2441,18 @@ pub enum Effect {
     Cancel,
     /// Read the slot's partitions for the mount page, which has just opened.
     ReadMounts,
+    /// Ask the cloud server whether it answers, telling what it said with
+    /// [`App::cloud_tested`].
+    CloudTest(CloudSettings),
+    /// Mount the cloud storage with these settings, telling how it went
+    /// with [`App::cloud_mounted`].
+    CloudMount(CloudSettings),
+    /// Unmount the cloud storage, telling how it went with
+    /// [`App::cloud_unmounted`].
+    CloudUnmount,
+    /// Forget the saved cloud settings and unmount it, telling how it went
+    /// with [`App::cloud_forgotten`].
+    CloudForget,
     /// Read what the boot control holds of the slots, telling it with
     /// [`App::set_boot_slots`].
     ReadSlots,
@@ -2425,7 +2553,7 @@ pub enum Effect {
     Restore { place: Place, name: String, parts: [bool; 4] },
     /// Look for backups in the places that can be read, telling what is
     /// found with [`App::set_backups`].
-    FindBackups { storage: bool, usb: bool },
+    FindBackups { storage: bool, usb: bool, cloud: bool },
     /// Delete the backup in the folder `name` of `place`, telling how it
     /// went with [`App::backup_deleted`].
     DeleteBackup { place: Place, name: String },
@@ -4540,7 +4668,11 @@ impl App {
 
     /// Look for backups in the places that can be read now.
     fn find_backups(&self) -> Effect {
-        Effect::FindBackups { storage: self.state.place_open(Place::Storage), usb: self.state.place_open(Place::UsbDrive) }
+        Effect::FindBackups {
+            storage: self.state.place_open(Place::Storage),
+            usb: self.state.place_open(Place::UsbDrive),
+            cloud: self.state.place_open(Place::Cloud),
+        }
     }
 
     /// Backing up, or restoring, has begun: its page shows how far it comes.
@@ -4660,6 +4792,92 @@ impl App {
         self.pull = 0.0;
         self.snap = true;
         self.arrive_at(page)
+    }
+
+    /// The settings the data partition kept, read as it opened.
+    pub fn cloud_loaded(&mut self, settings: CloudSettings, saved: bool) {
+        if self.state.cloud.settings == settings && self.state.cloud.saved == saved {
+            return;
+        }
+        self.state.cloud.settings = settings;
+        self.state.cloud.saved = saved;
+        self.state.cloud.pending_save = false;
+        if self.state.cloud.status == CloudStatus::NotSetUp {
+            self.state.cloud.status = CloudStatus::Ready;
+        }
+        self.refresh();
+    }
+
+    /// The server answered the test.
+    pub fn cloud_tested(&mut self, result: Result<CloudInfo, String>) {
+        match result {
+            Ok(info) => {
+                self.state.cloud.info = Some(info);
+                self.state.cloud.status = CloudStatus::Ready;
+            }
+            Err(why) => self.state.cloud.status = CloudStatus::Failed(why),
+        }
+        self.refresh();
+    }
+
+    /// The cloud storage is mounted, or why it is not.
+    pub fn cloud_mounted(&mut self, result: Result<CloudInfo, String>) {
+        match result {
+            Ok(info) => {
+                self.state.cloud.info = Some(info);
+                self.state.cloud.status = CloudStatus::Mounted;
+                self.state.cloud.mounted = true;
+            }
+            Err(why) => self.state.cloud.status = CloudStatus::Failed(why),
+        }
+        self.refresh();
+    }
+
+    /// The cloud storage is unmounted, or why it is not.
+    pub fn cloud_unmounted(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.state.cloud.status = if self.state.cloud.configured() { CloudStatus::Ready } else { CloudStatus::NotSetUp };
+                self.state.cloud.mounted = false;
+                if self.state.restore.as_ref().is_some_and(|(entry, _)| entry.place == Place::Cloud) {
+                    self.state.restore = None;
+                    if self.screen() == Screen::RestoreBackup {
+                        self.leave(true);
+                        self.stack.pop();
+                        self.settle_page();
+                    }
+                }
+            }
+            Err(why) => self.state.cloud.status = CloudStatus::Failed(why),
+        }
+        self.refresh();
+    }
+
+    /// The saved settings are gone, or why they are not.
+    pub fn cloud_forgotten(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.state.cloud = CloudState::default();
+                self.state.cloud_folder = Folder::new("");
+            }
+            Err(why) => self.state.cloud.status = CloudStatus::Failed(why),
+        }
+        self.refresh();
+    }
+
+    /// The settings are on the data partition, or why they are not.
+    pub fn cloud_saved(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.state.cloud.saved = true;
+                self.state.cloud.pending_save = false;
+            }
+            Err(why) => {
+                self.state.cloud.pending_save = true;
+                self.state.cloud.status = CloudStatus::Failed(why);
+            }
+        }
+        self.refresh();
     }
 
     /// `folder` becomes the one the list on page `screen` shows. A folder
@@ -5394,6 +5612,12 @@ impl App {
         let left = self.screen();
         match left {
             Screen::Mount => self.state.mount_failure = None,
+            Screen::Cloud => {
+                if self.state.cloud.field.take().is_some() {
+                    self.refresh();
+                    return fx;
+                }
+            }
             // A slot picked and not switched to is put down.
             Screen::Slot => self.state.next_slot = None,
             Screen::Files => {
@@ -5754,6 +5978,10 @@ impl App {
         let _l = self.state.lang;
         match action {
             Action::Open(s) => {
+                if s == Screen::Choose(Place::Cloud) && !self.state.cloud.mounted {
+                    self.open(Screen::Cloud);
+                    return self.arrive_at(Screen::Cloud);
+                }
                 if s == Screen::Search && self.screen() == Screen::Home {
                     // The bar moves up from where it stands unfolded: a
                     // page easing there for the keys gets there at once.
@@ -5811,6 +6039,7 @@ impl App {
                     Switch::Signature => &mut self.state.check_signature,
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
+                    Switch::ShowCloudPassword => &mut self.state.cloud.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                     Switch::AdbWifi => unreachable!("the adb over the network switch is turned above"),
                 };
@@ -6100,6 +6329,10 @@ impl App {
                 self.refresh();
             }
             Action::BackupTo(place) => {
+                if place == Place::Cloud && !self.state.cloud.mounted {
+                    self.open(Screen::Cloud);
+                    return self.arrive_at(Screen::Cloud);
+                }
                 self.state.backup_to = place;
                 self.refresh();
             }
@@ -6228,6 +6461,7 @@ impl App {
                             let top = match place {
                                 Place::Storage => "/sdcard",
                                 Place::UsbDrive => USB_DRIVE,
+                                Place::Cloud => CLOUD,
                             };
                             self.package_chosen(&format!("{top}/{path}"));
                             return Vec::new();
@@ -6313,6 +6547,59 @@ impl App {
                 if a.field != field {
                     a.field = field;
                     self.refresh();
+                }
+            }
+            Action::CloudField(field) => {
+                if self.state.cloud.mounted {
+                    self.say(S_UNMOUNT_CLOUD_STORAGE_BEFORE_CHANGING_ITS_SETTINGS, now);
+                } else if self.state.cloud.busy() {
+                    self.say(WAIT_OR_STOP, now);
+                } else if self.state.cloud.field != Some(field) {
+                    self.state.cloud.field = Some(field);
+                    self.refresh();
+                }
+            }
+            Action::CloudTest => {
+                if self.state.cloud.mounted {
+                    self.say(S_UNMOUNT_CLOUD_STORAGE_BEFORE_TESTING_IT, now);
+                } else if self.state.cloud.busy() {
+                    self.say(WAIT_OR_STOP, now);
+                } else if self.state.cloud.settings.address.trim().is_empty() {
+                    self.say(S_ENTER_THE_CLOUD_ADDRESS, now);
+                } else {
+                    if !matches!(self.state.data, Data::Open | Data::Locked { .. }) {
+                        self.state.cloud.pending_save = true;
+                    }
+                    self.state.cloud.status = CloudStatus::Testing;
+                    self.refresh();
+                    return vec![Effect::CloudTest(self.state.cloud.settings.clone())];
+                }
+            }
+            Action::CloudMount => {
+                if self.state.cloud.mounted {
+                    self.say(S_CLOUD_STORAGE_IS_MOUNTED_ALREADY, now);
+                } else if self.state.cloud.busy() {
+                    self.say(WAIT_OR_STOP, now);
+                } else if self.state.cloud.settings.address.trim().is_empty() {
+                    self.say(S_ENTER_THE_CLOUD_ADDRESS, now);
+                } else {
+                    if !matches!(self.state.data, Data::Open | Data::Locked { .. }) {
+                        self.state.cloud.pending_save = true;
+                    }
+                    self.state.cloud.status = CloudStatus::Mounting;
+                    self.refresh();
+                    return vec![Effect::CloudMount(self.state.cloud.settings.clone())];
+                }
+            }
+            Action::CloudUnmount => {
+                if self.state.cloud.busy() {
+                    self.say(WAIT_OR_STOP, now);
+                } else if !self.state.cloud.mounted {
+                    self.say(S_CLOUD_STORAGE_IS_NOT_MOUNTED, now);
+                } else {
+                    self.state.cloud.status = CloudStatus::Unmounting;
+                    self.refresh();
+                    return vec![Effect::CloudUnmount];
                 }
             }
             Action::ChooseSecurity => {
@@ -6463,6 +6750,16 @@ impl App {
             #[cfg(feature = "roots")]
             Screen::ApatchKey => self.state.apatch.as_mut().map(|root| &mut root.entered),
             Screen::WlanPassword => Some(&mut self.state.password),
+            Screen::Cloud => {
+                let field = self.state.cloud.field?;
+                let cloud = &mut self.state.cloud;
+                Some(match field {
+                    CloudField::Address => &mut cloud.settings.address,
+                    CloudField::Username => &mut cloud.settings.username,
+                    CloudField::Password => &mut cloud.settings.password.0,
+                    CloudField::Folder => &mut cloud.settings.folder,
+                })
+            }
             Screen::WlanAdd => {
                 let a = self.state.adding.as_mut()?;
                 Some(match a.field {
@@ -6490,7 +6787,7 @@ impl App {
     /// Install the file of `size` bytes at the full `path`, opened in the
     /// file manager, as a file chosen in a place installs.
     fn install_opened(&mut self, path: String, size: u64, now: u64) -> Vec<Effect> {
-        let source = Source::Opened { drive: std::path::Path::new(&path).starts_with(USB_DRIVE) };
+        let source = Source::Opened { place: Place::of_path(&path) };
         let name = file_name(&path);
         self.install_named(source, name, size, Effect::InstallPath(path), now)
     }
@@ -6823,6 +7120,10 @@ impl App {
                 }
                 // So is a name no network can have; the keyboard then types
                 // into the field turned down.
+                Screen::Cloud => {
+                    self.state.cloud.field = None;
+                    self.refresh();
+                }
                 Screen::WlanAdd => {
                     let a = self.state.adding.as_mut().expect("the page adds a network");
                     let (field, why) = match a.name.len() {
@@ -7368,6 +7669,7 @@ impl App {
                         (Place::Storage, _) => DECRYPT_FIRST,
                         (Place::UsbDrive, Some(UsbDrive::Unreadable(_))) => USB_DRIVE_UNREADABLE,
                         (Place::UsbDrive, _) => USB_DRIVE_WANTED,
+                        (Place::Cloud, _) => S_CLOUD_STORAGE_NOT_MOUNTED,
                     })
                 };
                 let backup =
@@ -7391,6 +7693,17 @@ impl App {
             Confirm::DeleteBackup => {
                 let Some((entry, _)) = self.state.restore.as_ref() else { return fx };
                 fx.push(Effect::DeleteBackup { place: entry.place, name: entry.name.clone() });
+            }
+            Confirm::CloudForget => {
+                if self.state.cloud.mounted {
+                    self.say(S_UNMOUNT_CLOUD_STORAGE_FIRST, now);
+                } else if self.state.cloud.busy() {
+                    self.say(WAIT_OR_STOP, now);
+                } else {
+                    self.state.cloud.status = CloudStatus::Unmounting;
+                    self.refresh();
+                    fx.push(Effect::CloudForget);
+                }
             }
             Confirm::Slot => match (&self.state.boot_slots, self.state.next_slot) {
                 (Some(Ok(slots)), Some(pick)) if pick != slots.active => fx.push(Effect::SetSlot(pick)),
@@ -8038,6 +8351,7 @@ mod tests {
             Screen::Reboot,
             Screen::Wipe,
             Screen::Mount,
+            Screen::Cloud,
             Screen::Install,
             Screen::Choose(Place::Storage),
             Screen::Specs,
@@ -8222,6 +8536,37 @@ mod tests {
         let mut app = App::new(Screen::Home, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Mount)), vec![Effect::ReadMounts], "the page shows the partitions as they are now");
         assert_eq!(app.screen(), Screen::Mount);
+    }
+
+    #[test]
+    fn the_cloud_page_tests_mounts_and_unmounts_what_it_shows() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Cloud, &f, &i);
+        app.state.cloud.settings.address = "https://dav.example.com/dav/".into();
+        app.state.cloud.settings.username = "me".into();
+        app.state.cloud.settings.password = Secret("secret".into());
+        assert_eq!(tap(&mut app, &f, &i, Action::CloudTest), vec![Effect::CloudTest(app.state.cloud.settings.clone())]);
+        assert_eq!(app.state.cloud.status, CloudStatus::Testing);
+        app.cloud_tested(Ok(CloudInfo { server: Some("dav".into()), free: Some(1 << 30) }));
+        assert_eq!(app.state.cloud.status, CloudStatus::Ready);
+        assert_eq!(tap(&mut app, &f, &i, Action::CloudMount), vec![Effect::CloudMount(app.state.cloud.settings.clone())]);
+        app.cloud_mounted(Ok(CloudInfo { server: Some("dav".into()), free: Some(1 << 30) }));
+        assert!(app.state.cloud.mounted);
+        assert_eq!(tap(&mut app, &f, &i, Action::CloudUnmount), vec![Effect::CloudUnmount]);
+        app.cloud_unmounted(Ok(()));
+        assert!(!app.state.cloud.mounted);
+    }
+
+    #[test]
+    fn the_cloud_place_is_offered_only_once_it_is_mounted() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Backup, &f, &i);
+        assert_eq!(tap(&mut app, &f, &i, Action::BackupTo(Place::Cloud)), Vec::<Effect>::new());
+        assert_eq!(app.screen(), Screen::Cloud, "an unmounted cloud opens its page");
+        app.state.cloud.mounted = true;
+        app.state.cloud.status = CloudStatus::Mounted;
+        app.act(Action::BackupTo(Place::Cloud), 0);
+        assert_eq!(app.state.backup_to, Place::Cloud);
     }
 
     /// A battery at `level`, as `charge` has it, 35.2 °C.
@@ -10389,7 +10734,7 @@ mod tests {
     fn backups_found_are_listed_newest_first_and_those_unread_last() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false }]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false, cloud: false }]);
         let unread = BackupEntry { place: Place::Storage, name: "20261021-150000".into(), held: Err("read backup.toml: not found".into()) };
         let (old, new) = (found(Place::UsbDrive, 1_792_000_000, [true; 4]), found(Place::Storage, 1_792_348_260, [true; 4]));
         app.set_backups(vec![unread.clone(), old.clone(), new.clone()]);
@@ -10421,7 +10766,7 @@ mod tests {
             tap(&mut app, &f, &i, Action::RestorePart(k));
         }
         assert!(swipe(&mut app, &f, &i, Confirm::Restore).is_empty(), "nothing ticked, nothing restored");
-        assert_eq!(app.key(Key::Back, 0), vec![Effect::FindBackups { storage: false, usb: false }], "back on the list, it is looked for again");
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::FindBackups { storage: false, usb: false, cloud: false }], "back on the list, it is looked for again");
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
     }
 
@@ -10467,7 +10812,7 @@ mod tests {
         assert_eq!(swipe(&mut app, &f, &i, Confirm::DeleteBackup), vec![Effect::DeleteBackup { place: Place::Storage, name: entry.name }]);
         assert!(app.backup_deleted(Err("Permission denied".into()), 0).is_empty());
         assert_eq!(app.screen(), Screen::RestoreBackup, "not deleted, the page stays and says why");
-        assert_eq!(app.backup_deleted(Ok(()), 0), vec![Effect::FindBackups { storage: true, usb: false }]);
+        assert_eq!(app.backup_deleted(Ok(()), 0), vec![Effect::FindBackups { storage: true, usb: false, cloud: false }]);
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
     }
 
@@ -10476,12 +10821,12 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.set_usb_drive(Some(UsbDrive::Shown));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true }]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true, cloud: false }]);
         app.set_backups(vec![found(Place::UsbDrive, 1_792_348_260, [true; 4])]);
         tap(&mut app, &f, &i, Action::OpenBackup(0));
-        assert_eq!(app.set_usb_drive(None), vec![Effect::FindBackups { storage: false, usb: false }]);
+        assert_eq!(app.set_usb_drive(None), vec![Effect::FindBackups { storage: false, usb: false, cloud: false }]);
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
-        assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::FindBackups { storage: false, usb: true }], "one plugged in is looked in");
+        assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::FindBackups { storage: false, usb: true, cloud: false }], "one plugged in is looked in");
     }
 
     #[test]
@@ -10990,7 +11335,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = in_sdcard(&f, &i);
         assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(1)), vec![Effect::InstallPath("/sdcard/a.zip".into())]);
-        assert_eq!((app.screen(), app.state.source), (Screen::Installing, Source::Opened { drive: false }));
+        assert_eq!((app.screen(), app.state.source), (Screen::Installing, Source::Opened { place: Place::Storage }));
         assert_eq!(app.state.package_name.as_deref(), Some("a.zip"), "the page names the file");
         app.install(Event::Finished(Outcome::Refused(Refusal::Unknown)), 0);
         tap_at(&mut app, &f, &i, Action::Back, 1000);
@@ -10998,7 +11343,7 @@ mod tests {
         let drive = format!("{USB_DRIVE}/ROMs");
         app.set_files(drive.clone(), Ok(vec![entry("boot.img", FileKind::File)]), LISTED);
         assert_eq!(tap_at(&mut app, &f, &i, Action::OpenEntry(0), 2000), vec![Effect::InstallPath(format!("{drive}/boot.img"))]);
-        assert_eq!(app.state.source, Source::Opened { drive: true }, "the page warns about pulling the drive out");
+        assert_eq!(app.state.source, Source::Opened { place: Place::UsbDrive }, "the page warns about pulling the drive out");
     }
 
     #[test]
