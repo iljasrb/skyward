@@ -39,7 +39,6 @@ use skyward_ui::app::{
     INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
 };
 use skyward_ui::surface::kms::KmsSurface;
-use skyward_ui::strings::*;
 use skyward_ui::{Canvas, Fonts, Lang};
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
