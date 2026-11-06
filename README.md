@@ -7,6 +7,18 @@ branch: it carries the code, not one phone's files. Device branches add a
 `devices/<codename>.toml`, a build script and a release workflow; the ThinkPhone
 (`bronco`) branch is `bronco`.
 
+
+## Fork changes
+
+- Payload/OTA tooling
+- Root boot image patching
+- Recovery updates
+- Installer compatibility/hardening
+- Settings persist
+- Safety fixes
+- Separated locales
+
+
 ## Features
 
 - Decrypt the data partition
