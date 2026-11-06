@@ -1402,10 +1402,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         for reading in readings.taken() {
             match reading {
-                Reading::Battery(battery) => {
+                Reading::Status(battery, usb) => {
                     let battery = battery?;
-                    if battery != info.battery {
+                    if battery != info.battery || usb != info.usb {
                         info.battery = battery;
+                        info.usb = usb;
                         app.refresh();
                     }
                 }

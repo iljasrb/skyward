@@ -334,6 +334,7 @@ fn info() -> DeviceInfo {
             voltage: None,
             quick: false,
         }),
+        usb: false,
         slot: Some(Slot::B),
         snapshot: SnapshotState::None,
         boot: Boot { unlocked: None, verified: None },

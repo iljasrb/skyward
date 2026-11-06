@@ -9,13 +9,14 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// The battery is read this often, so plugging the cable in or pulling it
-/// shows at once; all the readings every so many times instead.
+/// The battery and the port are read this often, so plugging the cable in or
+/// pulling it shows at once; all the readings every so many times instead.
 const BATTERY_EVERY: Duration = Duration::from_secs(1);
 const ALL_EVERY: u32 = 30;
 
 pub enum Reading {
-    Battery(Result<Option<Battery>>),
+    /// The battery and whether a computer has the USB port.
+    Status(Result<Option<Battery>>, bool),
     /// All the readings, and when taking them started.
     All(Box<Result<DeviceInfo>>, Instant),
 }
@@ -46,7 +47,7 @@ impl Readings {
                         let at = Instant::now();
                         Reading::All(Box::new(skyward_info::collect(&cfg)), at)
                     } else {
-                        Reading::Battery(skyward_info::battery_now())
+                        Reading::Status(skyward_info::battery_now(), skyward_info::usb_connected())
                     };
                     if tx.send(reading).is_err() {
                         return;
