@@ -1,76 +1,145 @@
-# Skyward for the ThinkPhone (bronco)
+![Skyward Recovery](assets/hero.jpg)
 
-A fork of [Skyward](https://github.com/kirklin/skyward) — a recovery written in
-Rust — for one phone, the 2023 Motorola ThinkPhone (`bronco`). Verified on A16
-`W1TBS36H.1-63-2-9`, flashed over `recovery_b`.
+# Skyward
 
-| works | |
-|---|---|
-| decrypt | the PIN opens `/data` and `/sdcard` (SPSS, keymint, gatekeeper) |
-| WLAN | scans, joins, keeps the network and rejoins it by itself |
-| settings | kept across restarts, including a boot that started in fastboot |
-| backup, restore | the phone's partitions and `/data`, SHA-256 checked end to end |
-| installs | zips with an install script and update packages, from storage or `adb sideload` |
-| fastbootd | getvar, flash, fetch |
-| updates | the update page reads this fork's GitHub releases and Infinity X's own feed; a system update installs to the other slot |
-| haptics, MTP, adb | a click on the motor's own driver, `mtp,adb`, adb |
+English | [简体中文](README.zh-CN.md)
 
-## Third-party ROM scripts
+Skyward is a recovery written in Rust, from scratch.
 
-The image carries `7za` and `zstd` in `/system/bin`, so a ROM's install script
-can unpack a `super.img.zst` the way it expects a recovery to. `avbctl` and
-`resetprop` are names the recovery binary answers to, so disabling verification
-and changing properties need no `libbase.so` or `libresetprop.so` from another
-recovery.
+> This branch carries the fork's generic code. Device configurations, build
+> scripts and release workflows live on their device branches; the ThinkPhone
+> (bronco) branch is `bronco`.
 
-## Build
+<p align="center">
+  <img src="assets/home.png" width="30%" alt="Home">
+  <img src="assets/settings-dark.png" width="30%" alt="Settings in dark mode">
+  <img src="assets/time-zone.png" width="30%" alt="Time zone">
+</p>
 
-The recovery rides on the phone's own recovery ramdisk: its init, adbd,
-fastbootd, SELinux policy and libraries stay, and only `system/bin/recovery`
-becomes Skyward. That base is not in this repository — use the recovery image
-of the ROM the phone runs (`out/target/product/bronco/recovery.img` from a
-LineageOS or Infinity-X build), or `recovery_b` out of a stock firmware package:
+## Features
+
+- Decrypt the data partition
+- Install zips, system update packages and partition images, from internal storage, a USB drive or adb sideload
+- Online system updates
+- Backup and restore
+- Wipe data and factory reset
+- Mount partitions, repair and format filesystems
+- File manager and terminal
+- WLAN
+- MTP file transfer, adb and fastbootd
+- Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
+- Light and dark themes; Simplified Chinese, Traditional Chinese and English
+
+## Supported devices
+
+| Device | Codename | Tested system version |
+| --- | --- | --- |
+| Xiaomi 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM (Android 17) |
+| Xiaomi 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM (Android 16) |
+
+### 🚧 Under construction
+
+These images are built from each phone's stock firmware and have not been tried
+on the phone. They set up the screen, touch, WLAN and vibration, and do not decrypt
+the data partition.
+
+| Device | Codename | Built on |
+| --- | --- | --- |
+| 🚧 Xiaomi 13 | `fuxi` | OS3.0.309.0.WMCCNXM (Android 16) |
+| 🚧 Xiaomi 13 Pro | `nuwa` | OS3.0.312.0.WMBCNXM (Android 16) |
+| 🚧 Xiaomi 14 | `houji` | OS3.0.307.0.WNCCNXM (Android 16) |
+| 🚧 Xiaomi 14 Pro | `shennong` | OS3.0.309.0.WNBCNXM (Android 16) |
+| 🚧 Xiaomi 14 Ultra | `aurora` | OS3.0.308.0.WNACNXM (Android 16) |
+| 🚧 Xiaomi 15 | `dada` | OS3.0.307.0.WOCCNXM (Android 16) |
+| 🚧 Xiaomi 15 Pro | `haotian` | OS3.0.309.0.WOBCNXM (Android 16) |
+| 🚧 Xiaomi 15 Ultra | `xuanyuan` | OS3.0.314.0.WOACNXM (Android 16) |
+| 🚧 Xiaomi 17 | `pudding` | OS4.0.4.0.XPCCNXM (Android 17) |
+| 🚧 Xiaomi 17 Pro | `pandora` | OS4.0.4.0.XBLCNXM (Android 17) |
+| 🚧 Xiaomi 17 Pro Max | `popsicle` | OS4.0.4.0.XPBCNXM (Android 17) |
+| 🚧 Xiaomi 17 Max | `byron` | OS3.0.310.0.WAFCNXM (Android 16) |
+| 🚧 REDMI K80 | `zorn` | OS3.0.309.0.WOKCNXM (Android 16) |
+| 🚧 REDMI K80 Pro | `miro` | OS3.0.305.0.WOMCNXM (Android 16) |
+| 🚧 REDMI K90 | `annibale` | OS3.0.307.0.WPKCNXM (Android 16) |
+| 🚧 REDMI K90 Pro Max | `myron` | OS4.0.4.0.XPMCNXM (Android 17) |
+| 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM (Android 16) |
+| 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
+| 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
+
+## Installing
+
+Skyward needs an unlocked bootloader. Download the zip for your phone from
+[Releases](https://github.com/kirklin/skyward/releases), where each shows as the
+phone's model and codename, such as Xiaomi 17 Ultra (nezha). Check it against
+`SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
+the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-rustup target add aarch64-linux-android
-cargo install cargo-ndk            # and an Android NDK r29 in ANDROID_NDK_HOME
-
-scripts/build-bronco.sh --stock /path/to/stock-recovery_b.img
-fastboot flash recovery_b out/skyward-bronco.img
+unzip skyward-v0.1.2-nezha-OS4.0.4.0.XPACNXM.zip
+fastboot flash recovery skyward-v0.1.2-nezha-OS4.0.4.0.XPACNXM.img
+fastboot reboot recovery
 ```
 
-Pushing a `bronco-*` tag builds and publishes the image with
-`.github/workflows/release.yml`: it takes the recovery partition out of the
-`additional_images` package the ROM publishes, checked against the sums
-beside it, builds the image on it, and publishes the image and its
-`SHA256SUMS`, which is what the update page reads.
+Afterwards a newer image, unzipped, installs from Skyward's own Install page. With
+**Flash Skyward again** on, a system update or zip that writes over the recovery
+partitions gets Skyward back in them.
 
-The update page offers the newest `bronco-*` release.
+Without a system in super, Skyward still starts, with its screen and keys, adb,
+`adb sideload` and fastbootd, enough to install one. Touch, WLAN and decryption run
+from the installed system and come back with it.
 
-## What a restore must not touch
+adb in Skyward is a root shell that needs no authorization on the phone: anyone
+with the phone and a cable can reach its storage while it is in recovery.
 
-`persist` stays out of the baseband set the backup page takes: it carries the
-secure world's storage that the screen lock is bound to. Restoring an older copy
-makes gatekeeper answer `-30` to the right PIN (`cmd lock_settings verify --old
-…` → `didn't match`), and a factory reset does not help, because it leaves
-`persist` alone. If that has happened:
+## Building
+
+Skyward builds with the stable Rust that `rust-toolchain.toml` names, with its
+`aarch64-linux-android` target, the Android NDK r29 and
+[cargo-ndk](https://github.com/bbqsrc/cargo-ndk). The recovery service is built for
+the phone, and the packer for the computer:
 
 ```sh
-kill $(pidof sec_nvm) $(pidof spdaemon)
-rm -rf /mnt/vendor/persist/secnvm/* /mnt/vendor/persist/iar_db/*
-sync
+cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
+cargo build --release -p skyward-pack
 ```
 
-Then `persist/data/misc/keystore` if the trustlet still refuses a new
-credential, `secdata` + `secdataBackup` only if it is worth the attestation
-state, and never the whole `persist`, `spss_a/b` or `misc`.
+The packer takes the stock recovery partition out of the build's full update
+package on Xiaomi's server, reading only the part of the package the partition is
+in, and checks its SHA-256 against the device file:
 
-## Credit
+```sh
+target/release/skyward-pack stock --config devices/nezha.toml --out target/stock/nezha/recovery.img
+```
 
-[Skyward](https://github.com/kirklin/skyward) is KirKlin's, GPL-3.0-or-later, and
-does the work; this fork adds what one phone needed. The device facts come from
-the AERA project's port of the same phone. Some fixes were ported from
-[huime180/skyward](https://github.com/huime180/skyward) and
-[Rinrroy/skyward](https://github.com/Rinrroy/skyward). The bundled KernelPatch
-and FolkPatch tools keep their GPL-2.0 and GPL-3.0 texts under
-`crates/skyward-root/assets/licenses/`.
+Then it builds the image on top of it:
+
+```sh
+target/release/skyward-pack recovery \
+  --stock target/stock/nezha/recovery.img \
+  --binary target/aarch64-linux-android/release/skyward \
+  --config devices/nezha.toml \
+  --font resources/fonts/MiSansVF.ttf \
+  --mono resources/fonts/KirkMono-Regular.ttf \
+  --mono-license resources/fonts/KirkMono-OFL.txt \
+  --out target/skyward-nezha.img
+```
+
+Tests and lints run on the computer; what runs only on the phone is linted for it:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo ndk -t arm64-v8a --platform 30 clippy -p skyward -p skyward-install -- -D warnings
+```
+
+`skyward-preview` draws the pages on the computer, as PNG files, without a phone:
+each page whole, as a long screenshot shows it, in the states it can be in, and the
+screen at moments of touches and motion. `--lang` picks the language by a locale
+such as `en` or `zh-TW`:
+
+```sh
+cargo run --release -p skyward-preview -- target/preview --lang en
+```
+
+## License
+
+[GPL-3.0-or-later](LICENSE)

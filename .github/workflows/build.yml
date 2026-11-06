@@ -1,8 +1,8 @@
 name: Build
 
 # Every push is linted and tested, and the recovery service and the packer are
-# built for the phone. The image is built and published by release.yml when a
-# bronco-* tag is pushed; this workflow only says the tree builds.
+# built for the phone. Device images are built on the device branches; this
+# workflow only says the tree builds.
 on:
   push:
     branches: ["**"]
