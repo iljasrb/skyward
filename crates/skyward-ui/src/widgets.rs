@@ -1035,19 +1035,37 @@ pub enum Glyph {
     Terminal,
     /// A tick: keep what was done.
     Done,
+    /// A cloud: the cloud storage.
+    Cloud,
 }
 
 /// The centre and radius of the round button at the right end of the bar,
 /// the `<` chip mirrored.
 pub fn button_disc(t: &Theme) -> (f32, f32, f32) {
+    button_disc_at(t, 0)
+}
+
+/// The centre and radius of the round button at `index`, counting from the
+/// right end of the bar.
+pub fn button_disc_at(t: &Theme, index: usize) -> (f32, f32, f32) {
     let (cx, cy, r) = back_disc(t);
-    (t.m.w as f32 - cx, cy, r)
+    (t.m.w as f32 - cx - button_step(t) * index as f32, cy, r)
+}
+
+/// How far one round button's centre is from the next.
+pub fn button_step(t: &Theme) -> f32 {
+    back_rect(t).w + t.m.dp(4.0)
 }
 
 /// The area that answers a tap on that button, the `<` control's mirrored.
 pub fn button_rect(t: &Theme) -> Rect {
+    button_rect_at(t, 0)
+}
+
+/// The area that answers a tap on the round button at `index`.
+pub fn button_rect_at(t: &Theme, index: usize) -> Rect {
     let b = back_rect(t);
-    Rect::new(t.m.w as f32 - b.x - b.w, b.y, b.w, b.h)
+    Rect::new(t.m.w as f32 - b.x - b.w - button_step(t) * index as f32, b.y, b.w, b.h)
 }
 
 /// The chip behind that button, as the one behind `<`.
@@ -1057,7 +1075,12 @@ pub fn button_chip(t: &Theme) -> (Canvas, i32, i32) {
 
 /// The button's glyph, in strokes as heavy as the `<`'s.
 pub fn button_glyph(c: &mut Canvas, t: &Theme, glyph: Glyph, color: Rgba) {
-    glyph_at(c, t, glyph, 0.0, 0.0, color);
+    button_glyph_at(c, t, glyph, 0, color);
+}
+
+/// The glyph of the round button at `index`.
+pub fn button_glyph_at(c: &mut Canvas, t: &Theme, glyph: Glyph, index: usize, color: Rgba) {
+    glyph_at(c, t, glyph, -button_step(t) * index as f32, 0.0, color);
 }
 
 /// The glyph moved by (`dx`, `dy`), its strokes spanning the same box about
@@ -1067,16 +1090,33 @@ fn glyph_at(c: &mut Canvas, t: &Theme, glyph: Glyph, dx: f32, dy: f32, color: Rg
     let (cx, cy, _) = button_disc(t);
     let (cx, cy, sw) = (cx + dx, cy + dy, m.back_stroke);
     let at = |x: f32, y: f32| (cx + m.dp(x), cy + m.dp(y));
-    let mut stroke = |(x0, y0): (f32, f32), (x1, y1): (f32, f32)| c.line(x0, y0, x1, y1, sw, color);
     match glyph {
         Glyph::Terminal => {
-            stroke(at(-8.0, -6.0), at(-2.0, 0.0));
-            stroke(at(-2.0, 0.0), at(-8.0, 6.0));
-            stroke(at(1.0, 6.0), at(8.0, 6.0));
+            let (x0, y0) = at(-8.0, -6.0);
+            let (x1, y1) = at(-2.0, 0.0);
+            c.line(x0, y0, x1, y1, sw, color);
+            let (x0, y0) = at(-2.0, 0.0);
+            let (x1, y1) = at(-8.0, 6.0);
+            c.line(x0, y0, x1, y1, sw, color);
+            let (x0, y0) = at(1.0, 6.0);
+            let (x1, y1) = at(8.0, 6.0);
+            c.line(x0, y0, x1, y1, sw, color);
         }
         Glyph::Done => {
-            stroke(at(-8.0, 0.0), at(-2.5, 5.5));
-            stroke(at(-2.5, 5.5), at(8.0, -5.5));
+            let (x0, y0) = at(-8.0, 0.0);
+            let (x1, y1) = at(-2.5, 5.5);
+            c.line(x0, y0, x1, y1, sw, color);
+            let (x0, y0) = at(-2.5, 5.5);
+            let (x1, y1) = at(8.0, -5.5);
+            c.line(x0, y0, x1, y1, sw, color);
+        }
+        Glyph::Cloud => {
+            c.stroke_circle(cx - m.dp(4.9), cy + m.dp(2.2), m.dp(4.2), sw, color);
+            c.stroke_circle(cx, cy - m.dp(1.4), m.dp(5.2), sw, color);
+            c.stroke_circle(cx + m.dp(4.9), cy + m.dp(2.2), m.dp(4.2), sw, color);
+            let (x0, y0) = at(-8.0, 6.4);
+            let (x1, y1) = at(8.0, 6.4);
+            c.line(x0, y0, x1, y1, sw, color);
         }
     }
 }
@@ -1084,10 +1124,16 @@ fn glyph_at(c: &mut Canvas, t: &Theme, glyph: Glyph, dx: f32, dy: f32, color: Rg
 /// That button held down, as `<` is: its disc darkening what is behind it,
 /// and its glyph lighter on it, inked once where its strokes meet.
 pub fn button_held(c: &mut Canvas, t: &Theme, glyph: Glyph) {
-    let (cx, cy, r) = button_disc(t);
+    button_held_at(c, t, glyph, 0);
+}
+
+/// The round button at `index` held down.
+pub fn button_held_at(c: &mut Canvas, t: &Theme, glyph: Glyph, index: usize) {
+    let (cx, cy, r) = button_disc_at(t, index);
     c.fill_circle(cx, cy, r, t.pal.button_press);
     let side = (r * 2.0).ceil() as u32 + 2;
-    let art = Sprite::capture(cx - r - 1.0, cy - r - 1.0, side, side, |c, dx, dy| glyph_at(c, t, glyph, dx, dy, Rgba::rgb(0, 0, 0)));
+    let dx = -button_step(t) * index as f32;
+    let art = Sprite::capture(cx - r - 1.0, cy - r - 1.0, side, side, |c, dx2, dy| glyph_at(c, t, glyph, dx + dx2, dy, Rgba::rgb(0, 0, 0)));
     art.draw(c, 0.0, 0.0, t.pal.text, BACK_HELD_ALPHA as f32 / 255.0);
 }
 
@@ -2996,7 +3042,7 @@ mod tests {
         assert_eq!((button.x + button.w, button.y, button.w, button.h), (1440.0 - back.x, back.y, back.w, back.h));
         let (cx, cy, r) = button_disc(&t);
         let disc = Rect::new(cx - r, cy - r, r * 2.0, r * 2.0);
-        for glyph in [Glyph::Terminal, Glyph::Done] {
+        for glyph in [Glyph::Terminal, Glyph::Done, Glyph::Cloud] {
             let mut c = Canvas::new(1440, 400);
             button_glyph(&mut c, &t, glyph, Rgba::rgb(0, 0, 0));
             let (l, top, right, bottom) = ink_box(&c, disc, |p| p[3] > 0);

@@ -51,6 +51,9 @@ pub fn spots(t: &Theme, frame: &Frame) -> Vec<Spot> {
     if let Some((_, action)) = frame.button {
         out.push(Spot { stop: Stop::Button(action), group: Group::Fixed, rect: widgets::button_rect(t) });
     }
+    if let Some((_, action)) = frame.button2 {
+        out.push(Spot { stop: Stop::Button(action), group: Group::Fixed, rect: widgets::button_rect_at(t, 1) });
+    }
     let across = |a: &Spot, b: &Spot| a.rect.x.total_cmp(&b.rect.x);
     if let Some(p) = &frame.pinned {
         let mut strip: Vec<Spot> = p.hits.iter().map(|h| Spot { stop: Stop::Hit(h.action), group: Group::Strip, rect: h.rect }).collect();
@@ -112,7 +115,8 @@ pub fn lit(t: &Theme, stop: Stop, r: Rect, keypad: bool) -> (Rect, f32) {
             (Rect::new(cx - radius, cy - radius, radius * 2.0, radius * 2.0), radius)
         }
         Stop::Button(_) => {
-            let (cx, cy, radius) = widgets::button_disc(t);
+            let index = usize::from(r.x < widgets::button_rect(t).x);
+            let (cx, cy, radius) = widgets::button_disc_at(t, index);
             (Rect::new(cx - radius, cy - radius, radius * 2.0, radius * 2.0), radius)
         }
         Stop::Dot(_) => {

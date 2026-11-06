@@ -513,6 +513,10 @@ pub fn cloud(cx: &Ctx) -> Frame {
     let mut rows = Vec::new();
     let mut acts = Vec::new();
     if !cloud.busy() {
+        if cloud.mounted {
+            rows.push(Row::new(S_OPEN_FOLDER).trail(Trail::Arrow));
+            acts.push(Action::OpenCloudFolder);
+        }
         rows.push(Row::new(S_TEST_CONNECTION).trail(Trail::None));
         acts.push(Action::CloudTest);
         if cloud.mounted {
@@ -2985,8 +2989,9 @@ pub fn files(cx: &Ctx) -> Frame {
         Dock { canvas, hits: hits(&rects, &[Action::Unpick, Action::Paste]) }
     });
     let button = Some((widgets::Glyph::Terminal, Action::TerminalHere));
+    let button2 = s.cloud.mounted.then_some((widgets::Glyph::Cloud, Action::OpenCloudFolder));
     let root = S_ROOT;
-    Frame { dock, button, ..listing(cx, &s.files, root, None, S_NO_FILES, Action::OpenEntry, FILES) }
+    Frame { dock, button, button2, ..listing(cx, &s.files, root, None, S_NO_FILES, Action::OpenEntry, FILES) }
 }
 
 const CANCEL: Text = S_CANCEL;

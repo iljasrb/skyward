@@ -512,6 +512,7 @@
   "only_the_current_slot_s_partitions_in_super_show_here_all_mounted_read_only": "Only the current slot {slot}'s partitions in super show here, all mounted read-only.",
   "only_the_partitions_in_this_phones_partition_table_that_can_be_formatted_show_here": "Only the partitions in this phone's partition table that can be formatted show here.",
   "only_utf_8_text_files_can_be_edited": "Only UTF-8 text files can be edited",
+  "open_folder": "Open folder",
   "open_source_licenses": "Open source licenses",
   "open_the_data_partition_in_decrypt_first": "Open the data partition in Decrypt first",
   "open_the_data_partition_in_decrypt_first_2": "Open the data partition in Decrypt first.",

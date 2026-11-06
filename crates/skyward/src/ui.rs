@@ -49,7 +49,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long init may take to hand the USB port to another function: the
@@ -375,18 +375,32 @@ fn asked(request: &bcb::Request) -> Asked {
     }
 }
 
-/// Read a folder for the file manager, as it is now.
-fn list(app: &mut App, folder: String) -> Result<()> {
-    let files = read_folder(Path::new(&folder)).map_err(|e| format!("{e:#}"));
-    app.set_files(folder, files, unix_now()?);
-    Ok(())
+/// A folder being read on a thread of its own, so that a slow one -- the
+/// cloud storage's, whose every entry is a request -- never holds the pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ListingTask {
+    Files(String),
+    Place(Place, String),
 }
 
-/// Read a folder of `place` to choose a file to install in, as it is now;
-/// `folder` is its path from the place's top.
-fn list_place(app: &mut App, place: Place, folder: String) -> Result<()> {
-    let files = read_folder(&in_place(place, &folder)).map_err(|e| format!("{e:#}"));
-    app.set_place(place, folder, files, unix_now()?);
+struct Listing {
+    rx: mpsc::Receiver<(ListingTask, Result<Vec<FileRow>, String>, i64)>,
+}
+
+/// Start reading `task`'s folder, replacing a listing still under way: its
+/// answer is no longer wanted, and the thread it runs on is left to end.
+fn start_listing(listing: &mut Option<Listing>, task: ListingTask) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let work = task.clone();
+    std::thread::Builder::new().name("folder-listing".into()).spawn(move || {
+        let files = match &work {
+            ListingTask::Files(folder) => read_folder(Path::new(folder)),
+            ListingTask::Place(place, folder) => read_folder(&in_place(*place, folder)),
+        }
+        .map_err(|e| format!("{e:#}"));
+        let _ = tx.send((work, files, unix_now().unwrap_or(0)));
+    })?;
+    *listing = Some(Listing { rx });
     Ok(())
 }
 
@@ -942,6 +956,11 @@ fn show_closed(app: &mut App, closed: &[Closed]) -> Result<()> {
 /// processes in /proc go, is left out.
 fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+    // A folder on the cloud storage is not asked how many entries it holds:
+    // every one is a request, and a long one holds the listing.
+    let cloud = Path::new(skyward_cloud::fuse::MOUNT_POINT);
+    let cloud_mounted = skyward_block::mount::is_mount_point(cloud).unwrap_or(false);
+    let on_cloud = cloud_mounted && path.starts_with(cloud);
     let mut rows = Vec::new();
     for entry in fs::read_dir(path).with_context(|| format!("read {}", path.display()))? {
         let full = entry.with_context(|| format!("read {}", path.display()))?.path();
@@ -961,11 +980,15 @@ fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
             FileKind::Link { target: target.to_string_lossy().into_owned(), folder }
         } else if meta.is_dir() {
             // A folder that may not be read shows that in place of a count.
-            let items = match fs::read_dir(&full) {
-                Ok(inside) => Some(inside.count()),
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
-                Err(e) if gone(&e) => continue,
-                Err(e) => return Err(e).with_context(|| format!("read {}", full.display())),
+            let items = if on_cloud || full == cloud {
+                None
+            } else {
+                match fs::read_dir(&full) {
+                    Ok(inside) => Some(inside.count()),
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
+                    Err(e) if gone(&e) => continue,
+                    Err(e) => return Err(e).with_context(|| format!("read {}", full.display())),
+                }
             };
             FileKind::Folder { items }
         } else if meta.is_file() {
@@ -1072,7 +1095,7 @@ fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
 }
 
 /// The cloud storage's thread, started the first time the page asks for it.
-fn cloud_worker<'a>(cloud: &'a mut Option<CloudWorker>, servers: Servers) -> Result<&'a CloudWorker> {
+fn cloud_worker(cloud: &mut Option<CloudWorker>, servers: Servers) -> Result<&CloudWorker> {
     if cloud.is_none() {
         *cloud = Some(CloudWorker::start(servers)?);
     }
@@ -1376,6 +1399,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut leave_at: Option<u64> = None;
     // The terminal page's shell, from when the page first asks for one.
     let mut shell: Option<pty::Shell> = None;
+    // A folder being read for the file manager or a place, on a thread of
+    // its own.
+    let mut listing: Option<Listing> = None;
     // Copying, moving or deleting under way.
     let mut worker: Option<filework::Worker> = None;
     // Giving the data partition's files their SELinux labels under way.
@@ -1551,7 +1577,15 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let rooting = false;
         // A run says how far it has come without a pipe of its own, so the
         // page is drawn again often enough for its card to move.
-        let wait_cap = if appear < 1.0 { 16 } else if rooting { 100 } else { 1000 };
+        let wait_cap = if appear < 1.0 {
+            16
+        } else if rooting {
+            100
+        } else if listing.is_some() {
+            50
+        } else {
+            1000
+        };
         let timeout = if ahead { 0 } else { until_due.map_or(wait_cap, |t| t.clamp(floor, wait_cap)) };
         let mut fds = inputs.fds();
         if let Some(i) = &installer {
@@ -1748,6 +1782,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             filework::End::Failed(why) => JobEnd::Failed(why),
         };
         let mut worked = false;
+        let listed = listing.as_ref().and_then(|l| l.rx.try_recv().ok());
+        if let Some((task, files, listed)) = listed {
+            match task {
+                ListingTask::Files(folder) => app.set_files(folder, files, listed),
+                ListingTask::Place(place, folder) => app.set_place(place, folder, files, listed),
+            }
+            listing = None;
+        }
         if let Some(w) = &worker {
             for ev in w.worker.events() {
                 match ev {
@@ -1900,7 +1942,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if worked {
             worker = None;
             let folder = app.state.files.path.clone();
-            list(&mut app, folder)?;
+            start_listing(&mut listing, ListingTask::Files(folder))?;
         }
         let mut backed = false;
         if let Some(b) = &backuper {
@@ -2708,8 +2750,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         let job = decrypt::Job::Unlock { closed: closed.clone(), user, credential: code.into_bytes() };
                         decryptor = Some(Decryptor::start(job)?);
                     }
-                    Effect::ReadDir(folder) => list(&mut app, folder)?,
-                    Effect::ReadPlace(place, folder) => list_place(&mut app, place, folder)?,
+                    Effect::ReadDir(folder) => start_listing(&mut listing, ListingTask::Files(folder))?,
+                    Effect::ReadPlace(place, folder) => start_listing(&mut listing, ListingTask::Place(place, folder))?,
                     // A name taken where an entry goes is the user's to
                     // decide on before anything is written.
                     Effect::Paste { op, path, into, clash } => {
@@ -2975,7 +3017,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         Ok(()) => {
                             app.text_saved(Ok(()), now);
                             let folder = app.state.files.path.clone();
-                            list(&mut app, folder)?;
+                            start_listing(&mut listing, ListingTask::Files(folder))?;
                         }
                         Err(e) => app.text_saved(Err(format!("{e:#}")), now),
                     },
@@ -2983,7 +3025,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         Ok(_) => {
                             app.renamed(Ok(()), now);
                             let folder = app.state.files.path.clone();
-                            list(&mut app, folder)?;
+                            start_listing(&mut listing, ListingTask::Files(folder))?;
                         }
                         Err(e) if e.is::<skyward_files::Taken>() => app.renamed(Err(RenameRefused::Taken), now),
                         Err(e) => app.renamed(Err(RenameRefused::Failed(format!("{e:#}"))), now),

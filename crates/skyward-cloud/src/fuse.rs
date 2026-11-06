@@ -57,6 +57,8 @@ struct Node {
     name: String,
     path: String,
     stat: Stat,
+    /// When the server last said what the entry is.
+    at: Instant,
 }
 
 struct Handle {
@@ -99,6 +101,7 @@ impl Server {
                 name: String::new(),
                 path: String::new(),
                 stat: Stat { kind: Kind::Folder, size: 0, modified: now(), etag: None },
+                at: Instant::now(),
             },
         );
         Ok(Server {
@@ -234,12 +237,13 @@ impl Server {
         if let Some(&id) = self.by_path.get(&path) {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.stat = stat;
+                node.at = Instant::now();
             }
             return id;
         }
         let id = self.next_node;
         self.next_node += 1;
-        self.nodes.insert(id, Node { parent, name: name.to_string(), path: path.clone(), stat });
+        self.nodes.insert(id, Node { parent, name: name.to_string(), path: path.clone(), stat, at: Instant::now() });
         self.by_path.insert(path, id);
         id
     }
@@ -288,9 +292,13 @@ impl Server {
 
     fn getattr(&mut self, unique: u64, node: u64) -> Handled {
         let Some(held) = self.nodes.get(&node).cloned() else { return Handled::Reply(error(unique, libc::ENOENT)) };
-        let stat = self.backend.stat(&held.path).unwrap_or(held.stat);
+        let stat = match held.at.elapsed() < DIR_TTL {
+            true => held.stat,
+            false => self.backend.stat(&held.path).unwrap_or(held.stat),
+        };
         if let Some(n) = self.nodes.get_mut(&node) {
             n.stat = stat.clone();
+            n.at = Instant::now();
         }
         let out = fuse_attr_out { attr_valid: TTL, attr: attr(node, &stat), ..Default::default() };
         Handled::Reply(reply(unique, out.as_bytes()))
@@ -323,6 +331,7 @@ impl Server {
                 n.stat.modified = if set.valid & FATTR_ATIME_NOW != 0 { now() } else { set.atime as i64 };
             }
             let _ = (FATTR_MODE, FATTR_UID, FATTR_GID);
+            n.at = Instant::now();
             let out = fuse_attr_out { attr_valid: TTL, attr: attr(node, &n.stat), ..Default::default() };
             return Handled::Reply(reply(unique, out.as_bytes()));
         }
@@ -449,6 +458,7 @@ impl Server {
         if let Some(n) = self.nodes.get_mut(&node) {
             n.stat.size = size;
             n.stat.modified = now();
+            n.at = Instant::now();
         }
         Ok(())
     }
@@ -917,7 +927,7 @@ mod tests {
         let names = dirents(body(&read));
         assert!(names.contains(&"folder".to_string()), "{names:?}");
 
-        let rename = fuse_rename_in { newdir: ROOT, ..Default::default() };
+        let rename = fuse_rename_in { newdir: ROOT };
         let mut packet = rename.as_bytes().to_vec();
         packet.extend_from_slice(b"folder\0renamed\0");
         reply(server.handle(&request_raw(fuse_opcode::FUSE_RENAME, ROOT, &packet)).unwrap());

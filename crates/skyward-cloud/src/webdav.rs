@@ -314,10 +314,7 @@ impl Response {
         let root = percent_decode_str(root).decode_utf8_lossy();
         let path = path.trim_end_matches('/');
         let root = root.trim_end_matches('/');
-        let rest = match path.strip_prefix(root) {
-            Some(rest) => rest.trim_start_matches('/'),
-            None => return None,
-        };
+        let rest = path.strip_prefix(root)?.trim_start_matches('/');
         if rest.is_empty() || rest.contains('/') {
             return None;
         }
@@ -476,10 +473,9 @@ impl<'a> Xml<'a> {
                 self.at += rest.find("?>").map_or(rest.len(), |n| n + 2);
                 continue;
             }
-            if rest.starts_with("<![CDATA[") {
-                let body = &rest[9..];
+            if let Some(body) = rest.strip_prefix("<![CDATA[") {
                 let end = body.find("]]>").unwrap_or(body.len());
-                self.at += 9 + end + 3;
+                self.at += "<![CDATA[".len() + end + 3;
                 return Some(Event::Text(body[..end].to_string()));
             }
             if rest.starts_with("<!") {

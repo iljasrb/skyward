@@ -1524,6 +1524,8 @@ pub const TIME_ZONES: [(Text, Text, &str); 9] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Open(Screen),
+    /// Open the file manager at the mounted cloud storage.
+    OpenCloudFolder,
     /// Leave the decrypt page for the page it was opened from; the page
     /// the recovery started on, for the home page without keeping it
     /// behind.
@@ -1749,6 +1751,9 @@ pub struct Frame {
     /// The round button at the right end of the bar: what it shows, and
     /// what touching it does.
     pub button: Option<(widgets::Glyph, Action)>,
+    /// A second round button left of the first, such as the file manager's
+    /// way to the cloud storage.
+    pub button2: Option<(widgets::Glyph, Action)>,
 }
 
 /// A strip held at the bottom of the screen over the page, such as the
@@ -1911,6 +1916,7 @@ impl Frame {
             dock: None,
             caret: None,
             button: None,
+            button2: None,
         }
     }
 
@@ -5107,7 +5113,7 @@ impl App {
             let (art, x, y) = widgets::back_chip(&t);
             self.chip = Some((t.dark, art, x, y));
         }
-        let button = self.frame.as_ref().is_some_and(|fr| fr.button.is_some());
+        let button = self.frame.as_ref().is_some_and(|fr| fr.button.is_some() || fr.button2.is_some());
         if button && self.button_chip.as_ref().is_none_or(|c| c.0 != t.dark) {
             let (art, x, y) = widgets::button_chip(&t);
             self.button_chip = Some((t.dark, art, x, y));
@@ -5354,7 +5360,16 @@ impl App {
                 widgets::button_glyph(out, t, glyph, t.pal.text);
             }
         }
-        if frame.back || frame.button.is_some() {
+        if let Some((glyph, action)) = frame.button2 {
+            let (_, chip, x, y) = self.button_chip.as_ref().expect("a page's round button is drawn with its chip");
+            out.lay(chip, *x - widgets::button_step(t) as i32, *y, bar);
+            if pressing == Some(action) {
+                widgets::button_held_at(out, t, glyph, 1);
+            } else {
+                widgets::button_glyph_at(out, t, glyph, 1, t.pal.text);
+            }
+        }
+        if frame.back || frame.button.is_some() || frame.button2.is_some() {
             shine(out, Group::Fixed);
         }
         let level = view.title;
@@ -5997,6 +6012,21 @@ impl App {
                     self.open(s);
                 }
                 return self.arrive_at(s);
+            }
+            Action::OpenCloudFolder => {
+                if !self.state.cloud.mounted {
+                    self.say(S_CLOUD_STORAGE_IS_NOT_MOUNTED, now);
+                    return Vec::new();
+                }
+                let folder = CLOUD.to_string();
+                if self.screen() == Screen::Files {
+                    self.state.files = Folder::new(&folder);
+                    self.refresh();
+                } else {
+                    self.state.files = Folder::new(&folder);
+                    self.open(Screen::Files);
+                }
+                return vec![Effect::ReadDir(folder)];
             }
             Action::OpenData => return self.open_data(),
             Action::Skip => {
@@ -7251,9 +7281,10 @@ impl App {
                 let dock = self.frame.as_ref().and_then(|fr| fr.dock.as_ref()).map(|d| (d, self.h as f32 - d.canvas.h as f32));
                 let on_dock = dock.filter(|&(_, top)| y >= top);
                 let button = self.frame.as_ref().and_then(|fr| fr.button).map(|(_, a)| (a, widgets::button_rect(&t)));
+                let button2 = self.frame.as_ref().and_then(|fr| fr.button2).map(|(_, a)| (a, widgets::button_rect_at(&t, 1)));
                 let hit = if self.frame.as_ref().is_some_and(|fr| fr.back) && back.contains(x, y) {
                     Some((Action::Back, back))
-                } else if let Some(button) = button.filter(|(_, r)| r.contains(x, y)) {
+                } else if let Some(button) = button.filter(|(_, r)| r.contains(x, y)).or_else(|| button2.filter(|(_, r)| r.contains(x, y))) {
                     Some(button)
                 } else if let Some((d, top)) = on_dock {
                     d.hits.iter().find(|h| h.rect.contains(x, y - top)).map(|h| (h.action, Rect { y: h.rect.y + top, ..h.rect }))
@@ -7456,9 +7487,10 @@ impl App {
     /// search page's round button, or the home page's search bar.
     fn pressing(&self) -> Option<Action> {
         let button = self.frame.as_ref().and_then(|fr| fr.button).map(|(_, a)| a);
+        let button2 = self.frame.as_ref().and_then(|fr| fr.button2).map(|(_, a)| a);
         match self.drag {
             Drag::Press { action: Some(a @ (Action::Back | Action::CloseSearch | Action::Open(Screen::Search))), .. } => Some(a),
-            Drag::Press { action: Some(a), .. } if Some(a) == button => Some(a),
+            Drag::Press { action: Some(a), .. } if Some(a) == button || Some(a) == button2 => Some(a),
             _ => None,
         }
     }
@@ -11042,6 +11074,21 @@ mod tests {
         app.set_files("/data/adb".into(), Ok(Vec::new()), 0);
         assert_eq!(tap_button(&mut app, &f, &i, 0), vec![Effect::ShellTo("/data/adb".into())], "the shell running goes there");
         assert_eq!(app.screen(), Screen::Terminal);
+    }
+
+    #[test]
+    fn the_file_manager_offers_the_cloud_folder_once_it_is_mounted() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Files, W, H, PPD);
+        app.set_files("/sdcard".into(), Ok(Vec::new()), 0);
+        assert!(app.frame(&f, &i).button2.is_none());
+        app.state.cloud.mounted = true;
+        app.refresh();
+        assert_eq!(app.frame(&f, &i).button2, Some((widgets::Glyph::Cloud, Action::OpenCloudFolder)));
+        let (x, y) = widgets::button_rect_at(&app.theme(), 1).centre();
+        app.touch(Touch::Down(x, y), &f, 0);
+        assert_eq!(app.touch(Touch::Up, &f, 0), vec![Effect::ReadDir("/mnt/cloud".into())]);
+        assert_eq!((app.screen(), app.state.files.path.as_str()), (Screen::Files, "/mnt/cloud"));
     }
 
     #[test]
