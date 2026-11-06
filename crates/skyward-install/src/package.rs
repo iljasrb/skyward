@@ -136,13 +136,10 @@ pub struct Build {
     pub security_patch: String,
 }
 
-/// Whether `update` may go on `phone`.
-pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
+/// Whether `update` is for `phone`, by the device and serial number the
+/// package names, without checking the system it installs.
+pub fn check_device(update: &Update, phone: &Phone) -> Result<(), Refusal> {
     let m = &update.metadata;
-    let kind = m.get("ota-type").unwrap_or_default();
-    if kind != "AB" {
-        return Err(Refusal::NotAb(kind.to_string()));
-    }
     let devices = m.get("pre-device").unwrap_or_default();
     if !listed(&phone.device, devices) {
         return Err(Refusal::OtherDevice(devices.to_string()));
@@ -152,6 +149,17 @@ pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
             return Err(Refusal::OtherSerial);
         }
     }
+    Ok(())
+}
+
+/// Whether `update` may go on `phone`.
+pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
+    let m = &update.metadata;
+    let kind = m.get("ota-type").unwrap_or_default();
+    if kind != "AB" {
+        return Err(Refusal::NotAb(kind.to_string()));
+    }
+    check_device(update, phone)?;
     if m.get("pre-build").is_some() || m.get("pre-build-incremental").is_some() {
         return Err(Refusal::Incremental);
     }
@@ -248,6 +256,16 @@ METADATA_SIZE=1024
         assert_eq!(check(&update_with(&ours, PROPERTIES_TEXT), &phone()), Ok(()));
         let block = METADATA_TEXT.replace("ota-type=AB", "ota-type=BLOCK");
         assert_eq!(check(&update_with(&block, PROPERTIES_TEXT), &phone()), Err(Refusal::NotAb("BLOCK".into())));
+    }
+
+    #[test]
+    fn the_device_and_serial_are_checked_without_the_build() {
+        let brick = update_with(&METADATA_TEXT.replace("ota-type=AB", "ota-type=BRICK"), PROPERTIES_TEXT);
+        assert_eq!(check_device(&brick, &phone()), Ok(()), "taking images out does not install the package");
+        let other = update_with(&METADATA_TEXT.replace("pre-device=ishtar", "pre-device=nezha"), PROPERTIES_TEXT);
+        assert_eq!(check_device(&other, &phone()), Err(Refusal::OtherDevice("nezha".into())));
+        let serial = update_with(&format!("{METADATA_TEXT}serialno=abc\n"), PROPERTIES_TEXT);
+        assert_eq!(check_device(&serial, &phone()), Err(Refusal::OtherSerial));
     }
 
     #[test]
