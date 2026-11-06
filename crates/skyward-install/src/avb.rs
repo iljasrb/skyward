@@ -54,7 +54,11 @@ impl Header {
         crate::image::writable(&file).with_context(|| format!("let {} be written", self.partition.display()))?;
         file.seek(SeekFrom::Start(self.at)).with_context(|| format!("seek in {}", self.partition.display()))?;
         file.write_all(&self.bytes).with_context(|| format!("write the vbmeta header in {}", self.partition.display()))?;
-        file.sync_all().with_context(|| format!("flush {}", self.partition.display()))
+        file.sync_all().with_context(|| format!("flush {}", self.partition.display()))?;
+        drop(file);
+        let back = Header::open(&self.partition, self.at)?;
+        ensure!(back.bytes == self.bytes, "{} did not keep the vbmeta header", self.partition.display());
+        Ok(())
     }
 
     fn flags(&self) -> u32 {
