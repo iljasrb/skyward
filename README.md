@@ -15,6 +15,14 @@ Rust — for one phone, the 2023 Motorola ThinkPhone (`bronco`). Verified on A16
 | updates | the update page reads this fork's GitHub releases and Infinity X's own feed; a system update installs to the other slot |
 | haptics, MTP, adb | a click on the motor's own driver, `mtp,adb`, adb |
 
+## Third-party ROM scripts
+
+The image carries `7za` and `zstd` in `/system/bin`, so a ROM's install script
+can unpack a `super.img.zst` the way it expects a recovery to. `avbctl` and
+`resetprop` are names the recovery binary answers to, so disabling verification
+and changing properties need no `libbase.so` or `libresetprop.so` from another
+recovery.
+
 ## Build
 
 The recovery rides on the phone's own recovery ramdisk: its init, adbd,

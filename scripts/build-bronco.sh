@@ -55,6 +55,7 @@ target/release/skyward-pack recovery \
     --font "$root/resources/fonts/MiSansVF.ttf" \
     --mono "$root/resources/fonts/KirkMono-Regular.ttf" \
     --mono-license "$root/resources/fonts/KirkMono-OFL.txt" \
+    --tools "$root/crates/skyward-pack/assets/tools" \
     --out "$out"
 
 ( cd "$(dirname "$out")" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256" )

@@ -21,6 +21,7 @@ pub struct Entry {
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
+const S_IFLNK: u32 = 0o120000;
 
 impl Entry {
     pub fn is_dir(&self) -> bool {
@@ -113,6 +114,42 @@ impl Ramdisk {
         if self.find(name).is_some() {
             bail!("{name} is already in the ramdisk");
         }
+        self.parents(name)?;
+        self.entries.push(root_entry(name, S_IFREG | mode, data));
+        Ok(())
+    }
+
+    /// Add a root-owned symbolic link, creating missing parent directories.
+    pub fn add_symlink(&mut self, name: &str, target: &str) -> Result<()> {
+        if self.find(name).is_some() {
+            bail!("{name} is already in the ramdisk");
+        }
+        self.parents(name)?;
+        self.entries.push(root_entry(name, S_IFLNK | 0o777, target.as_bytes().to_vec()));
+        Ok(())
+    }
+
+    /// Add a regular file, or replace what is at that path.
+    pub fn put(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
+        self.remove(name)?;
+        self.add(name, mode, data)
+    }
+
+    /// Add a symbolic link, or replace what is at that path.
+    pub fn put_symlink(&mut self, name: &str, target: &str) -> Result<()> {
+        self.remove(name)?;
+        self.add_symlink(name, target)
+    }
+
+    fn remove(&mut self, name: &str) -> Result<()> {
+        if self.find(name).is_some_and(Entry::is_dir) {
+            bail!("{name} is a directory");
+        }
+        self.entries.retain(|e| e.name != name);
+        Ok(())
+    }
+
+    fn parents(&mut self, name: &str) -> Result<()> {
         let parts: Vec<&str> = name.split('/').collect();
         let mut parent = String::new();
         for part in &parts[..parts.len() - 1] {
@@ -126,7 +163,6 @@ impl Ramdisk {
                 None => self.entries.push(root_entry(&parent, S_IFDIR | 0o755, Vec::new())),
             }
         }
-        self.entries.push(root_entry(name, S_IFREG | mode, data));
         Ok(())
     }
 }
@@ -162,6 +198,7 @@ mod tests {
     fn round_trip_keeps_metadata() {
         let mut rd = Ramdisk { entries: Vec::new() };
         rd.add("system/bin/recovery", 0o750, b"binary".to_vec()).unwrap();
+        rd.add_symlink("system/bin/avbctl", "recovery").unwrap();
         rd.entries.push(Entry {
             name: "dev/console".into(),
             mode: 0o020600,
@@ -175,9 +212,11 @@ mod tests {
         });
         let back = Ramdisk::decode(&rd.encode().unwrap()).unwrap();
         let names: Vec<&str> = back.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["system", "system/bin", "system/bin/recovery", "dev/console"]);
+        assert_eq!(names, ["system", "system/bin", "system/bin/recovery", "system/bin/avbctl", "dev/console"]);
         let bin = back.find("system/bin/recovery").unwrap();
         assert_eq!((bin.mode, bin.data.as_slice()), (S_IFREG | 0o750, b"binary".as_slice()));
+        let link = back.find("system/bin/avbctl").unwrap();
+        assert_eq!((link.mode, link.data.as_slice()), (S_IFLNK | 0o777, b"recovery".as_slice()));
         assert_eq!(back.find("dev/console").unwrap().rdev, (5, 1));
         assert!(rd.add("system/bin/recovery", 0o644, Vec::new()).is_err());
     }

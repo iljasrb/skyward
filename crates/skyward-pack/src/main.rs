@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use skyward_config::ramdisk as paths;
@@ -65,6 +65,9 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// A folder of programs to put in /system/bin, such as 7za and zstd.
+        #[arg(long)]
+        tools: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -103,7 +106,7 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, config, font, mono, mono_license, out } => {
+        Cmd::Recovery { stock, binary, config, font, mono, mono_license, tools, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
@@ -115,6 +118,13 @@ fn main() -> Result<()> {
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
+            // The recovery binary answers to the names install scripts use
+            // for the tools a recovery gives them.
+            rd.put_symlink("system/bin/avbctl", "recovery")?;
+            rd.put_symlink("system/bin/resetprop", "recovery")?;
+            if let Some(tools) = &tools {
+                add_tools(&mut rd, tools)?;
+            }
             rd.add(paths::CONFIG, 0o644, read(&config)?)?;
             rd.add(paths::FONT, 0o644, read(&font)?)?;
             rd.add(paths::MONO, 0o644, read(&mono)?)?;
@@ -232,6 +242,32 @@ fn without(props: &[u8], names: &[&str]) -> Vec<u8> {
     out
 }
 
+/// Put every program in `dir` in the ramdisk's /system/bin, keeping a
+/// symbolic link a symbolic link.
+fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
+    let mut entries = std::fs::read_dir(dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read {}", dir.display()))?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "recovery" {
+            bail!("{} holds recovery, which is the recovery binary itself", dir.display());
+        }
+        let meta = std::fs::symlink_metadata(&path).with_context(|| format!("look at {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(&path).with_context(|| format!("read the link {}", path.display()))?;
+            rd.put_symlink(&format!("system/bin/{name}"), &target.to_string_lossy())?;
+        } else if meta.is_file() {
+            let data = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            rd.put(&format!("system/bin/{name}"), 0o755, data)?;
+        }
+    }
+    Ok(())
+}
+
 /// Write `bytes`, the image `img` makes, to `out`.
 fn write(out: &Path, img: &BootImage, bytes: &[u8]) -> Result<()> {
     std::fs::write(out, bytes).with_context(|| format!("write {}", out.display()))?;
@@ -332,6 +368,20 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         assert!(partition_size(&path).is_err(), "an image cut short of its partition's end");
         std::fs::write(&path, b"AVBf").unwrap();
         assert!(partition_size(&path).is_err(), "too short to end in a footer");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tools_are_put_in_system_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("7za"), b"seven").unwrap();
+        std::os::unix::fs::symlink("recovery", dir.path().join("zstd")).unwrap();
+        let mut rd = Ramdisk { entries: Vec::new() };
+        add_tools(&mut rd, dir.path()).unwrap();
+        let seven = rd.find("system/bin/7za").expect("the program is there");
+        assert_eq!((seven.mode, seven.data.as_slice()), (0o100755, b"seven".as_slice()));
+        let link = rd.find("system/bin/zstd").expect("the link is there");
+        assert_eq!((link.mode, link.data.as_slice()), (0o120777, b"recovery".as_slice()));
     }
 
     #[test]
