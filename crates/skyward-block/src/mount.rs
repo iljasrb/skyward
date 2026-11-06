@@ -301,6 +301,18 @@ mod sys {
         // point may not even be one any more, as when what was mounted there
         // has just been unmounted.
         for p in &parked.privatized {
+            // `under_parked` may have unmounted the path after `park` made
+            // it private as the parent of nested mounts. Remounting a path
+            // that is no longer a mount point returns EINVAL, so there is
+            // nothing to put back.
+            match is_mount_point(p) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    kernel_log(&format!("cannot tell whether {} is still mounted: {e:#}", p.display()));
+                    continue;
+                }
+            }
             if let Err(e) = remount(p, libc::MS_SHARED, "shared") {
                 // Said on the kernel log, which is where a step that failed
                 // without stopping the work is said; the recovery's own log
