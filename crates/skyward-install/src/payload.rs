@@ -3,9 +3,11 @@
 //! manifest is what lets a package's images be taken out without the
 //! snapshots `update_engine` would keep.
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
+use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// The four bytes every payload begins with.
@@ -20,6 +22,12 @@ pub const BLOCK: u64 = 4096;
 const MAX_MANIFEST: u64 = 16 << 20;
 const MAX_IMAGE: u64 = 512 << 20;
 const MAX_PACKED: u64 = 512 << 20;
+/// The most a message may hold, so a damaged manifest cannot make the
+/// parser allocate without bound.
+const MAX_FIELDS: usize = 1 << 20;
+const MAX_PARTITIONS: usize = 128;
+const MAX_OPERATIONS: usize = 1 << 16;
+const MAX_EXTENTS: usize = 1 << 16;
 
 /// How much is read or written at a time.
 const CHUNK: usize = 1 << 20;
@@ -355,6 +363,7 @@ pub fn apply_while(
                 check_hash(operation, &hasher.finalize())?;
             }
             Kind::Zero => {
+                ensure!(operation.data_length == 0, "{} reads data for a step that writes zeros", partition.name);
                 let zero = vec![0u8; CHUNK];
                 for run in &operation.dst {
                     out.seek(SeekFrom::Start(run.at(block)))?;
@@ -414,9 +423,13 @@ pub fn extract_while(
 ) -> Result<()> {
     ensure!(partition.size > 0, "{} has no size in the package", partition.name);
     ensure!(partition.size <= MAX_IMAGE, "{} is {} bytes, larger than this recovery takes out", partition.name, partition.size);
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    let dir = out.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    // Leave room for the filesystem's own bookkeeping as well as the image,
+    // so a full /tmp fails before a long write rather than at its end.
+    let needed = partition.size.saturating_add(1 << 20);
+    let free = free_space(dir)?;
+    ensure!(free >= needed, "{} needs {needed} bytes, and {} has {free} free", out.display(), dir.display());
     let tmp = tmp_path(out);
     let mut file = std::fs::File::create(&tmp).map_err(|e| anyhow::anyhow!("create {}: {e}", tmp.display()))?;
     let written = apply_while(source, at, block, partition, &mut file, progress, stop).and_then(|()| {
@@ -459,6 +472,17 @@ fn tmp_path(out: &Path) -> PathBuf {
     out.with_file_name(name)
 }
 
+/// The bytes free on the filesystem holding `dir`.
+fn free_space(dir: &Path) -> Result<u64> {
+    let c = CString::new(dir.as_os_str().as_bytes()).with_context(|| format!("path {}", dir.display()))?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| format!("look at the space in {}", dir.display()));
+    }
+    let block = if st.f_frsize == 0 { st.f_bsize } else { st.f_frsize };
+    Ok((st.f_bavail as u64).saturating_mul(block as u64))
+}
+
 fn sha256_file(path: &Path) -> Result<Vec<u8>> {
     let mut file = std::fs::File::open(path).map_err(|e| anyhow::anyhow!("open {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
@@ -480,7 +504,10 @@ pub fn manifest(manifest: &[u8]) -> Result<Manifest> {
     for (field, wire, value) in fields(manifest)? {
         match (field, wire) {
             (3, 0) => block_size = u32::try_from(number(value)?).unwrap_or(0),
-            (13, 2) => partitions.push(partition(value)?),
+            (13, 2) => {
+                ensure!(partitions.len() < MAX_PARTITIONS, "the manifest names more than {MAX_PARTITIONS} partitions");
+                partitions.push(partition(value)?);
+            }
             _ => {}
         }
     }
@@ -506,7 +533,10 @@ fn partition(bytes: &[u8]) -> Result<Partition> {
                     }
                 }
             }
-            (8, 2) => operations.push(operation(value)?),
+            (8, 2) => {
+                ensure!(operations.len() < MAX_OPERATIONS, "a partition of the manifest has more than {MAX_OPERATIONS} steps");
+                operations.push(operation(value)?);
+            }
             _ => {}
         }
     }
@@ -525,7 +555,10 @@ fn operation(bytes: &[u8]) -> Result<Operation> {
             (1, 0) => kind = Kind::of(i32::try_from(number(value)?).unwrap_or(-1)),
             (2, 0) => data_offset = number(value)?,
             (3, 0) => data_length = number(value)?,
-            (6, 2) => dst.push(extent(value)?),
+            (6, 2) => {
+                ensure!(dst.len() < MAX_EXTENTS, "a step of the manifest writes more than {MAX_EXTENTS} runs");
+                dst.push(extent(value)?);
+            }
             (8, 2) => data_sha256 = Some(value.to_vec()),
             _ => {}
         }
@@ -551,6 +584,7 @@ fn fields(bytes: &[u8]) -> Result<Vec<(u64, u64, &[u8])>> {
     let mut out = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
+        ensure!(out.len() < MAX_FIELDS, "a message of the manifest has more than {MAX_FIELDS} fields");
         let key = varint(bytes, &mut at)?;
         let (field, wire) = (key >> 3, key & 7);
         match wire {
@@ -589,6 +623,9 @@ fn varint(bytes: &[u8], at: &mut usize) -> Result<u64> {
     for shift in 0..10 {
         let byte = *bytes.get(*at).ok_or_else(|| anyhow::anyhow!("a number of the manifest runs past its end"))?;
         *at += 1;
+        // A u64 has room for 64 bits: the tenth byte carries at most the
+        // one bit left over.
+        ensure!(shift < 9 || byte <= 1, "a number of the manifest is too long");
         value |= u64::from(byte & 0x7f) << (shift * 7);
         if byte & 0x80 == 0 {
             return Ok(value);
@@ -738,6 +775,20 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_step_that_carries_data_is_refused() {
+        let op = operation(6, 0, 4, &extent(0, 1));
+        let p = partition("boot", BLOCK, &[op]);
+        let bytes = payload(&manifest(&[p]), b"data");
+        let mut source = Cursor::new(bytes);
+        let size = source.get_ref().len() as u64;
+        let read = read(&mut source, 0, size).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("boot.img");
+        assert!(extract(&mut source, read.data_at, read.block(), &read.partitions[0], &out, &mut |_, _| {}).is_err());
+        assert!(!out.exists());
+    }
+
+    #[test]
     fn a_zeroed_partition_is_all_zeros() {
         let op = operation(6, 0, 0, &extent(0, 1));
         let p = partition("boot", BLOCK, &[op]);
@@ -759,6 +810,29 @@ mod tests {
         assert_eq!(Kind::of(12), Kind::Unknown(12));
         assert!(!Kind::of(11).carried());
         assert!(!Kind::of(12).carried());
+    }
+
+    #[test]
+    fn a_folder_reports_its_free_space() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(free_space(dir.path()).unwrap() > 0);
+    }
+
+    #[test]
+    fn a_number_too_long_for_a_u64_is_refused() {
+        let mut bytes = vec![0x80; 9];
+        bytes.push(0x02);
+        let mut at = 0;
+        assert!(varint(&bytes, &mut at).is_err());
+    }
+
+    #[test]
+    fn a_manifest_with_too_many_partitions_is_refused() {
+        let mut bytes = num_field(3, BLOCK);
+        for i in 0..=MAX_PARTITIONS {
+            bytes.extend(len_field(13, &partition(&format!("p{i}"), BLOCK, &[])));
+        }
+        assert!(super::manifest(&bytes).is_err());
     }
 
     #[test]
