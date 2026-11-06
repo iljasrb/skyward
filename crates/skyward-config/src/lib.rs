@@ -330,15 +330,6 @@ pub struct Owners {
     pub paths: Vec<String>,
 }
 
-/// A name as each language the pages speak writes it: Chinese in
-/// simplified and in traditional characters, and English.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Names {
-    pub hans: String,
-    pub hant: String,
-    pub en: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Device {
     pub codename: String,
@@ -350,7 +341,7 @@ pub struct Device {
     pub ab: bool,
     /// SoC marketing name shown on the About page.
     #[serde(default)]
-    pub soc: Option<Names>,
+    pub soc: Option<String>,
     /// System property that carries the vendor OS version.
     #[serde(default = "default_os_version_prop")]
     pub os_version_prop: String,

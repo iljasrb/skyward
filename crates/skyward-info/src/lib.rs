@@ -37,7 +37,7 @@ const SYS_BLOCK: &str = "/sys/class/block";
 pub struct DeviceInfo {
     pub model: String,
     pub codename: String,
-    pub soc: Option<skyward_config::Names>,
+    pub soc: Option<String>,
     pub cpu: Cpu,
     /// `MemTotal` in KiB.
     pub ram_kib: u64,

@@ -509,7 +509,7 @@ const DATA_PART: Text = S_DATA_PARTITION;
 /// The phone's processor by its marketing name in `l`, from the phone's
 /// settings, or else by its cores.
 fn soc(_l: Lang, i: &DeviceInfo) -> Option<&str> {
-    i.soc.as_ref().map(|_n| S_N_EN_AS_STR)
+    i.soc.as_deref()
 }
 
 /// The About page's cards on `c`: what touching them does, where the

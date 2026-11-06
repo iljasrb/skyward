@@ -443,7 +443,6 @@
   "move_incomplete": "Move incomplete",
   "moved": "Moved",
   "moving": "Moving",
-  "n_en_as_str": "n.en.as_str()",
   "name": "Name",
   "name_taken": "Name taken",
   "needs_a_sign_in_in_a_browser_before_it_reaches_the_internet_and_skyward_has_no_browser_to_sign_in_with_use_a_network_that_needs_no_sign_in_instead_such_as_a_phones_hotspot": "needs a sign-in in a browser before it reaches the internet, and Skyward has no browser to sign in with. Use a network that needs no sign-in instead, such as a phone's hotspot.",
