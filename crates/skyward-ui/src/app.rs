@@ -14,16 +14,17 @@ use crate::strings::*;
 use crate::pages::{self, Band, Ctx};
 use crate::sprite::{Blurs, Sprite};
 use crate::search;
+use crate::settings::Settings;
 use crate::term::{self, Term, TermKey};
 use crate::theme::Theme;
 use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
 use skyward_info::DeviceInfo;
 use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
-use skyward_net::release::{Release, Unanswered};
+use skyward_net::release::{Build, Newest, Unanswered};
 use skyward_net::rom;
 use skyward_net::supplicant::Security;
-use skyward_net::wlan::{Joined, Network, Power, Power as WlanPower, Stage as Joining, Traffic, Wlan};
+use skyward_net::wlan::{Joined, Network, Power, Stage as Joining, Traffic, Wlan};
 use skyward_vab::{BootSlots, Hold, Slot, SnapshotState, Standing};
 
 /// The pages of the recovery.
@@ -95,6 +96,9 @@ pub enum Screen {
     /// Where an update the system installed stands, and merging it into
     /// the slot it went to.
     Update,
+    /// Skyward's newest release, and updating to it: its build for the
+    /// phone downloaded and written into the recovery partitions.
+    SkywardUpdate,
     /// Skyward's own licence.
     License,
     /// The interface typeface and the terms it is used under.
@@ -164,18 +168,6 @@ pub enum Screen {
     /// The SuperKey a patch is made with, typed on the screen's keyboard.
     #[cfg(feature = "roots")]
     ApatchKey,
-}
-
-/// How far asking the update server for the newest system has come.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Check {
-    #[default]
-    Idle,
-    Asking,
-    Failed(Unanswered),
-    /// The newest system the server knows; none when it knows of none for
-    /// the installed one.
-    Answered(Option<Release>),
 }
 
 /// What internal storage holds of a downloaded full package.
@@ -259,6 +251,54 @@ impl RomState {
 /// the feed gives it.
 pub fn rom_downloaded(release: &rom::Release) -> String {
     format!("/sdcard/{DOWNLOADS}/{}", release.image.name)
+}
+
+/// How far asking GitHub for Skyward's newest release has come.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SkywardCheck {
+    #[default]
+    Idle,
+    Asking,
+    Failed(Unanswered),
+    Answered(Newest),
+}
+
+/// Updating Skyward, as its page shows it: downloading the newest release's
+/// build for the phone, then writing it into the recovery partitions, how
+/// far that has come, and how it ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkywardJob {
+    /// None until the download has begun.
+    pub stage: Option<SkywardStage>,
+    /// Bytes a second, while it downloads.
+    pub rate: u64,
+    pub outcome: Option<SkywardEnd>,
+    /// Stopping the download was asked for and is under way.
+    pub stopping: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkywardStage {
+    Download(Progress),
+    /// The build is written into the recovery partitions and read back:
+    /// bytes so far, of all.
+    Write { done: u64, total: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkywardEnd {
+    /// The build is in the recovery partitions of these slots.
+    Updated(Vec<Slot>),
+    /// The download was stopped; what it downloaded is kept to go on from.
+    Stopped,
+    /// The download did not end with the build whole.
+    Download(Failure),
+    /// The build could not go in, or where it goes could not be told: why.
+    /// Nothing was written.
+    NotWritten(String),
+    /// Writing it into the recovery partitions of these slots failed, after
+    /// some of it was written: why.
+    WriteFailed(Vec<Slot>, String),
 }
 
 /// Where the full packages downloaded go, from the top of internal
@@ -1585,7 +1625,7 @@ pub enum Action {
     StopBackup,
     /// Tick or untick a log to export: the recovery's, the kernel's.
     LogPart(usize),
-    /// Save the logs to /tmp, or to internal storage.
+    /// Save the logs to the temporary folder, or to internal storage.
     LogsTo(usize),
     /// Save the logs ticked where they are to go.
     ExportLogs,
@@ -1671,14 +1711,6 @@ pub enum Action {
     PickSecurity(Security),
     /// Close the list open over the page, choosing nothing.
     CloseChoices,
-    /// Ask the update server for the newest system.
-    CheckUpdate,
-    /// Download the newest system's full package, or carry on downloading
-    /// it.
-    Download,
-    StopDownload,
-    /// Write the downloaded recovery image over this recovery.
-    InstallRecovery,
     /// Ask the phone's ROM for its newest system.
     CheckRom,
     /// Download that system's package, or carry on downloading it.
@@ -1686,6 +1718,13 @@ pub enum Action {
     StopRomDownload,
     /// Install the downloaded ROM package, which installs to the other slot.
     InstallRom,
+    /// Ask GitHub for Skyward's newest release.
+    CheckSkyward,
+    /// Download the newest release's build for the phone and write it into
+    /// the recovery partitions.
+    UpdateSkyward,
+    /// Stop downloading the build.
+    StopSkywardUpdate,
     /// Choose what APatch page patches, or where its key comes
     /// from.
     #[cfg(feature = "roots")]
@@ -1961,80 +2000,15 @@ impl Frame {
     }
 }
 
-/// The settings the owner's storage keeps, read back as last written; a
-/// value the file does not name comes as the one it starts at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SavedSettings {
-    pub dark: bool,
-    pub brightness: f32,
-    pub screen_off: usize,
-    pub time_zone: usize,
-    pub vibrate: bool,
-    pub vibration: f32,
-    pub file_transfer: bool,
-    /// Whether the WLAN was on, so that a recovery that had it on brings it
-    /// back up by itself.
-    pub wlan: bool,
-}
-
-impl Default for SavedSettings {
-    fn default() -> Self {
-        SavedSettings {
-            dark: false,
-            brightness: SLIDER_START,
-            screen_off: 3,
-            time_zone: 0,
-            vibrate: true,
-            vibration: SLIDER_START,
-            file_transfer: true,
-            wlan: false,
-        }
-    }
-}
-
-impl SavedSettings {
-    /// The settings `text` names. A key it does not name, or a value it
-    /// cannot read, stays at its default.
-    pub fn parse(text: &str) -> SavedSettings {
-        let mut saved = SavedSettings::default();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else { continue };
-            let value = value.trim();
-            let on = |at: &mut bool| {
-                if let Some(v) = parse_flag(value) {
-                    *at = v;
-                }
-            };
-            match key.trim() {
-                "dark" => on(&mut saved.dark),
-                "vibrate" => on(&mut saved.vibrate),
-                "file_transfer" => on(&mut saved.file_transfer),
-                "wlan" => on(&mut saved.wlan),
-                "brightness" => saved.brightness = value.parse().unwrap_or(saved.brightness),
-                "vibration" => saved.vibration = value.parse().unwrap_or(saved.vibration),
-                "screen_off" => saved.screen_off = value.parse().unwrap_or(saved.screen_off),
-                "time_zone" => saved.time_zone = value.parse().unwrap_or(saved.time_zone),
-                _ => {}
-            }
-        }
-        saved
-    }
-}
-
-fn parse_flag(value: &str) -> Option<bool> {
-    match value {
-        "true" | "on" => Some(true),
-        "false" | "off" => Some(false),
-        _ => None,
-    }
-}
-
 /// Choices the pages show and the user changes, and where installing
 /// stands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     /// The language the pages speak.
     pub lang: Lang,
+    /// The language was chosen on the language page, now or at an earlier
+    /// start, where otherwise it is the one the system names.
+    pub language_chosen: bool,
     pub dark: bool,
     pub brightness: f32,
     /// How long the screen stays on with nothing touched, by its place in
@@ -2101,7 +2075,8 @@ pub struct State {
     pub backup_job: Option<BackupJob>,
     /// Which logs to export: the recovery's, the kernel's.
     pub logs: [bool; 2],
-    /// Where the logs go: 0 for /tmp, 1 for internal storage.
+    /// Where the logs go: 0 for the temporary folder, 1 for internal
+    /// storage.
     pub logs_to: usize,
     /// What the phone's boot control holds of the slots, as the runtime
     /// last read it for the slot or reboot page, or why it could not.
@@ -2203,20 +2178,12 @@ pub struct State {
     /// network, and whether it shows.
     pub password: String,
     pub show_password: bool,
-    /// The phone maker's update server is known, and the recovery update
-    /// page asks it.
-    pub update_server: bool,
-    pub check: Check,
-    pub have: Have,
     /// The phone's ROM update, on a phone whose ROM publishes a feed.
     pub rom: Option<RomState>,
-    /// Downloading the newest recovery, or how that last ended.
-    pub download: Option<DownloadJob>,
-    /// Writing the downloaded image over this recovery, as the share of it
-    /// done; some while it is under way.
-    pub installing: Option<f32>,
-    /// How writing it ended: nothing until it has.
-    pub installed: Option<Result<(), String>>,
+    /// How far asking GitHub for Skyward's newest release has come.
+    pub skyward_check: SkywardCheck,
+    /// Updating Skyward, or how that last ended.
+    pub skyward_job: Option<SkywardJob>,
     /// How fast data went over the network joined in the last second.
     pub traffic: Traffic,
 }
@@ -2225,6 +2192,7 @@ impl Default for State {
     fn default() -> Self {
         State {
             lang: Lang::En,
+            language_chosen: false,
             dark: false,
             brightness: SLIDER_START,
             // Two minutes.
@@ -2305,13 +2273,9 @@ impl Default for State {
             adding: None,
             password: String::new(),
             show_password: false,
-            update_server: false,
-            check: Check::Idle,
-            have: Have::Nothing,
             rom: None,
-            download: None,
-            installing: None,
-            installed: None,
+            skyward_check: SkywardCheck::Idle,
+            skyward_job: None,
             traffic: Traffic::default(),
         }
     }
@@ -2363,19 +2327,6 @@ impl State {
         matches!(&self.wlan, Some(Wlan { joined: Some(j), .. }) if matches!(j.stage, Joining::Connected(_)))
     }
 
-    /// The newest system the update server told of.
-    pub fn newest(&self) -> Option<&Release> {
-        match &self.check {
-            Check::Answered(Some(r)) => Some(r),
-            _ => None,
-        }
-    }
-
-    /// Whether the full package is being downloaded.
-    pub fn downloading(&self) -> bool {
-        self.download.as_ref().is_some_and(|d| d.outcome.is_none())
-    }
-
     /// The newest system the phone's ROM publishes.
     pub fn rom_newest(&self) -> Option<&rom::Release> {
         self.rom.as_ref()?.newest()
@@ -2384,6 +2335,30 @@ impl State {
     /// Whether the ROM's package is being downloaded.
     pub fn rom_downloading(&self) -> bool {
         self.rom.as_ref().is_some_and(RomState::downloading)
+    }
+
+    /// Skyward's newest release, as GitHub told of it.
+    pub fn skyward_newest(&self) -> Option<&Newest> {
+        match &self.skyward_check {
+            SkywardCheck::Answered(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Whether Skyward is being updated.
+    pub fn updating_skyward(&self) -> bool {
+        self.skyward_job.as_ref().is_some_and(|j| j.outcome.is_none())
+    }
+
+    /// Whether the phone has the page `screen`: the WLAN page where the
+    /// recovery brings the phone's WLAN up, and updating Skyward where the
+    /// phone also keeps its recovery in a partition of each slot.
+    pub fn offers(&self, screen: Screen) -> bool {
+        match screen {
+            Screen::Wlan => self.wlan.is_some(),
+            Screen::SkywardUpdate => self.wlan.is_some() && self.recovery_partitions,
+            _ => true,
+        }
     }
 }
 
@@ -2431,9 +2406,6 @@ pub enum Effect {
     /// Start installing the file at this path from the top of a place,
     /// telling how it goes as [`Effect::Sideload`] does.
     InstallFile(Place, String),
-    /// Write the downloaded recovery image over this recovery, telling how
-    /// far it has come and then how it went.
-    InstallRecovery,
     /// Start installing the file at this full path, opened in the file
     /// manager, telling how it goes as [`Effect::Sideload`] does.
     InstallPath(String),
@@ -2579,13 +2551,6 @@ pub enum Effect {
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
-    /// Ask the update server for the newest system, telling what it
-    /// answered with [`App::update_checked`].
-    CheckUpdate,
-    /// Download `release`'s full package into [`DOWNLOADS`], telling how it
-    /// goes with [`App::download_progress`] and [`App::download_ended`].
-    Download(Release),
-    StopDownload,
     /// Ask the phone's ROM for its newest system, telling what it answered
     /// with [`App::rom_checked`].
     CheckRom,
@@ -2593,6 +2558,14 @@ pub enum Effect {
     /// [`App::rom_download_progress`] and [`App::rom_download_ended`].
     DownloadRom(rom::Release),
     StopRomDownload,
+    /// Ask GitHub for Skyward's newest release, telling what it answered
+    /// with [`App::skyward_checked`].
+    CheckSkyward,
+    /// Download `build` and write it into the recovery partitions, telling
+    /// how it goes with [`App::skyward_progress`] and
+    /// [`App::skyward_ended`].
+    UpdateSkyward(Build),
+    StopSkywardUpdate,
     /// Merge the update that waits in the slot the phone runs from,
     /// telling how it goes with [`App::set_update`].
     Merge,
@@ -2782,19 +2755,7 @@ const MIN_BRIGHTNESS: f32 = 0.02;
 const SLIDER_STEP: f32 = 0.1;
 /// Where both sliders start: one step of the keys from their left end.
 pub const SLIDER_START: f32 = SLIDER_STEP;
-/// `value` as a share the sliders can hold: one written outside them, or
-/// not written at all, comes as `fallback`.
-fn clamp_share(value: f32, fallback: f32) -> f32 {
-    match value.is_finite() {
-        true => value.clamp(0.0, 1.0),
-        false => fallback,
-    }
-}
 
-/// How long changed settings wait after the last change before they are
-/// written to the owner's storage, so a slider dragged across the page is
-/// written once.
-const SETTINGS_SAVE_DELAY: u64 = 2000;
 /// While the backlight eases, it steps once a frame of a 120 Hz panel.
 const BACKLIGHT_STEP_MS: u64 = 8;
 /// Just after the panel lights, a touch or key only keeps it awake: the
@@ -3081,13 +3042,6 @@ fn keyboard_strip(t: &Theme, frame: &Frame) -> (Canvas, i32) {
 
 pub struct App {
     pub state: State,
-    /// Settings as the owner's storage last had them: what differs from
-    /// these is written back a moment after the last change.
-    settings_kept: SavedSettings,
-    /// The settings as last looked at, to tell a change from a tick.
-    settings_seen: SavedSettings,
-    /// When a pending settings write matures.
-    settings_due_at: Option<u64>,
     /// The pages open, the one shown last: each with how far it is
     /// scrolled and where the keys are on it.
     stack: Vec<(Screen, f32, Focus)>,
@@ -3223,9 +3177,6 @@ impl App {
     pub fn new(start: Screen, w: u32, h: u32, px_per_dp: f32) -> Self {
         App {
             state: State::default(),
-            settings_kept: SavedSettings::default(),
-            settings_seen: SavedSettings::default(),
-            settings_due_at: None,
             stack: vec![(start, 0.0, Focus::Unset)],
             frame: None,
             spots: None,
@@ -3389,100 +3340,23 @@ impl App {
     /// enough, a gliding page moves on, a page past its end springs back,
     /// the bar and its title follow the scroll, and a message past its
     /// deadline goes away.
-    /// The settings as they stand, for the owner's storage to keep.
-    pub fn settings(&self) -> SavedSettings {
-        SavedSettings {
-            dark: self.state.dark,
-            brightness: self.state.brightness,
-            screen_off: self.state.screen_off,
-            time_zone: self.state.time_zone,
-            vibrate: self.state.vibrate,
-            vibration: self.state.vibration,
-            file_transfer: self.state.file_transfer,
-            // Starting counts as on: the user asked for it, and a write that
-            // lands before the driver is up must not record it as off.
-            wlan: self.state.wlan.as_ref().is_some_and(|w| !matches!(w.power, WlanPower::Off | WlanPower::Failed(_))),
-        }
+    /// The settings the pages show, as they are kept between starts.
+    pub fn settings(&self) -> Settings {
+        Settings::of(&self.state)
     }
 
-    /// Whether the settings differ from what the owner's storage has, and
-    /// have been left alone long enough to be written back: once.
-    pub fn settings_due(&mut self, now: u64) -> Option<SavedSettings> {
-        let current = self.settings();
-        if current == self.settings_kept {
-            self.settings_due_at = None;
-            self.settings_seen = current;
-            return None;
+    /// Take the settings `kept` from the starts before, and speak the
+    /// language chosen then, or else the one the system `named`, or else
+    /// the one the pages last spoke.
+    pub fn take_settings(&mut self, kept: Option<&Settings>, named: Option<Lang>) {
+        if let Some(kept) = kept {
+            kept.apply(&mut self.state);
         }
-        // Every change starts the wait again, so a slider dragged across
-        // the page is written once, after the hand stops.
-        if current != self.settings_seen {
-            self.settings_seen = current;
-            self.settings_due_at = Some(now + SETTINGS_SAVE_DELAY);
+        if !self.state.language_chosen {
+            if let Some(lang) = named.or(kept.and_then(Settings::spoken)) {
+                self.state.lang = lang;
+            }
         }
-        if self.settings_due_at.is_none_or(|due| now < due) {
-            return None;
-        }
-        Some(current)
-    }
-
-    /// The settings are now in the owner's storage.
-    pub fn settings_written(&mut self, settings: SavedSettings) {
-        self.settings_kept = settings;
-        self.settings_seen = settings;
-        self.settings_due_at = None;
-    }
-
-    /// The settings could not be written: keep them and try again after the
-    /// same wait.
-    pub fn settings_not_written(&mut self, now: u64) {
-        self.settings_due_at = Some(now + SETTINGS_SAVE_DELAY);
-    }
-
-    /// Take the settings the owner's storage kept. On the first read of a
-    /// boot every one is taken; a later read, once the storage opens, takes
-    /// only those the user has left at the value they start at, so a choice
-    /// of their own made before it opened is never overruled. What the file
-    /// does not hold yet is written back by `settings_due`.
-    pub fn set_saved_settings(&mut self, saved: SavedSettings, keep_this_boot: bool) {
-        let start = SavedSettings::default();
-        // A file that was cut short, or edited by hand, must not take the
-        // pages down with it: every value is brought into the range the pages
-        // can show before it is used, and one that cannot be is left out.
-        let saved = SavedSettings {
-            brightness: clamp_share(saved.brightness, start.brightness),
-            vibration: clamp_share(saved.vibration, start.vibration),
-            screen_off: if saved.screen_off < SCREEN_OFF.len() { saved.screen_off } else { start.screen_off },
-            time_zone: if saved.time_zone < TIME_ZONES.len() { saved.time_zone } else { start.time_zone },
-            ..saved
-        };
-        let take = |same: bool| !keep_this_boot || same;
-        if take(self.state.dark == start.dark) {
-            self.state.dark = saved.dark;
-        }
-        if take((self.state.brightness - start.brightness).abs() < f32::EPSILON) {
-            self.state.brightness = saved.brightness;
-        }
-        if take(self.state.screen_off == start.screen_off) {
-            self.state.screen_off = saved.screen_off;
-        }
-        if take(self.state.time_zone == start.time_zone) {
-            self.state.time_zone = saved.time_zone;
-        }
-        if take(self.state.vibrate == start.vibrate) {
-            self.state.vibrate = saved.vibrate;
-        }
-        if take((self.state.vibration - start.vibration).abs() < f32::EPSILON) {
-            self.state.vibration = saved.vibration;
-        }
-        if take(self.state.file_transfer == start.file_transfer) {
-            self.state.file_transfer = saved.file_transfer;
-        }
-        // What is kept now is what the storage held before the merge; a
-        // choice made before the storage opened differs, and is written back.
-        self.settings_kept = saved;
-        self.settings_seen = saved;
-        self.settings_due_at = None;
         self.refresh();
     }
 
@@ -4326,7 +4200,7 @@ impl App {
             return;
         }
         self.state.wlan = Some(w);
-        if matches!(self.screen(), Screen::Home | Screen::Wlan | Screen::WlanNetwork | Screen::Update) {
+        if matches!(self.screen(), Screen::Home | Screen::Wlan | Screen::WlanNetwork | Screen::Update | Screen::SkywardUpdate) {
             self.refresh();
         }
         // The status bar shows the network joined over every page.
@@ -4379,19 +4253,6 @@ impl App {
         Some(WlanMark { level: fmt::signal_level(link.signal), receiving: t.rx > 0, sending: t.tx > 0, speed, unit })
     }
 
-    /// What the update server answered, and what internal storage holds of
-    /// the full package of the newest system it told of.
-    pub fn update_checked(&mut self, answer: Result<Option<Release>, Unanswered>, have: Have) {
-        self.state.check = match answer {
-            Ok(newest) => Check::Answered(newest),
-            Err(why) => Check::Failed(why),
-        };
-        self.state.have = have;
-        if matches!(self.screen(), Screen::Advanced | Screen::Update) {
-            self.refresh();
-        }
-    }
-
     /// What the phone's ROM answered, and what internal storage holds of its
     /// package.
     pub fn rom_checked(&mut self, answer: Result<rom::Answer, Unanswered>, have: Have) {
@@ -4433,54 +4294,34 @@ impl App {
         self.refresh();
     }
 
-    /// How far downloading the full package has come, and how fast it goes,
-    /// in bytes a second.
-    pub fn download_progress(&mut self, progress: Progress, rate: u64) {
-        let job = self.state.download.as_mut().expect("only a download under way moves on");
-        job.progress = Some(progress);
-        job.rate = rate;
-        if self.screen() == Screen::Update {
-            self.refresh();
-        }
-    }
-
-    /// Writing the downloaded image over this recovery has started.
-    pub fn install_started(&mut self) {
-        self.state.installing = Some(0.0);
-        self.state.installed = None;
-        self.refresh();
-    }
-
-    /// How far writing it has come, as the share of it done.
-    pub fn install_progress(&mut self, share: f32) {
-        self.state.installing = Some(share);
-        if self.screen() == Screen::Update {
-            self.refresh();
-        }
-    }
-
-    /// It has ended: `Ok` it now reads back as written, or why it does not.
-    pub fn install_ended(&mut self, outcome: Result<(), String>, now: u64) {
-        self.state.installing = None;
-        self.state.installed = Some(outcome.clone());
-        let (text, lit) = match &outcome {
-            Ok(()) => (S_WRITTEN_A_RESTART_BRINGS_UP_THE_NEW_ONE.to_string(), true),
-            Err(why) => (crate::fmt::install_failed(self.state.lang, why), false),
+    /// What GitHub answered of Skyward's newest release.
+    pub fn skyward_checked(&mut self, answer: Result<Newest, Unanswered>) {
+        self.state.skyward_check = match answer {
+            Ok(newest) => SkywardCheck::Answered(newest),
+            Err(why) => SkywardCheck::Failed(why),
         };
-        self.wake(now);
-        if !lit {
-            self.say(&text, now);
+        if matches!(self.screen(), Screen::Settings | Screen::SkywardUpdate) {
+            self.refresh();
         }
-        self.refresh();
     }
 
-    /// Downloading the full package has ended, leaving `have` of it: the
-    /// update page says how, lit for the user to read.
-    pub fn download_ended(&mut self, end: DownloadEnd, have: Have, now: u64) {
-        let job = self.state.download.as_mut().expect("only a download under way ends");
+    /// How far updating Skyward has come, and how fast the download goes,
+    /// in bytes a second.
+    pub fn skyward_progress(&mut self, stage: SkywardStage, rate: u64) {
+        let job = self.state.skyward_job.as_mut().expect("only an update under way moves on");
+        job.stage = Some(stage);
+        job.rate = rate;
+        if self.screen() == Screen::SkywardUpdate {
+            self.refresh();
+        }
+    }
+
+    /// Updating Skyward has ended: its page says how, lit for the user to
+    /// read.
+    pub fn skyward_ended(&mut self, end: SkywardEnd, now: u64) {
+        let job = self.state.skyward_job.as_mut().expect("only an update under way ends");
         job.stopping = false;
         job.outcome = Some(end);
-        self.state.have = have;
         self.wake(now);
         self.refresh();
     }
@@ -5749,6 +5590,19 @@ impl App {
                 self.state.restore = None;
                 self.state.asking_delete = false;
             }
+            // The page stays while Skyward is updated: once downloaded, the
+            // build is written at once, which nothing may cut short.
+            Screen::SkywardUpdate => match self.state.skyward_job.as_ref().filter(|j| j.outcome.is_none()).map(|j| j.stage) {
+                Some(Some(SkywardStage::Write { .. })) => {
+                    self.say(S_WRITING_WAIT_FOR_IT_TO_FINISH, now);
+                    return fx;
+                }
+                Some(_) => {
+                    self.say(WAIT_OR_STOP, now);
+                    return fx;
+                }
+                None => {}
+            },
             // A restore that has begun writing cannot be stopped.
             Screen::BackupJob => {
                 let job = self.state.backup_job.as_ref().expect("the backup page shows work");
@@ -5956,10 +5810,6 @@ impl App {
             Screen::Update => {
                 let online = self.state.online();
                 let mut asks = Vec::new();
-                if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && online {
-                    self.state.check = Check::Asking;
-                    asks.push(Effect::CheckUpdate);
-                }
                 if let Some(rom) = &mut self.state.rom {
                     if matches!(rom.check, RomCheck::Idle | RomCheck::Failed(_)) && online {
                         rom.check = RomCheck::Asking;
@@ -5971,6 +5821,11 @@ impl App {
             // The system update a package left is read where packages are
             // installed.
             Screen::Install => vec![Effect::ReadUpdate],
+            // Skyward's own page asks GitHub the same way.
+            Screen::SkywardUpdate if matches!(self.state.skyward_check, SkywardCheck::Idle | SkywardCheck::Failed(_)) && self.state.online() => {
+                self.state.skyward_check = SkywardCheck::Asking;
+                vec![Effect::CheckSkyward]
+            }
             Screen::Wlan if self.state.wlan.as_ref().is_some_and(|w| w.power == Power::On) => vec![Effect::ScanWlan],
             _ => Vec::new(),
         }
@@ -6657,7 +6512,7 @@ impl App {
                 self.refresh();
             }
             // Asking takes a network, which the WLAN page joins.
-            Action::CheckUpdate => {
+            Action::CheckSkyward => {
                 if !self.state.online() {
                     if self.state.wlan.is_some() {
                         self.open(Screen::Wlan);
@@ -6666,20 +6521,16 @@ impl App {
                     self.say(S_THIS_PHONE_HAS_NO_WLAN, now);
                     return Vec::new();
                 }
-                if self.state.check != Check::Asking {
-                    self.state.check = Check::Asking;
+                if self.state.skyward_check != SkywardCheck::Asking {
+                    self.state.skyward_check = SkywardCheck::Asking;
                     self.refresh();
-                    return vec![Effect::CheckUpdate];
+                    return vec![Effect::CheckSkyward];
                 }
             }
-            // The package goes to internal storage, which the decrypt page
-            // opens, over a network the WLAN page joins.
-            Action::Download => {
-                let Some(release) = self.state.newest().cloned() else { return Vec::new() };
-                if !self.state.data.storage_open() {
-                    self.open(Screen::Decrypt);
-                    return self.arrive_at(Screen::Decrypt);
-                }
+            // The build goes into the recovery partitions an install may
+            // write too, so one waits for the other.
+            Action::UpdateSkyward => {
+                let Some(build) = self.state.skyward_newest().and_then(|n| n.build.clone()) else { return Vec::new() };
                 if !self.state.online() {
                     if self.state.wlan.is_some() {
                         self.open(Screen::Wlan);
@@ -6688,28 +6539,26 @@ impl App {
                     self.say(S_THIS_PHONE_HAS_NO_WLAN, now);
                     return Vec::new();
                 }
-                if !self.state.downloading() {
-                    self.state.download = Some(DownloadJob { progress: None, rate: 0, outcome: None, stopping: false });
+                if !matches!(self.state.install, Install::Idle | Install::Finished { .. }) {
+                    self.say(INSTALL_UNFINISHED, now);
+                    return Vec::new();
+                }
+                if !self.state.updating_skyward() {
+                    self.state.skyward_job = Some(SkywardJob { stage: None, rate: 0, outcome: None, stopping: false });
                     self.refresh();
-                    return vec![Effect::Download(release)];
+                    return vec![Effect::UpdateSkyward(build)];
                 }
             }
-            Action::StopDownload => {
-                if let Some(job) = self.state.download.as_mut() {
-                    if job.outcome.is_none() && !job.stopping {
+            // Only the download stops: writing, once begun, goes on to its
+            // end.
+            Action::StopSkywardUpdate => {
+                if let Some(job) = self.state.skyward_job.as_mut() {
+                    if job.outcome.is_none() && !job.stopping && !matches!(job.stage, Some(SkywardStage::Write { .. })) {
                         job.stopping = true;
                         self.refresh();
-                        return vec![Effect::StopDownload];
+                        return vec![Effect::StopSkywardUpdate];
                     }
                 }
-            }
-            Action::InstallRecovery => {
-                if self.state.newest().is_none() {
-                    return Vec::new();
-                }
-                let Have::Whole(_) = self.state.have else { return Vec::new() };
-                self.install_started();
-                return vec![Effect::InstallRecovery];
             }
             // Asking takes a network, which the WLAN page joins.
             Action::CheckRom => {
@@ -7096,7 +6945,7 @@ impl App {
             Cap::Show(layer) => self.state.layer = layer,
             Cap::Enter => match self.screen() {
                 Screen::Search => {
-                    if let Some(first) = search::find_on(&self.state.search, l, self.state.wlan.is_some()).first() {
+                    if let Some(first) = search::find_on(&self.state.search, l, |screen| self.state.offers(screen)).first() {
                         return self.act(Action::Open(first.screen), now);
                     }
                 }
@@ -8401,6 +8250,7 @@ mod tests {
             Screen::TimeZone,
             Screen::Logs,
             Screen::Update,
+            Screen::SkywardUpdate,
             Screen::License,
             Screen::FontLicense,
             Screen::Slot,
@@ -9079,98 +8929,9 @@ mod tests {
         assert!(app.row_press.is_none());
     }
 
-    #[test]
-    fn settings_out_of_range_are_brought_back_into_it_instead_of_taking_the_pages_down() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
-        app.frame(&f, &i);
-        let nonsense = SavedSettings {
-            dark: true,
-            brightness: 17.5,
-            screen_off: 99,
-            time_zone: 42,
-            vibrate: false,
-            vibration: f32::NAN,
-            file_transfer: true,
-            wlan: true,
-        };
-        app.set_saved_settings(nonsense, false);
-        assert_eq!(app.state.screen_off, SavedSettings::default().screen_off, "a screen-off time that is not one");
-        assert_eq!(app.state.time_zone, SavedSettings::default().time_zone, "a time zone that is not one");
-        assert_eq!(app.state.brightness, 1.0, "a brightness over the slider's end");
-        assert_eq!(app.state.vibration, SavedSettings::default().vibration, "a vibration that is not a number");
-        // The pages still draw, which is what a panic here would have stopped.
-        app.frame(&f, &i);
-        assert_eq!(app.state.lang, Lang::En, "and what was sound is still taken");
-    }
 
-    #[test]
-    fn settings_are_written_a_moment_after_the_last_change_and_read_back() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
-        app.frame(&f, &i);
-        assert_eq!(app.settings_due(0), None, "nothing changed, nothing to write");
-        tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
-        assert_eq!(app.settings_due(1_500), None, "the write waits for the last change");
-        assert_eq!(app.settings_due(2_000), None, "and is not due yet");
-        let kept = app.settings_due(5_000).expect("the settings are written");
-        assert!(!kept.vibrate, "as they stand");
-        app.settings_written(kept);
-        assert_eq!(app.settings_due(9_000), None, "and once, not at every tick");
 
-        // The boots to come take them back, except where the user has
-        // already chosen otherwise this boot.
-        let mut fresh = App::new(Screen::Settings, W, H, PPD);
-        fresh.frame(&f, &i);
-        fresh.set_saved_settings(kept, false);
-        assert!(!fresh.state.vibrate, "kept from the boot before");
-        assert_eq!(fresh.settings_due(9_000), None, "what was just read is not written again");
 
-        let mut chosen = App::new(Screen::Settings, W, H, PPD);
-        chosen.frame(&f, &i);
-        tap_at(&mut chosen, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
-        assert!(!chosen.state.vibrate, "turned off this boot");
-        chosen.set_saved_settings(SavedSettings { vibrate: true, ..kept }, true);
-        assert!(!chosen.state.vibrate, "the user's choice this boot is not overruled");
-        assert_eq!(chosen.settings_due(12_000), None, "and waits to be written");
-        assert!(chosen.settings_due(14_000).is_some(), "and is written back over the storage that does not hold it yet");
-    }
-
-    #[test]
-    fn settings_wait_for_the_last_change_and_are_offered_again_after_a_failed_write() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
-        app.frame(&f, &i);
-        tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
-        assert_eq!(app.settings_due(1_500), None, "the first change starts the wait");
-        tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 2000);
-        assert_eq!(app.settings_due(2_000), None, "the second change starts it again");
-        assert_eq!(app.settings_due(3_500), None, "the first wait does not write mid-change");
-        let settings = app.settings_due(4_000).expect("the wait after the last change matures");
-        app.settings_not_written(4_000);
-        assert_eq!(app.settings_due(5_000), None, "a failed write waits again");
-        assert_eq!(app.settings_due(6_000), Some(settings), "and offers the same settings once more");
-    }
-
-    #[test]
-    fn settings_are_parsed_from_what_the_file_names() {
-        let text = "dark = true\nbrightness = 0.7\nscreen_off = 5\ntime_zone = 2\nvibrate = false\nvibration = 0.4\nfile_transfer = false\nwlan = true\n";
-        assert_eq!(
-            SavedSettings::parse(text),
-            SavedSettings {
-                dark: true,
-                brightness: 0.7,
-                screen_off: 5,
-                time_zone: 2,
-                vibrate: false,
-                vibration: 0.4,
-                file_transfer: false,
-                wlan: true,
-            }
-        );
-        let partial = SavedSettings::parse("unknown = 1\nbrightness = not a number\n");
-        assert_eq!(partial.brightness, SavedSettings::default().brightness, "a value that is not a number keeps the default");
-    }
 
     #[test]
     fn a_row_tapped_quickly_shows_held_from_the_lift_and_fades_back() {
@@ -9837,6 +9598,8 @@ mod tests {
         app.tick(TOAST_MS);
         assert_eq!(app.deadline(TOAST_MS), app.idle_due());
     }
+
+
 
     /// The installing page, opened from the install page, with the
     /// installer started and waiting for the computer.
@@ -11659,7 +11422,7 @@ mod tests {
         assert_eq!(app.state.adb_wifi, AdbWifi::Failed("adbd did not take port 5555".into()), "what came of it is kept for the row");
         assert!(row(&mut app), "the row keeps its place, to be asked for again");
         // Restarting adbd ends the transfer in it, so no row is offered while a package is written.
-        app.state.installing = Some(0.5);
+        app.state.install = Install::Waiting;
         app.refresh();
         assert!(!row(&mut app));
     }
@@ -11779,62 +11542,6 @@ mod tests {
         assert_eq!(fr.hit(row.x + row.w / 3.0, row.y + row.h / 2.0).map(|h| h.action), Some(Action::JoinNetwork(1)));
     }
 
-    fn newest() -> Release {
-        Release {
-            tag: "bronco-20261101".into(),
-            published: "2026-11-01T10:00:00Z".into(),
-            image: skyward_net::release::Asset {
-                name: "skyward-bronco.img".into(),
-                url: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
-                size: 104_857_600,
-                digest: Some("sha256:0123456789abcdef".into()),
-            },
-            sums: None,
-        }
-    }
-
-    #[test]
-    fn the_update_page_asks_for_the_newest_recovery_and_downloads_its_image_to_write() {
-        let f = fonts();
-        let i = DeviceInfo { os_version: Some("OS3.0.308.0.WMACNXM".into()), ..info() };
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
-        app.state.update_server = true;
-        app.state.wlan = Some(Wlan::default());
-        app.refresh();
-        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Update)).is_empty(), "nothing is asked without a network");
-        assert!(tap(&mut app, &f, &i, Action::CheckUpdate).is_empty());
-        assert_eq!(app.screen(), Screen::Wlan, "asking takes a network, which the WLAN page joins");
-        app.key(Key::Back, 0);
-        app.set_wlan(connected("Skyward"));
-        assert_eq!(tap(&mut app, &f, &i, Action::CheckUpdate), vec![Effect::CheckUpdate]);
-        assert_eq!(app.state.check, Check::Asking);
-        app.update_checked(Ok(Some(newest())), Have::Nothing);
-        app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
-        app.refresh();
-        assert!(tap(&mut app, &f, &i, Action::Download).is_empty());
-        assert_eq!(app.screen(), Screen::Decrypt, "the package goes to internal storage, which opens with the owner's files");
-        app.state.data = Data::Open;
-        app.act(Action::Skip, 0);
-        assert_eq!(app.screen(), Screen::Update);
-        assert_eq!(tap(&mut app, &f, &i, Action::Download), vec![Effect::Download(newest())]);
-        app.download_progress(Progress::Checking { done: 0, total: 7_572_375_802 }, 0);
-        app.download_progress(Progress::Downloading { done: 1_000_000_000, total: 7_572_375_802 }, 12_000_000);
-        assert!(app.state.downloading());
-        assert_eq!(tap(&mut app, &f, &i, Action::StopDownload), vec![Effect::StopDownload]);
-        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::StopDownload), "stopping, it is not asked again");
-        // An end lights the panel, and a touch just after only keeps it lit.
-        app.download_ended(DownloadEnd::Stopped, Have::Part(1_000_000_000), 0);
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Download, 2000), vec![Effect::Download(newest())], "a download stopped carries on");
-        let damaged = skyward_net::download::Failure::Damaged;
-        app.download_ended(DownloadEnd::Failed(damaged.clone()), Have::Nothing, 3000);
-        assert_eq!(fmt::download_failure(Lang::En, &damaged), "The image didn't verify and was deleted. Download it again.");
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Download, 5000), vec![Effect::Download(newest())]);
-        app.download_ended(DownloadEnd::Downloaded, Have::Whole(7_572_375_802), 6000);
-        let fx = tap_at(&mut app, &f, &i, Action::InstallRecovery, 8000);
-        assert_eq!(fx, vec![Effect::InstallRecovery]);
-        assert!(app.state.installing.is_some(), "the page says it is writing");
-    }
-
     fn rom_newest() -> rom::Release {
         rom::Release {
             build: "Project Infinity X 4.1 · 01.11.2026".into(),
@@ -11892,18 +11599,80 @@ mod tests {
         assert!(!frame.hits.iter().any(|h| h.action == Action::InstallRom));
     }
 
+
+    fn skyward_newest(newer: bool) -> Newest {
+        Newest {
+            version: "bronco-20261101".into(),
+            newer,
+            build: Some(Build {
+                name: "skyward-bronco.img".into(),
+                url: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
+                link: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
+                size: 104_857_600,
+                sha256: "0123456789abcdef".into(),
+                sums: None,
+            }),
+        }
+    }
+
     #[test]
-    fn the_update_page_asks_the_server_as_it_opens_once_a_network_is_joined() {
+    fn skyward_updates_from_its_newest_release_and_its_page_stays_until_the_build_is_in() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.refresh();
+        let offered = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::SkywardUpdate));
+        assert!(!offered(&mut app), "a phone whose WLAN the recovery does not bring up");
+        app.state.wlan = Some(Wlan::default());
+        app.refresh();
+        assert!(!offered(&mut app), "a phone that keeps no recovery partition in each slot");
+        app.state.recovery_partitions = true;
+        app.refresh();
+        assert!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)).is_empty(), "nothing is asked without a network");
+        assert!(tap(&mut app, &f, &i, Action::CheckSkyward).is_empty());
+        assert_eq!(app.screen(), Screen::Wlan, "asking takes a network, which the WLAN page joins");
+        app.key(Key::Back, 0);
+        app.set_wlan(connected("Skyward"));
+        assert_eq!(tap(&mut app, &f, &i, Action::CheckSkyward), vec![Effect::CheckSkyward]);
+        assert_eq!(app.state.skyward_check, SkywardCheck::Asking);
+        app.skyward_checked(Ok(skyward_newest(true)));
+        let build = skyward_newest(true).build.unwrap();
+        app.state.install = Install::Waiting;
+        assert!(tap(&mut app, &f, &i, Action::UpdateSkyward).is_empty(), "an install under way goes first");
+        app.state.install = Install::Idle;
+        assert_eq!(tap(&mut app, &f, &i, Action::UpdateSkyward), vec![Effect::UpdateSkyward(build.clone())]);
+        app.skyward_progress(SkywardStage::Download(Progress::Downloading { done: 10_000_000, total: 42_739_608 }), 2_000_000);
+        app.key(Key::Back, 0);
+        assert_eq!(app.screen(), Screen::SkywardUpdate, "the page stays while the build downloads");
+        assert_eq!(tap(&mut app, &f, &i, Action::StopSkywardUpdate), vec![Effect::StopSkywardUpdate]);
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::StopSkywardUpdate), "stopping, it is not asked again");
+        // An end lights the panel, and a touch just after only keeps it lit.
+        app.skyward_ended(SkywardEnd::Stopped, 0);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::UpdateSkyward, 2000), vec![Effect::UpdateSkyward(build.clone())], "a download stopped carries on");
+        app.skyward_progress(SkywardStage::Write { done: 1 << 20, total: 4 << 20 }, 0);
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::StopSkywardUpdate), "writing goes on to its end");
+        app.key(Key::Back, 2100);
+        assert_eq!(app.screen(), Screen::SkywardUpdate, "nor is the page left while the build is written");
+        app.skyward_ended(SkywardEnd::Updated(vec![Slot::A, Slot::B]), 3000);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::RebootTo(Target::Recovery), 5000), vec![Effect::Reboot(Target::Recovery)]);
+        app.key(Key::Back, 5100);
+        assert_eq!(app.screen(), Screen::Settings);
+    }
+
+    #[test]
+    fn the_skyward_page_asks_github_as_it_opens_once_a_network_is_joined() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
         app.state.wlan = Some(connected("Skyward"));
-        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Update)).is_empty(), "a phone whose server is not known asks nothing");
+        app.state.recovery_partitions = true;
+        app.refresh();
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)), vec![Effect::CheckSkyward]);
+        app.skyward_checked(Err(Unanswered::Failed("GitHub answered 403 Forbidden: API rate limit exceeded".into())));
         app.key(Key::Back, 0);
-        app.state.update_server = true;
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::CheckUpdate]);
-        app.update_checked(Err(Unanswered::Failed("update.miui.com did not answer".into())), Have::Nothing);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)), vec![Effect::CheckSkyward], "a failed check is tried again");
+        app.skyward_checked(Ok(skyward_newest(false)));
+        assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::UpdateSkyward), "nothing newer to update to");
         app.key(Key::Back, 0);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::CheckUpdate], "a failed check is tried again");
+        assert!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)).is_empty(), "an answer heard is not asked again");
     }
 
     #[test]
@@ -12759,11 +12528,10 @@ mod tests {
 
     #[test]
     fn asking_for_an_update_on_a_phone_without_wlan_says_so() {
-        let mut app = App::new(Screen::Update, W, H, PPD);
-        app.state.update_server = true;
+        let mut app = App::new(Screen::SkywardUpdate, W, H, PPD);
         app.state.wlan = None;
-        assert!(app.act(Action::CheckUpdate, 1000).is_empty());
-        assert_eq!(app.screen(), Screen::Update, "no WLAN page is opened");
+        assert!(app.act(Action::CheckSkyward, 1000).is_empty());
+        assert_eq!(app.screen(), Screen::SkywardUpdate, "no WLAN page is opened");
     }
 
     #[test]

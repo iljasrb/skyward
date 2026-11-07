@@ -1088,6 +1088,12 @@ pub fn download_failure(_l: Lang, f: &DownloadFailure) -> String {
     }
 }
 
+/// Why downloading Skyward's build did not end with it whole. It goes into
+/// the recovery's own folder, which is in memory.
+pub fn skyward_download_failure(l: Lang, f: &DownloadFailure) -> String {
+    download_failure(l, f)
+}
+
 /// How the terminal page's shell ended.
 pub fn term_end(_l: Lang, end: &TermEnd) -> String {
     match end {

@@ -14,6 +14,7 @@ pub mod lang;
 pub mod motion;
 pub mod pages;
 pub mod search;
+pub mod settings;
 pub mod sprite;
 pub mod strings {
     include!(concat!(env!("OUT_DIR"), "/strings.rs"));

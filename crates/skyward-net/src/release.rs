@@ -29,6 +29,31 @@ pub struct Asset {
     pub digest: Option<String>,
 }
 
+/// The newest release, as the page shows it: its tag, whether it is newer
+/// than the build running, and the image for this phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Newest {
+    pub version: String,
+    pub newer: bool,
+    pub build: Option<Build>,
+}
+
+/// The image a release carries for this phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Build {
+    pub name: String,
+    /// Where the image is downloaded from.
+    pub url: String,
+    /// The release's own link to it, kept for the page.
+    pub link: String,
+    pub size: u64,
+    /// Its SHA-256, where the release names it; the sums file otherwise.
+    pub sha256: String,
+    /// Where the file of sums that names the image is, where the digest is
+    /// not known.
+    pub sums: Option<String>,
+}
+
 impl Release {
     /// Whether this release is newer than `build`, the stamp of the running
     /// recovery: the tag it was built from, or the time it was made when it

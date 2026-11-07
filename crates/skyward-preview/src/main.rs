@@ -2,16 +2,16 @@ use anyhow::{anyhow, Result};
 use skyward_config::DeviceConfig;
 use skyward_info::{Battery, Boot, Charge, Cpu, DeviceInfo, PatchLevel, Storage};
 use skyward_install::{Failure, ImageKind, Outcome, Ramdisk, Reflash, Refusal, Stage};
-use skyward_net::download::{Failure as DownloadFailure, Progress};
+use skyward_net::download::Progress;
+use skyward_net::release::{Build, Newest, Unanswered};
 use skyward_net::reach::Reach;
-use skyward_net::release::{Release, Unanswered};
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Link, Network, Power, Stage as Joining, Traffic, Wlan};
 use skyward_ui::app::{
     Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, CloudInfo, CloudStatus, Damage,
-    Data, DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, Install, ItemEnd,
-    JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, Secret, Source, TermEnd, Touch, UsbDrive,
-    UsbLink, SCREEN_OFF,
+    Data, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Held, Install, ItemEnd,
+    JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, Secret, SkywardEnd, SkywardJob, SkywardStage,
+    Source, TermEnd, Touch, UsbDrive, UsbLink, SCREEN_OFF,
 };
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
 use skyward_ui::{editor, fmt, pages, Canvas, Ctx, Fonts, Lang, Theme};
@@ -351,7 +351,7 @@ fn main() -> Result<()> {
     let adding = |app: &mut App, name: &str, security: Security, field: Field, choosing: bool| {
         app.state.adding = Some(Adding { name: name.into(), security, field, choosing });
     };
-    let pages: [PageShot; 162] = [
+    let pages: [PageShot; 161] = [
         ("11-install-light-locked", Screen::Install, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         }),
@@ -703,58 +703,51 @@ fn main() -> Result<()> {
             app.state.source = Source::Opened { place: Place::UsbDrive };
             app.state.install = Install::Checking { size: 104_857_600, stage: None };
         }),
-        ("143-update-light-offline", Screen::Update, false, &|app| {
-            app.state.update_server = true;
+        ("190-skyward-update-light-offline", Screen::SkywardUpdate, false, &|app| {
+            app.state.recovery_partitions = true;
             app.state.wlan = Some(Wlan::default());
         }),
-        ("144-update-light-newer", Screen::Update, false, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Nothing);
+        ("191-skyward-update-light-newer", Screen::SkywardUpdate, false, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
         }),
-        ("145-update-dark-downloading", Screen::Update, true, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Nothing);
-            app.state.download = Some(DownloadJob {
-                progress: Some(Progress::Downloading { done: 2_843_210_752, total: 7_572_375_802 }),
-                rate: 23_400_000,
-                outcome: None,
-                stopping: false,
-            });
+        ("192-skyward-update-dark-downloading", Screen::SkywardUpdate, true, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
+            let stage = Some(SkywardStage::Download(Progress::Downloading { done: 17_104_000, total: 43_145_196 }));
+            app.state.skyward_job = Some(SkywardJob { stage, rate: 3_260_000, outcome: None, stopping: false });
         }),
-        ("146-update-light-checking-part", Screen::Update, false, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Part(2_843_210_752));
-            let progress = Some(Progress::Checking { done: 1_022_000_000, total: 2_843_210_752 });
-            app.state.download = Some(DownloadJob { progress, rate: 0, outcome: None, stopping: false });
+        ("193-skyward-update-light-writing", Screen::SkywardUpdate, false, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
+            let stage = Some(SkywardStage::Write { done: 140_000_000, total: 419_430_400 });
+            app.state.skyward_job = Some(SkywardJob { stage, rate: 0, outcome: None, stopping: false });
         }),
-        ("147-update-light-paused", Screen::Update, false, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Part(2_843_210_752));
-            app.state.download = Some(DownloadJob { progress: None, rate: 0, outcome: Some(DownloadEnd::Stopped), stopping: false });
+        ("194-skyward-update-light-updated", Screen::SkywardUpdate, false, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
+            let outcome = Some(SkywardEnd::Updated(vec![Slot::A, Slot::B]));
+            app.state.skyward_job = Some(SkywardJob { stage: None, rate: 0, outcome, stopping: false });
         }),
-        ("148-update-light-no-room", Screen::Update, false, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Nothing);
-            let full = DownloadFailure::NoRoom { needed: 7_572_375_802, free: 3_104_000_000 };
-            app.state.download = Some(DownloadJob { progress: None, rate: 0, outcome: Some(DownloadEnd::Failed(full)), stopping: false });
+        ("195-skyward-update-dark-latest", Screen::SkywardUpdate, true, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(Newest { version: "0.1.3".into(), newer: false, ..skyward_newest() }));
         }),
-        ("149-update-dark-downloaded", Screen::Update, true, &|app| {
-            online(app);
-            app.update_checked(Ok(Some(newest())), Have::Whole(7_572_375_802));
+        ("196-skyward-update-light-write-failed", Screen::SkywardUpdate, false, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
+            let why = "/dev/block/by-name/recovery_a reads back different from what was written";
+            let outcome = Some(SkywardEnd::WriteFailed(vec![Slot::A], why.into()));
+            app.state.skyward_job = Some(SkywardJob { stage: None, rate: 0, outcome, stopping: false });
         }),
-        ("150-update-light-latest", Screen::Update, false, &|app| {
-            online(app);
-            let older = Release { published: "2026-10-28T09:12:00Z".into(), ..newest() };
-            app.update_checked(Ok(Some(older)), Have::Nothing);
+        ("197-skyward-update-light-unanswered", Screen::SkywardUpdate, false, &|app| {
+            skyward_online(app);
+            let why = "GitHub answered 403 Forbidden: API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit.)";
+            app.skyward_checked(Err(Unanswered::Failed(why.into())));
         }),
-        ("151-update-light-unanswered", Screen::Update, false, &|app| {
-            online(app);
-            let why = "ask https://api.github.com/repos/iljasrb/skyward/releases: io: the DNS server at 192.168.1.1:53 did not answer";
-            app.update_checked(Err(Unanswered::Failed(why.into())), Have::Nothing);
-        }),
-        ("183-update-light-login", Screen::Update, false, &|app| {
-            online(app);
-            app.update_checked(Err(Unanswered::Login), Have::Nothing);
+        ("198-settings-light-skyward-newer", Screen::Settings, false, &|app| {
+            skyward_online(app);
+            app.skyward_checked(Ok(skyward_newest()));
         }),
         ("75-terminal-light-ended", Screen::Terminal, false, &|app| {
             let (rows, cols) = app.term_size(&fonts);
@@ -1374,25 +1367,27 @@ fn router_link() -> Link {
     }
 }
 
-/// A newer recovery than the one running, as the fork's releases tell of
-/// one.
-fn newest() -> Release {
-    Release {
-        tag: "bronco-20261101".into(),
-        published: "2026-11-01T10:00:00Z".into(),
-        image: skyward_net::release::Asset {
+/// A newer release of Skyward than the one running, as the fork's releases
+/// tell of it, with its image for the ThinkPhone.
+fn skyward_newest() -> Newest {
+    Newest {
+        version: "bronco-20261101".into(),
+        newer: true,
+        build: Some(Build {
             name: "skyward-bronco.img".into(),
             url: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
+            link: "https://github.com/iljasrb/skyward/releases/download/bronco-20261101/skyward-bronco.img".into(),
             size: 7_572_375_802,
-            digest: Some("sha256:3f2a9c81d4e05b7a6c1e9d2f8b7a6c5d".into()),
-        },
-        sums: None,
+            sha256: "3f2a9c81d4e05b7a6c1e9d2f8b7a6c5d".into(),
+            sums: None,
+        }),
     }
 }
 
-/// A phone whose update server is known, on a network joined.
-fn online(app: &mut App) {
-    app.state.update_server = true;
+/// A phone that keeps its recovery in a partition of each slot, on a
+/// network joined.
+fn skyward_online(app: &mut App) {
+    app.state.recovery_partitions = true;
     app.state.wlan = Some(joined(Joining::Connected(router_link())));
 }
 

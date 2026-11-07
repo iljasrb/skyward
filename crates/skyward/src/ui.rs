@@ -12,13 +12,14 @@ use crate::pty;
 use crate::readings::{Reading, Readings};
 use crate::secure;
 use crate::services;
+use crate::settings;
 use crate::updates;
 use crate::wipe::{self, Eraser, Step};
 use crate::wlan;
 use anyhow::{anyhow, ensure, Context, Result};
 use skyward_block::fsck::Fixed;
 use skyward_block::{fstab, mount, probe};
-use skyward_config::{DeviceConfig, Service, SettingsPlace};
+use skyward_config::{DeviceConfig, Service};
 use skyward_crypto::data::{Closed, Opened};
 use skyward_install::asked::{self, Needs};
 use skyward_install::{Detach, Installer, Options};
@@ -32,15 +33,16 @@ use skyward_cloud::config::Config as CloudConfig;
 use skyward_cloud::webdav::Info as WebDavInfo;
 use skyward_cloud::worker::{Command as CloudCommand, Event as CloudEvent, Worker as CloudWorker};
 use skyward_net::http::Servers;
-use skyward_net::release::Release;
+use skyward_net::release::{Build, Newest};
 use skyward_net::rom;
 use skyward_net::wlan::{Power as WlanPower, Wlan};
 use skyward_ui::app::{
     App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, CloudInfo, CloudSettings, Data, DownloadEnd, Effect,
     EraseStop, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind,
-    PartStop, Place, RenameRefused, RomState, SavedSettings, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION,
-    DOWNLOADS, INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
+    PartStop, Place, RenameRefused, RomState, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe,
+    DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
 };
+use skyward_ui::settings::Keeper;
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang};
 use skyward_vab::{Merge, Standing};
@@ -67,52 +69,10 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 /// How long the first page takes to come up out of the dark at the start.
 const APPEAR: Duration = Duration::from_millis(400);
 
-/// Where logs saved to the temporary folder go, and where in internal
-/// storage the others do.
-const TMP_LOGS: &str = "/tmp/skyward-logs";
+/// Where logs saved to the temporary folder go, in the recovery service's
+/// own folder, and where in internal storage the others do.
+const TMP_LOGS: &str = "/skyward/run/logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
-
-/// The folder the settings are kept in, and the file in it; see `kept` for
-/// where that is.
-const SETTINGS: (&str, &str) = ("settings", "values");
-
-/// The configured place the settings are kept in, while it is mounted.
-fn settings_root(cfg: &DeviceConfig) -> Option<PathBuf> {
-    let root = match cfg.settings.place {
-        SettingsPlace::Vendor => skyward_sys::kept::vendor_root()?,
-        SettingsPlace::Data => PathBuf::from(skyward_sys::kept::DATA),
-    };
-    skyward_sys::kept::mounted(&root).then_some(root)
-}
-
-/// Read the settings the boots before kept; none while the file is not
-/// there. A key the file does not name stays at the value it starts at.
-fn saved_settings(cfg: &DeviceConfig) -> Option<SavedSettings> {
-    let root = settings_root(cfg)?;
-    let text = skyward_sys::kept::read(&root, SETTINGS.0, SETTINGS.1)?;
-    Some(SavedSettings::parse(&text))
-}
-
-/// Write the settings as they stand, for the boots to come; a storage that
-/// cannot be written keeps them only until it opens, and this says why
-/// rather than failing.
-fn write_settings(root: &Path, settings: &SavedSettings) -> bool {
-    let text = format!(
-        "dark = {}\nbrightness = {:.3}\nscreen_off = {}\ntime_zone = {}\nvibrate = {}\nvibration = {:.3}\nfile_transfer = {}\nwlan = {}\n",
-        settings.dark, settings.brightness, settings.screen_off, settings.time_zone, settings.vibrate, settings.vibration,
-        settings.file_transfer, settings.wlan
-    );
-    match skyward_sys::kept::write(root, SETTINGS.0, SETTINGS.1, &text) {
-        Ok(path) => {
-            let _ = skyward_sys::kmsg(&format!("the settings are kept in {}", path.display()));
-            true
-        }
-        Err(e) => {
-            let _ = skyward_sys::kmsg(&format!("the settings are not kept: {e:#}"));
-            false
-        }
-    }
-}
 
 /// The folder the cloud settings are kept in, and the file in it.
 const CLOUD: (&str, &str) = ("cloud", "values");
@@ -171,10 +131,10 @@ fn cloud_info(info: WebDavInfo) -> CloudInfo {
 }
 
 /// The folder of internal storage the system saves its own screenshots in,
-/// which the gallery shows as its screenshots, and where a screenshot waits
-/// for internal storage to open.
+/// which the gallery shows as its screenshots, and where in the recovery
+/// service's own folder a screenshot waits for internal storage to open.
 const SCREENSHOTS: &str = "DCIM/Screenshots";
-const HELD_SCREENSHOTS: &str = "/tmp/screenshots";
+const HELD_SCREENSHOTS: &str = "/skyward/run/screenshots";
 
 /// The panel backlight under /sys/class/backlight.
 struct Backlight {
@@ -1102,18 +1062,10 @@ fn cloud_worker(cloud: &mut Option<CloudWorker>, servers: Servers) -> Result<&Cl
     Ok(cloud.as_ref().expect("the cloud thread was just started"))
 }
 
-/// Where `release`'s image is downloaded to, named for the release as well as
-/// the file: every release publishes the same file name, and what an older
-/// one left in the folder was taken for the newest one's, downloaded already,
-/// and written over this recovery in its place.
-fn downloaded(release: &Release) -> PathBuf {
-    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(format!("{}-{}", release.tag, release.image.name))
-}
-
-/// What internal storage holds of `release`'s image; nothing while it cannot
-/// be read.
-fn have(app: &App, release: &Release) -> Have {
-    have_at(app, &downloaded(release))
+/// Where `build`'s image is downloaded to, in the recovery's own folder,
+/// which is in memory: it is written over the recovery once whole.
+fn downloaded_build(build: &Build) -> PathBuf {
+    Path::new(skyward_sys::RUN).join(&build.name)
 }
 
 /// What internal storage holds of the ROM's package.
@@ -1262,17 +1214,23 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // why it did not come up goes to the kernel log and on screen.
     let mut fastboot = first == Screen::Fastboot;
     let mut port_at = Instant::now();
-    // What the boots before kept: brightness, the theme, the language and
-    // the rest are back before the first frame is drawn, and a WLAN that was
-    // on is brought back up by itself. Read before file transfer starts, so a
-    // saved "off" is not overruled by the default.
-    let saved = saved_settings(cfg);
-    let mut settings_read = settings_root(cfg).is_some();
-    let mut wlan_wanted = saved.as_ref().is_some_and(|s| s.wlan);
-    let mut wlan_touched = false;
-    if let Some(saved) = saved {
-        app.set_saved_settings(saved, false);
-    }
+    // The settings kept from the starts before are back before the first
+    // frame, and before file transfer starts with its switch and the time
+    // zone. The pages speak the language chosen then, or else the one the
+    // system named with the work it asks for, or the one the installed
+    // system is built to start in, or else the one they last spoke.
+    let kept = settings::read()?;
+    let locale = request.locale.as_deref().or(info.locale.as_deref());
+    let named = locale.map(Lang::for_locale).transpose()?;
+    app.take_settings(kept.settings(), named);
+    let mut keeper = Keeper::new(&kept);
+    let mut wlan_wanted = kept.settings().is_some_and(|s| s.wlan);
+    skyward_sys::kmsg(&format!(
+        "the pages speak {:?}, {}, and the locale named is {}",
+        app.state.lang,
+        if app.state.language_chosen { "the language chosen" } else { "with none chosen" },
+        locale.unwrap_or("none")
+    ))?;
     // File transfer runs while its switch is on, and offers internal
     // storage while that is open; one that does not start says why on
     // screen, and the recovery carries on.
@@ -1459,7 +1417,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut scanned_at = Instant::now();
     // When adbd was asked for the network's port, until the kernel is read as showing it holds it.
     let mut adb_until: Option<Instant> = None;
-    app.state.update_server = cfg.update.is_some();
     app.state.rom = cfg.rom.as_ref().map(|rom| RomState::new(rom.name.clone()));
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
@@ -1637,6 +1594,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(d) = &downloader {
             fds.push(d.worker.fd());
         }
+        if let Some(w) = &writer {
+            fds.push(w.worker.fd());
+        }
         fds.push(readings.fd());
         wait(&fds, timeout)?;
         let now = monotonic_ms();
@@ -1773,8 +1733,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 }
             }
         }
+        // Erasing all data makes /metadata afresh, and the settings with it
+        // are written there again.
         if erased {
             eraser = None;
+            keeper.remade();
         }
         let job_end = |end: filework::End| match end {
             filework::End::Done => JobEnd::Done,
@@ -1935,8 +1898,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 }
             }
         }
+        // Work on whole partitions may have erased or made afresh the one
+        // the settings are kept on.
         if parted {
             part_worker = None;
+            keeper.remade();
         }
         // The folder shown is read again for what the work changed.
         if worked {
@@ -2058,34 +2024,23 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             scanned_at = Instant::now();
             wlan_worker(&wlan)?.send(wlan::Command::Scan);
         }
-        // The place the settings are kept on may open after the pages do --
-        // the data partition, once its screen lock is answered. Read what it
-        // holds before a pending write can put the defaults over it.
-        if !settings_read && settings_root(cfg).is_some() {
-            settings_read = true;
-            if let Some(saved) = saved_settings(cfg) {
-                if !wlan_touched {
-                    wlan_wanted = saved.wlan;
-                }
-                let was_transfer = app.state.file_transfer;
-                app.set_saved_settings(saved, true);
-                if was_transfer && !app.state.file_transfer {
-                    if let Some(t) = transfer.take() {
-                        if let Err(e) = t.stop(!fastboot && !sideloading) {
-                            let _ = skyward_sys::kmsg(&format!("file transfer did not stop cleanly: {e:#}"));
-                        }
+        // Settings changed go into their file a moment after the last
+        // change, while nothing else has /metadata: not in fastboot, whose
+        // fastbootd may, nor while an install, a merge, erasing, a backup or
+        // work on whole partitions is under way.
+        let metadata_busy =
+            fastboot || installer.is_some() || merger.is_some() || eraser.is_some() || backuper.is_some() || part_worker.is_some();
+        if !metadata_busy {
+            if let Some(due) = keeper.due(app.settings(), now) {
+                match settings::write(&due) {
+                    Ok(()) => {
+                        skyward_sys::kmsg("the settings are kept")?;
+                        keeper.written(due);
                     }
-                }
-            }
-        }
-        // What the user changed goes to the partition the phone keeps it on
-        // a moment after the last change. The place may not be mounted yet;
-        // the change stays pending until it is.
-        if settings_read {
-            if let Some(settings) = app.settings_due(now) {
-                match settings_root(cfg) {
-                    Some(root) if write_settings(&root, &settings) => app.settings_written(settings),
-                    _ => app.settings_not_written(now),
+                    Err(e) => {
+                        skyward_sys::kmsg(&format!("the settings were not kept: {e:#}"))?;
+                        keeper.failed();
+                    }
                 }
             }
         }
@@ -2093,11 +2048,22 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(c) = &checker {
             for ev in c.worker.events() {
                 let updates::Event::Checked(answer) = ev else { unreachable!("asking the server downloads nothing") };
-                let have = match &answer {
-                    Ok(Some(release)) => have(&app, release),
-                    _ => Have::Nothing,
-                };
-                app.update_checked(answer, have);
+                let answer = answer.map(|found| match found {
+                    Some(release) => Newest {
+                        version: release.tag.clone(),
+                        newer: true,
+                        build: Some(Build {
+                            name: release.image.name.clone(),
+                            url: release.image.url.clone(),
+                            link: release.image.url.clone(),
+                            size: release.image.size,
+                            sha256: release.sha256(None).unwrap_or_default(),
+                            sums: release.sums.as_ref().map(|s| s.url.clone()),
+                        }),
+                    },
+                    None => Newest { version: skyward_info::BUILD.to_string(), newer: false, build: None },
+                });
+                app.skyward_checked(answer);
                 checked = true;
             }
         }
@@ -2108,21 +2074,30 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(d) = &downloader {
             for ev in d.worker.events() {
                 match ev {
-                    updates::Event::Progress(progress, rate) => app.download_progress(progress, rate),
+                    updates::Event::Progress(progress, rate) => app.skyward_progress(SkywardStage::Download(progress), rate),
                     updates::Event::Ended(end) => {
-                        let release = app.state.newest().context("a download is of the newest recovery")?.clone();
-                        let end = match end {
-                            updates::End::Downloaded => DownloadEnd::Downloaded,
-                            updates::End::Stopped => DownloadEnd::Stopped,
-                            updates::End::Failed(why) => DownloadEnd::Failed(why),
-                        };
-                        skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.image.name))?;
-                        app.download_ended(end, have(&app, &release), now);
+                        match end {
+                            // The build is written over the recovery as soon
+                            // as it is whole.
+                            updates::End::Downloaded => {
+                                let build = app.state.skyward_newest().and_then(|n| n.build.clone());
+                                match (build, info.slot) {
+                                    (Some(build), Some(active)) => {
+                                        app.skyward_progress(SkywardStage::Write { done: 0, total: build.size }, 0);
+                                        let task = updates::Task::Install { path: downloaded_build(&build), active };
+                                        writer = Some(updates::Worker::start(task, servers.clone())?);
+                                    }
+                                    _ => app.skyward_ended(SkywardEnd::NotWritten("the build could not be written".into()), now),
+                                }
+                            }
+                            updates::End::Stopped => app.skyward_ended(SkywardEnd::Stopped, now),
+                            updates::End::Failed(why) => app.skyward_ended(SkywardEnd::Download(why), now),
+                        }
                         fetched = true;
                     }
                     updates::Event::Checked(_)
                     | updates::Event::Writing(..)
-                    | updates::Event::Installed(_)
+                    | updates::Event::Installed { .. }
                     | updates::Event::RomChecked(_)
                     | updates::Event::RomEnded(_) => {
                         unreachable!("a download asks nothing and writes nothing")
@@ -2167,7 +2142,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     updates::Event::Checked(_)
                     | updates::Event::Ended(_)
                     | updates::Event::Writing(..)
-                    | updates::Event::Installed(_)
+                    | updates::Event::Installed { .. }
                     | updates::Event::RomChecked(_) => unreachable!("a ROM download asks nothing and writes nothing"),
                 }
             }
@@ -2179,9 +2154,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(w) = &writer {
             for ev in w.worker.events() {
                 match ev {
-                    updates::Event::Writing(done, total) => app.install_progress(if total == 0 { 0.0 } else { done as f32 / total as f32 }),
-                    updates::Event::Installed(outcome) => {
-                        app.install_ended(outcome.map(drop), now);
+                    updates::Event::Writing(done, total) => app.skyward_progress(SkywardStage::Write { done, total }, 0),
+                    updates::Event::Installed { slots, result } => {
+                        let end = match result {
+                            Ok(()) => SkywardEnd::Updated(slots),
+                            Err(why) => SkywardEnd::WriteFailed(slots, why),
+                        };
+                        app.skyward_ended(end, now);
                         wrote = true;
                     }
                     updates::Event::Checked(_)
@@ -2206,16 +2185,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;
-                    // The data partition now holds the settings if the device
-                    // keeps them there, and the WLAN's saved networks.
-                    if cfg.settings.place == SettingsPlace::Data {
-                        if let Some(saved) = saved_settings(cfg) {
-                            if !wlan_touched {
-                                wlan_wanted = saved.wlan;
-                            }
-                            app.set_saved_settings(saved, true);
-                        }
-                    }
+                    // The data partition now holds the WLAN's saved networks.
                     if !app.state.cloud.pending_save && !app.state.cloud.configured() {
                         if let Some(config) = saved_cloud() {
                             app.cloud_loaded(cloud_settings(&config), true);
@@ -2920,7 +2890,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     Effect::Wlan(on) => {
                         wlan_wanted = on;
-                        wlan_touched = true;
                         wlan_worker(&wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off })
                     }
                     // adbd takes the port a moment after init is asked to restart it; the row tells what came
@@ -2943,7 +2912,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::LeaveWlan => wlan_worker(&wlan)?.send(wlan::Command::Leave),
                     // What the installed system is called is the page's to
                     // report when it cannot be read.
-                    Effect::CheckUpdate => {
+                    Effect::CheckSkyward => {
                         ensure!(checker.is_none(), "the releases are being asked already");
                         let update = cfg.update.as_ref().context("this phone's releases are not known")?;
                         let probe = cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
@@ -2955,20 +2924,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         };
                         checker = Some(updates::Worker::start(task, servers.clone())?);
                     }
-                    Effect::Download(release) => {
+                    // The image goes into the recovery's own folder, which is
+                    // in memory, and is written over the recovery once whole.
+                    Effect::UpdateSkyward(build) => {
                         ensure!(downloader.is_none(), "the image is being downloaded already");
-                        let path = downloaded(&release);
-                        let task = updates::Task::Download { release: release.clone(), sha256: None, path };
+                        ensure!(installer.is_none(), "an installer is running already");
+                        skyward_sys::kmsg(&format!("updating Skyward to {}", build.name))?;
+                        let path = downloaded_build(&build);
+                        let task = updates::Task::Download { build, path };
                         downloader = Some(updates::Worker::start(task, servers.clone())?);
                     }
-                    Effect::StopDownload => downloader.as_ref().context("there is no download to stop")?.stop(),
-                    Effect::InstallRecovery => {
-                        ensure!(writer.is_none(), "the image is being written already");
-                        let release = app.state.newest().context("there is no downloaded image to write")?.clone();
-                        let active = info.slot.context("only an A/B phone has a recovery partition to write")?;
-                        let task = updates::Task::Install { path: downloaded(&release), active };
-                        writer = Some(updates::Worker::start(task, servers.clone())?);
-                    }
+                    Effect::StopSkywardUpdate => downloader.as_ref().context("there is no download to stop")?.stop(),
                     // The ROM's own feed, asked for the newest system it
                     // publishes, and its package downloaded beside the
                     // recovery's.
@@ -3055,20 +3021,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         read_at = Instant::now();
                         info = skyward_info::collect(cfg)?;
                         fastboot = false;
-                        // The settings are read at boot, before this phone has
-                        // the storage they are kept on: fastboot runs without
-                        // it, so what it read was nothing and the pages showed
-                        // their own defaults. They are read again now that the
-                        // storage is there.
-                        let saved = saved_settings(cfg);
-                        if let Some(saved) = &saved {
-                            if !wlan_touched {
-                                wlan_wanted = saved.wlan;
-                            }
-                        }
-                        if let Some(saved) = saved {
-                            app.set_saved_settings(saved, true);
-                        }
                         if wlan_wanted {
                             match &wlan {
                                 Some(w) => w.send(wlan::Command::On),

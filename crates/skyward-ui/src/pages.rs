@@ -1,10 +1,9 @@
 use crate::app::{
-    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, CloudField, CloudState, CloudStatus, Confirm, Damage, Data, Dock,
+    Action, AdbWifi, BackupAt, BackupEnd, BackupJob, ClashChoice, CloudField, CloudState, CloudStatus, Confirm, Damage, Data, Dock,
     DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit,
-    Install, JobEnd, Keys, Pick, Place, Rows, RomCheck, Screen, Slider, Source, State, Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
-    ADB_WIFI_PORT, BACKUP_PARTS,
-    DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED,
-    WIPES, installs,
+    Install, JobEnd, Keys, Pick, Place, Rows, RomCheck, Screen, SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State,
+    Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES,
+    SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -95,6 +94,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::TimeZone => time_zone(cx),
         Screen::Logs => logs(cx),
         Screen::Update => update(cx),
+        Screen::SkywardUpdate => skyward_update(cx),
         Screen::License => license(cx),
         Screen::FontLicense => font_license(cx),
         Screen::Slot => slot(cx),
@@ -196,14 +196,18 @@ const ABOUT: Text = S_ABOUT_PHONE;
 const SPECS: Text = S_ALL_SPECS;
 const LOGS: Text = S_EXPORT_LOGS;
 const SCREEN_TIMEOUT: Text = S_SCREEN_TIMEOUT;
-const RECOVERY_UPDATE: Text = S_RECOVERY_UPDATE;
 const SYSTEM_UPDATE: Text = S_SYSTEM_UPDATE_2;
 const UPDATE: Text = S_UPDATE;
+const SKYWARD_UPDATE: Text = S_SKYWARD_UPDATE;
 const FILES: Text = S_FILE_MANAGER;
 const TERMINAL: Text = S_TERMINAL;
 const TIME_ZONE: Text = S_TIME_ZONE;
 const LICENSE: Text = S_OPEN_SOURCE_LICENSES;
 const FONTS: Text = S_UI_FONTS;
+const CHECKING: Text = S_CHECKING_FOR_UPDATES;
+const CHECK_FOR_UPDATES: Text = S_CHECK_FOR_UPDATES;
+const DOWNLOADING: Text = S_DOWNLOADING;
+const CHECKING_PART: Text = S_VERIFYING_WHAT_WAS_DOWNLOADED;
 
 /// A canvas for a page `h` tall in the colour `bg`, holding the rows `cx`
 /// asks to be drawn.
@@ -339,10 +343,10 @@ pub fn home(cx: &Ctx) -> Frame {
 /// under way, a newer recovery found, or the build this one is.
 fn update_value(cx: &Ctx) -> String {
     let (s, l) = (cx.state, cx.state.lang);
-    if s.downloading() || s.rom_downloading() {
+    if s.rom_downloading() {
         return S_DOWNLOADING.to_string();
     }
-    if s.newest().is_some() || s.rom_newest().is_some() {
+    if s.rom_newest().is_some() {
         return S_NEW_VERSION.to_string();
     }
     fmt::build_date(l, BUILD)
@@ -385,9 +389,33 @@ pub fn settings(cx: &Ctx) -> Frame {
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(TERMINAL).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
     y = widgets::section(&mut c, t, f, debug.bottom, S_ABOUT);
-    let about = widgets::list(&mut c, t, f, y, &[Row::new(ABOUT).trail(Trail::Value(VERSION))]);
-    out.extend(hits(&about.rows, &[Action::Open(Screen::About)]));
+    let mut rows = vec![Row::new(ABOUT).trail(Trail::Value(VERSION))];
+    let mut opens = vec![Action::Open(Screen::About)];
+    if s.offers(Screen::SkywardUpdate) {
+        let row = Row::new(SKYWARD_UPDATE);
+        rows.push(match skyward_value(cx) {
+            Some(value) => row.trail(Trail::Value(value)),
+            None => row,
+        });
+        opens.push(Action::Open(Screen::SkywardUpdate));
+    }
+    let about = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&about.rows, &opens));
     Frame::new(t, fit(c, t, about.bottom), out, SETTINGS, top)
+}
+
+/// What the settings page says beside its Skyward update entry: an update
+/// under way, or a newer release found.
+fn skyward_value(cx: &Ctx) -> Option<&'static str> {
+    let s = cx.state;
+    if s.updating_skyward() {
+        return Some(S_UPDATING);
+    }
+    match (s.skyward_newest(), &s.skyward_job) {
+        (_, Some(SkywardJob { outcome: Some(SkywardEnd::Updated(_)), .. })) => Some(S_UPDATED),
+        (Some(n), _) if n.newer && n.build.is_some() => Some(S_NEW_VERSION),
+        _ => None,
+    }
 }
 
 /// How long the screen stays on with nothing touched, opened from the
@@ -1804,7 +1832,7 @@ pub fn search(cx: &Ctx) -> Frame {
         let how = S_TYPE_THE_NAME_OF_A_FEATURE_OR_PARTITION_SUCH_AS_BACKUP_TO_FIND_BACKUP;
         widgets::footnote(&mut c, t, f, top, how);
     } else {
-        let found = search::find_on(&s.search, l, s.wlan.is_some());
+        let found = search::find_on(&s.search, l, |screen| s.offers(screen));
         if found.is_empty() {
             let typed = s.search.trim();
             let none = crate::t!(S_NOTHING_FOUND_FOR, typed = typed);
@@ -2543,31 +2571,24 @@ pub fn part_work(cx: &Ctx) -> Frame {
 
 const ACTIONS: Text = S_ACTIONS;
 
-/// The system on the phone now; the newest system the phone maker's
-/// server knows, and downloading its full package to install it; and
-/// where an update the system installed stands, merging it into the slot it
-/// went to: how far a merge under way has come, and a swipe to merge one
-/// that waits there for the system to start it.
+/// The system on the phone now; the newest system the phone's ROM
+/// publishes, and downloading its full package to install it; and where an
+/// update the system installed stands, merging it into the slot it went to:
+/// how far a merge under way has come, and a swipe to merge one that waits
+/// there for the system to start it.
 pub fn update(cx: &Ctx) -> Frame {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let (t, f, s) = (cx.t, cx.f, cx.state);
     let mut c = long_page(cx);
     let top = t.m.content_top;
     let mut out = Vec::new();
-    // The recovery this page updates, and the version it is.
-    let mut y = widgets::section_first(&mut c, t, f, top, S_THIS_RECOVERY);
-    y = widgets::info_card(&mut c, t, f, y, &[
-        (S_CURRENT_BUILD, format!("Skyward {VERSION}")),
-        (S_BUILT, fmt::build_date(l, BUILD)),
-    ]);
+    let mut y = top;
     if let Some(rom) = &s.rom {
         let name = &rom.name;
         let heading = crate::t!(S_SYSTEM_UPDATE, name = name);
-        y = widgets::section(&mut c, t, f, y, &heading);
+        y = widgets::section_first(&mut c, t, f, y, &heading);
         y = rom_update(&mut c, cx, y, &mut out);
-    }
-    if s.update_server {
-        y = widgets::section(&mut c, t, f, y, RECOVERY_UPDATE);
-        y = online(&mut c, cx, y, &mut out);
+    } else {
+        y = widgets::footnote(&mut c, t, f, y, S_NO_SYSTEM_UPDATE_IS_OFFERED);
     }
     Frame::new(t, fit(c, t, y), out, UPDATE, top)
 }
@@ -2680,67 +2701,129 @@ fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
     }
 }
 
-/// Asking the fork's releases for a newer recovery, then its image:
-/// downloading it, how far that has come, writing it over this recovery once
-/// it is whole, and what to do next.
-fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
+/// What a progress card says of a download, and the share of it done:
+/// what an earlier download left being checked, or the rest coming at
+/// `rate` bytes a second.
+fn downloaded(_l: Lang, progress: Progress, rate: u64) -> (&'static str, String, Option<f32>) {
+    match progress {
+        Progress::Checking { done, total } => (CHECKING_PART, format!("{} / {}", fmt::file_size(done), fmt::file_size(total)), Some(share(done, total))),
+        Progress::Downloading { done, total } => (
+            DOWNLOADING,
+            format!("{} / {} · {}/s", fmt::file_size(done), fmt::file_size(total), fmt::file_size(rate)),
+            Some(share(done, total)),
+        ),
+    }
+}
+
+/// Skyward's own update: the build running now; Skyward's newest release
+/// on GitHub, and updating to it.
+pub fn skyward_update(cx: &Ctx) -> Frame {
+    let (t, f, _l) = (cx.t, cx.f, cx.state.lang);
+    let mut c = long_page(cx);
+    let top = t.m.content_top;
+    let mut out = Vec::new();
+    let y = widgets::section_first(&mut c, t, f, top, S_THIS_RECOVERY);
+    let y = widgets::info_card(&mut c, t, f, y, &[(S_CURRENT_BUILD, VERSION.to_string())]);
+    let y = widgets::section(&mut c, t, f, y, S_ONLINE_UPDATE);
+    let y = skyward_online(&mut c, cx, y, &mut out);
+    Frame::new(t, fit(c, t, y), out, SKYWARD_UPDATE, top)
+}
+
+/// Asking GitHub for Skyward's newest release, then updating to it: its
+/// build for the phone downloaded and written into the recovery partitions,
+/// how far that has come, and how it ended.
+fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let release = match &s.check {
-        Check::Asking => return widgets::list(c, t, f, y, &[Row::new(S_CHECKING_FOR_UPDATES).trail(Trail::None)]).bottom,
-        Check::Answered(Some(r)) => r,
+    let gap = t.m.card_gap;
+    let newest = match &s.skyward_check {
+        SkywardCheck::Asking => return widgets::list(c, t, f, y, &[Row::new(CHECKING).trail(Trail::None)]).bottom,
+        SkywardCheck::Answered(n) => n,
         other => {
-            let mut row = Row::new(S_CHECK_FOR_UPDATES);
+            let mut row = Row::new(CHECK_FOR_UPDATES);
             if !s.online() {
                 row = row.subtitle(WLAN_FIRST);
             }
             let check = widgets::list(c, t, f, y, &[row]);
-            out.extend(hits(&check.rows, &[Action::CheckUpdate]));
+            out.extend(hits(&check.rows, &[Action::CheckSkyward]));
             return match other {
-                Check::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
-                Check::Answered(None) => {
-                    let none = S_THIS_RECOVERY_IS_THE_NEWEST_ONE_PUBLISHED;
-                    widgets::footnote(c, t, f, check.bottom, none)
-                }
+                SkywardCheck::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
                 _ => check.bottom,
             };
         }
     };
-    // What is published, and how big it is.
-    let build = fmt::build_date(l, &release.published);
-    let size = fmt::file_size(release.image.size);
-    let title = crate::t!(S_NEW_BUILD, build = build);
-    let image = crate::t!(S_RECOVERY_IMAGE_2, size = size);
-    let mut y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Layers).subtitle(&image).trail(Trail::None)]).bottom;
-    if let Some(share) = s.installing {
-        let p = percent(share);
-        let detail = crate::t!(S_WRITTEN, p = p);
-        y = widgets::progress_card(c, t, f, y + t.m.card_gap, S_WRITING_2, &detail, Some(share));
+    let version = &newest.version;
+    let (title, detail) = match (newest.newer, &newest.build) {
+        (true, Some(build)) => {
+            let size = fmt::file_size(build.size);
+            (crate::t!(S_NEW_VERSION_NAMED, version = version), crate::t!(S_PACKAGE_SIZE, size = size))
+        }
+        (true, None) => (crate::t!(S_NEW_VERSION_NAMED, version = version), S_NO_PACKAGE_FOR_THIS_PHONE.to_string()),
+        (false, _) => (S_UP_TO_DATE.to_string(), crate::t!(S_THE_NEWEST_RELEASE_IS, version = version)),
+    };
+    let y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Install).subtitle(&detail).trail(Trail::None)]).bottom;
+    if !newest.newer || newest.build.is_none() {
         return y;
     }
-    if let Some(outcome) = &s.installed {
-        let said = match outcome {
-            Ok(()) => S_WRITTEN_A_RESTART_BRINGS_UP_THE_NEW_ONE_2.to_string(),
-            Err(why) => fmt::install_failed(l, why),
-        };
-        y = widgets::footnote(c, t, f, y, &said);
-        if outcome.is_ok() {
-            let restart = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(S_RESTART_INTO_RECOVERY).trail(Trail::None)]);
+    match &s.skyward_job {
+        Some(job) if job.outcome.is_none() => {
+            let (heading, detail, share) = match job.stage {
+                None => (S_GETTING_READY, String::new(), None),
+                Some(SkywardStage::Download(p)) => downloaded(l, p, job.rate),
+                Some(SkywardStage::Write { done, total }) => {
+                    let part = share(done, total);
+                    let p = percent(part);
+                    (S_WRITING_THE_RECOVERY_PARTITIONS, crate::t!(S_DONE_PERCENT, p = p), Some(part))
+                }
+            };
+            let y = widgets::progress_card(c, t, f, y + gap, heading, &detail, share);
+            if matches!(job.stage, Some(SkywardStage::Write { .. })) {
+                return widgets::footnote(c, t, f, y, S_DONT_POWER_OFF_UNTIL_ITS_WRITTEN);
+            }
+            let stop = widgets::list(c, t, f, y + gap, &[Row::new(if job.stopping { STOPPING } else { STOP }).trail(Trail::None)]);
+            if !job.stopping {
+                out.extend(hits(&stop.rows, &[Action::StopSkywardUpdate]));
+            }
+            stop.bottom
+        }
+        Some(SkywardJob { outcome: Some(SkywardEnd::Updated(slots)), .. }) => {
+            let names = fmt::slots(l, slots);
+            let detail = if slots.len() == 1 {
+                crate::t!(S_SKYWARD_VERSION_IS_IN_THE_RECOVERY_PARTITION, version = version, names = names)
+            } else {
+                crate::t!(S_SKYWARD_VERSION_IS_IN_THE_RECOVERY_PARTITIONS, version = version, names = names)
+            };
+            let y = widgets::list(c, t, f, y + gap, &[standing(S_UPDATED, GREEN, Icon::Install, &detail)]).bottom;
+            let restart = widgets::list(c, t, f, y + gap, &[Row::new(S_REBOOT_TO_RECOVERY).icon(ORANGE, Icon::Power)]);
             out.extend(hits(&restart.rows, &[Action::RebootTo(Target::Recovery)]));
-            y = restart.bottom;
+            restart.bottom
         }
-        return y;
-    }
-    match (&s.download, s.have) {
-        (Some(job), _) if job.outcome.is_none() => y = download_under_way(c, cx, y, out, job, Action::StopDownload),
-        (_, Have::Whole(_)) => {
-            let row = Row::new(S_WRITE_IT).subtitle(S_DOWNLOADED_TO_INTERNAL_STORAGE_IT_IS_CHECKED_AND_WRITTEN_OVER_THIS_RECOVERYS_PARTITION);
-            let install = widgets::list(c, t, f, y + t.m.card_gap, &[row]);
-            out.extend(hits(&install.rows, &[Action::InstallRecovery]));
-            y = install.bottom;
+        job => {
+            let mut y = y;
+            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
+                Some(SkywardEnd::Stopped) => y = widgets::footnote(c, t, f, y, S_DOWNLOAD_STOPPED),
+                Some(SkywardEnd::Download(why)) => y = widgets::footnote(c, t, f, y, &fmt::skyward_download_failure(l, why)),
+                Some(SkywardEnd::NotWritten(why)) => {
+                    y = widgets::footnote(c, t, f, y, S_COULDNT_UPDATE_NOTHING_WAS_WRITTEN);
+                    y = widgets::footnote(c, t, f, y, why);
+                }
+                Some(SkywardEnd::WriteFailed(slots, why)) => {
+                    let names = fmt::slots(l, slots);
+                    let warning = crate::t!(S_THE_RECOVERY_PARTITIONS_OF_WERE_ONLY_PARTLY_WRITTEN, names = names);
+                    y = widgets::footnote(c, t, f, y, &warning);
+                    y = widgets::footnote(c, t, f, y, why);
+                }
+                Some(SkywardEnd::Updated(_)) => unreachable!("an update that went in shows how it did"),
+                None => {}
+            }
+            let mut row = Row::new(S_DOWNLOAD_AND_UPDATE);
+            if !s.online() {
+                row = row.subtitle(WLAN_FIRST);
+            }
+            let update = widgets::list(c, t, f, y + gap, &[row]);
+            out.extend(hits(&update.rows, &[Action::UpdateSkyward]));
+            update.bottom
         }
-        (job, have) => y = download_offer(c, cx, y, out, have, job.as_ref(), Action::Download),
     }
-    y
 }
 
 /// The WLAN switch; then the network chosen and how joining it goes, and
@@ -2793,7 +2876,8 @@ pub fn wlan(cx: &Ctx) -> Frame {
                     }
                     // adbd on the network joined, so a computer reaches the recovery with no cable. Not while a
                     // package is being written: restarting adbd ends the transfer.
-                    if s.installing.is_none() {
+                    let busy = !matches!(s.install, Install::Idle | Install::Finished { .. }) || s.updating_skyward();
+                    if !busy {
                         let on = matches!(s.adb_wifi, AdbWifi::On);
                         let hint = match &s.adb_wifi {
                             AdbWifi::Off => String::new(),

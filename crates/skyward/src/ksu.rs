@@ -168,7 +168,7 @@ fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: 
             tell(Stage::Downloading { done, total });
         }
     };
-    download::fetch(&agent, &release.asset.url, &apk, &sha256, &AtomicBool::new(false), &mut progress)
+    download::fetch(&agent, &release.asset.url, &apk, &download::Sum::Sha256(sha256.clone()), &AtomicBool::new(false), &mut progress)
         .map_err(|e| failed(Stage::Downloading { done: 0, total: release.asset.size }, format!("{e:#}")))?;
     Ok(Got { apk, apk_sha256: Some(sha256), flavor: task.flavor, tag: release.tag })
 }

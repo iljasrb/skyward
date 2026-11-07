@@ -12,8 +12,8 @@ branch: it carries the code, not one phone's files. Device branches add a
 
 - Payload/OTA tooling
 - Root boot image patching
-- Recovery updates
-- Installer compatibility/hardening
+- Recovery updates from the fork's own releases
+- Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
 - Safety fixes
 - Separated locales
@@ -26,7 +26,9 @@ branch: it carries the code, not one phone's files. Device branches add a
   storage, a USB drive or adb sideload
 - Take boot, init_boot, vendor_boot, recovery, dtbo and vbmeta images out of a
   system package
+- `7za` and `zstd` for install scripts, which ROMs with a super image compressed by zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it
 - Online system updates
+- Skyward's own updates, from its newest release on GitHub
 - Backup and restore
 - Wipe data and factory reset
 - Mount partitions, repair and format filesystems
