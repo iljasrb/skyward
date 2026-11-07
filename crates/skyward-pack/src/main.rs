@@ -118,10 +118,17 @@ fn main() -> Result<()> {
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
+            // Install scripts look for the commands a stock recovery lacks
+            // among its programs, and its unzip there too, a link to ziptool
+            // until it points here; the recovery binary is each of them.
+            let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
+            for command in paths::COMMANDS {
+                rd.link(command, recovery)?;
+            }
             // The recovery binary answers to the names install scripts use
             // for the tools a recovery gives them.
-            rd.put_symlink("system/bin/avbctl", "recovery")?;
-            rd.put_symlink("system/bin/resetprop", "recovery")?;
+            rd.link("system/bin/avbctl", recovery)?;
+            rd.link("system/bin/resetprop", recovery)?;
             if let Some(tools) = &tools {
                 add_tools(&mut rd, tools)?;
             }
@@ -257,6 +264,9 @@ fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
             bail!("{} holds recovery, which is the recovery binary itself", dir.display());
         }
         let meta = std::fs::symlink_metadata(&path).with_context(|| format!("look at {}", path.display()))?;
+        if name.starts_with('.') {
+            continue;
+        }
         if meta.file_type().is_symlink() {
             let target = std::fs::read_link(&path).with_context(|| format!("read the link {}", path.display()))?;
             rd.put_symlink(&format!("system/bin/{name}"), &target.to_string_lossy())?;
@@ -370,19 +380,6 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         assert!(partition_size(&path).is_err(), "too short to end in a footer");
     }
 
-    #[test]
-    fn the_tools_are_the_ones_their_readme_names() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tools");
-        for (name, want) in [
-            ("7za", "9fcf394605239be338075856f40277397cf8c5f497226ad45764ca9013c703d9"),
-            ("zstd", "b2b5618b51c0a9c5913b7d67a6fd2f50edc57293d8eb6a6c270cf994f9601720"),
-        ] {
-            let got = Sha256::digest(std::fs::read(dir.join(name)).unwrap());
-            let got: String = got.iter().map(|b| format!("{b:02x}")).collect();
-            assert_eq!(got, want, "{name}");
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn tools_are_put_in_system_bin() {
@@ -394,7 +391,7 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         let seven = rd.find("system/bin/7za").expect("the program is there");
         assert_eq!((seven.mode, seven.data.as_slice()), (0o100755, b"seven".as_slice()));
         let link = rd.find("system/bin/zstd").expect("the link is there");
-        assert_eq!((link.mode, link.data.as_slice()), (0o120777, b"recovery".as_slice()));
+        assert_eq!((link.mode, link.data.as_slice()), (0o120755, b"recovery".as_slice()));
     }
 
     #[test]

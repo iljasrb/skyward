@@ -14,8 +14,8 @@ MTP and adb.
 
 - Payload/OTA tooling
 - Root boot image patching
-- Recovery updates
-- Installer compatibility/hardening
+- Recovery updates from the fork's own releases
+- Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
 - Safety fixes
 - Separated locales

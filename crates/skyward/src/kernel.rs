@@ -217,7 +217,7 @@ fn acquire(task: &Task, servers: Servers, tell: &mut dyn FnMut(Stage), private: 
             tell(Stage::Downloading { done, total });
         }
     };
-    download::fetch(&agent, &image_url, &image, &sha256, &AtomicBool::new(false), &mut progress)
+    download::fetch(&agent, &image_url, &image, &download::Sum::Sha256(sha256.clone()), &AtomicBool::new(false), &mut progress)
         .map_err(|e| failed(Stage::Downloading { done: 0, total: 0 }, format!("{e:#}")))?;
     let (manager, manager_note) = if task.plugin.manager_name.is_some() {
         let urls = [sources.manager_url(), sources.manager_url_main()];

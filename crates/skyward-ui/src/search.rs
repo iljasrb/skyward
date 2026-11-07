@@ -65,7 +65,7 @@ pub const ENTRIES: &[Entry] = &[
         S_UPDATE,
         ADVANCED,
         Screen::Update,
-        &["recoverygengxin", "rcgx", "gengxin", "gx", "skyward", "recovery", "update", "xiazai", "xz", "download"],
+        &["gengxin", "gx", "update", "xiazai", "xz", "download"],
     ),
     #[cfg(feature = "roots")]
     entry(
@@ -92,6 +92,12 @@ pub const ENTRIES: &[Entry] = &[
     entry(S_REBOOT, HOME, Screen::Reboot, &["chongqi", "cq", "reboot", "fastboot", "bootloader", "edl", "guanji"]),
     entry(S_BOOT_SLOT, S_REBOOT, Screen::Slot, &["qidongcaowei", "qdcw", "caowei", "cw", "slot"]),
     entry(S_ABOUT_PHONE, SETTINGS, Screen::About, &["guanyubenji", "gybj", "about", "banben", "version"]),
+    entry(
+        S_SKYWARD_UPDATE,
+        SETTINGS,
+        Screen::SkywardUpdate,
+        &["skywardgengxin", "skywardgx", "shengji", "xiazai", "update", "upgrade", "release", "github"],
+    ),
     entry(
         S_ALL_SPECS,
         S_SETTINGS_ABOUT_PHONE,
@@ -149,10 +155,10 @@ pub fn find(query: &str, _l: Lang) -> Vec<&'static Entry> {
     found.into_iter().map(|(_, _, e)| e).collect()
 }
 
-/// What [`find`] finds that the phone has: a phone whose WLAN the recovery
-/// does not bring up has no WLAN page.
-pub fn find_on(query: &str, l: Lang, wlan: bool) -> Vec<&'static Entry> {
-    find(query, l).into_iter().filter(|e| wlan || e.screen != Screen::Wlan).collect()
+/// What [`find`] finds that the phone has, as `offers` tells of each page:
+/// a phone whose WLAN the recovery does not bring up has no WLAN page.
+pub fn find_on(query: &str, l: Lang, offers: impl Fn(Screen) -> bool) -> Vec<&'static Entry> {
+    find(query, l).into_iter().filter(|e| offers(e.screen)).collect()
 }
 
 #[cfg(test)]
@@ -180,9 +186,15 @@ mod tests {
     #[test]
     fn the_wlan_is_found_where_the_phone_has_it() {
         assert_eq!(titles("wifi"), ["Wi-Fi"]);
-        assert_eq!(find_on("wlan", Lang::En, true).iter().map(|e| e.title).collect::<Vec<_>>(), ["Wi-Fi"]);
-        assert!(find_on("wlan", Lang::En, false).is_empty());
+        assert_eq!(find_on("wlan", Lang::En, |_| true).iter().map(|e| e.title).collect::<Vec<_>>(), ["Wi-Fi"]);
+        assert!(find_on("wlan", Lang::En, |s| s != Screen::Wlan).is_empty());
         assert_eq!(titles("download"), ["Update"]);
+    }
+
+    #[test]
+    fn skyward_is_updated_from_its_own_page() {
+        assert_eq!(titles("skyward"), ["Skyward update"]);
+        assert!(find_on("skyward", Lang::En, |s| s != Screen::SkywardUpdate).is_empty());
     }
 
     #[test]

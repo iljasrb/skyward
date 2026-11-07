@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
-use skyward_net::release::{self, Release, Unanswered};
+use skyward_net::release::{self, Build, Release, Unanswered};
 use skyward_net::rom;
 use skyward_sys::worker;
 use skyward_vab::Slot;
@@ -35,9 +35,9 @@ pub enum Task {
     /// the page that tells whether the network joined reaches the internet,
     /// says whether the network is why.
     Check { repo: String, asset: String, build: String, probe: String },
-    /// Download `release`'s image to `path`, checked against the SHA-256 the
-    /// release publishes; `sha256` is that, where it is already known.
-    Download { release: Release, sha256: Option<String>, path: PathBuf },
+    /// Download `build`'s image to `path`, checked against the SHA-256 the
+    /// release publishes, or the sums file names.
+    Download { build: Build, path: PathBuf },
     /// Write the image at `path` over the recovery partitions: the one the
     /// phone runs `active` from, and the other when it holds this recovery.
     Install { path: PathBuf, active: Slot },
@@ -58,8 +58,8 @@ pub enum Event {
     Ended(End),
     /// How many bytes of how many were written and read back.
     Writing(u64, u64),
-    /// The slots written, or why they could not be.
-    Installed(Result<Vec<Slot>, String>),
+    /// The slots written, and why they could not be, where that is why.
+    Installed { slots: Vec<Slot>, result: Result<(), String> },
     /// What the ROM's feed says of its newest system: none while the system
     /// installed is as new.
     RomChecked(Result<rom::Answer, Unanswered>),
@@ -115,27 +115,26 @@ impl Worker {
                     }
                     say(Event::Checked(answer));
                 }
-                Task::Download { release, sha256, path } => {
-                    let mut remote = Remote::of_release(&release);
-                    if sha256.is_some() {
-                        remote.sha256 = sha256;
-                    }
-                    let end = fetch(&servers, remote, &path, &stopping, &using, &say);
+                Task::Download { build, path } => {
+                    let end = fetch(&servers, Remote::of_build(&build), &path, &stopping, &using, &say);
                     say(Event::Ended(end));
                 }
                 Task::Install { path, active } => {
                     let mut told = Instant::now() - PROGRESS_EVERY;
-                    let written = recovery::slots(active).and_then(|slots| {
-                        recovery::install(&path, &slots, &mut |done, total| {
+                    let slots = recovery::slots(active);
+                    let result = match &slots {
+                        Ok(slots) => recovery::install(&path, slots, &mut |done, total| {
                             if done == total || told.elapsed() >= PROGRESS_EVERY * 5 {
                                 told = Instant::now();
                                 say(Event::Writing(done, total));
                             }
                         })
-                        .map(|()| slots)
-                    });
-                    let _ = skyward_sys::kmsg(&format!("writing {}: {written:?}", path.display()));
-                    say(Event::Installed(written.map_err(|e| format!("{e:#}"))));
+                        .map_err(|e| format!("{e:#}")),
+                        Err(e) => Err(format!("{e:#}")),
+                    };
+                    let slots = slots.unwrap_or_default();
+                    let _ = skyward_sys::kmsg(&format!("writing {}: {result:?}", path.display()));
+                    say(Event::Installed { slots, result });
                 }
                 Task::RomCheck { feed, installed, flavor, probe } => {
                     let on_this_rom = rom::is_this_rom(
@@ -216,13 +215,13 @@ struct Remote {
 }
 
 impl Remote {
-    fn of_release(release: &Release) -> Remote {
+    fn of_build(build: &Build) -> Remote {
         Remote {
-            name: release.image.name.clone(),
-            url: release.image.url.clone(),
-            size: release.image.size,
-            sha256: release.sha256(None),
-            sums: release.sums.as_ref().map(|sums| sums.url.clone()),
+            name: build.name.clone(),
+            url: build.url.clone(),
+            size: build.size,
+            sha256: (!build.sha256.is_empty()).then(|| build.sha256.clone()),
+            sums: build.sums.clone(),
         }
     }
 
@@ -314,7 +313,7 @@ fn fetch(
                 tell(Event::Progress(p, rate));
             }
         };
-        let result = download::fetch(&a, &remote.url, path, &sha256, stop, &mut progress);
+        let result = download::fetch(&a, &remote.url, path, &download::Sum::Sha256(sha256), stop, &mut progress);
         // How far it came shows in the end, whatever stopped it.
         let done = samples.last().map_or(0, |&(_, done)| done);
         tell(Event::Progress(Progress::Downloading { done, total: remote.size }, 0));

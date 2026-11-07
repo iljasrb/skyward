@@ -17,6 +17,12 @@ pub mod ramdisk {
     pub const MONO_LICENSE: &str = "skyward/KirkMono-OFL.txt";
     /// The recovery service binary init starts.
     pub const RECOVERY: &str = "system/bin/recovery";
+    /// The commands install scripts written for other recoveries run that
+    /// Skyward answers itself: 7za and zstd, which a stock recovery does not
+    /// carry, and unzip, whose stock version holds all that `-p` takes out in
+    /// memory. Each is a link to the recovery service binary beside it, which
+    /// runs the command it is started as.
+    pub const COMMANDS: [&str; 3] = ["system/bin/7za", "system/bin/unzip", "system/bin/zstd"];
     /// The first property file init loads in recovery mode.
     pub const PROP_DEFAULT: &str = "prop.default";
     /// The scheduling profiles libprocessgroup reads.
@@ -41,9 +47,6 @@ pub struct DeviceConfig {
     pub touch: Touch,
     #[serde(default)]
     pub partitions: Partitions,
-    /// Where the recovery keeps its own settings.
-    #[serde(default)]
-    pub settings: Settings,
     /// Where the firmware the phone's drivers ask for is, on phones whose
     /// recovery leaves it out of their reach.
     #[serde(default)]
@@ -403,26 +406,6 @@ pub struct Partitions {
     pub mounted: Vec<String>,
 }
 
-/// Where the recovery keeps the settings the user changes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-pub struct Settings {
-    #[serde(default)]
-    pub place: SettingsPlace,
-}
-
-/// The partition the recovery keeps its settings on.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SettingsPlace {
-    /// The vendor persist partition, which opens before the data partition
-    /// and no reset wipes.
-    Vendor,
-    /// The data partition, which opens once the user answers the decrypt
-    /// page.
-    #[default]
-    Data,
-}
-
 /// A program from the phone's own partitions that the recovery keeps
 /// running, such as the touch processing of a panel that hands raw frames
 /// to the host.
@@ -569,6 +552,22 @@ fn default_os_version_prop() -> String {
 
 fn default_module_sources() -> Vec<String> {
     vec!["vendor_boot".into(), "vendor_dlkm".into(), "vendor".into()]
+}
+
+/// The phone a device configuration is for, read on its own: the
+/// configuration a newer build of Skyward carries may hold what this build
+/// does not read.
+pub fn codename(text: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Named {
+        device: NamedDevice,
+    }
+    #[derive(Deserialize)]
+    struct NamedDevice {
+        codename: String,
+    }
+    let named: Named = toml::from_str(text).context("parse device config")?;
+    Ok(named.device.codename)
 }
 
 impl DeviceConfig {
@@ -718,6 +717,14 @@ impl DeviceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_commands_sit_beside_the_recovery_service_binary() {
+        let folder = |path: &str| Path::new(path).parent().map(Path::to_path_buf);
+        for command in ramdisk::COMMANDS {
+            assert_eq!(folder(command), folder(ramdisk::RECOVERY), "{command}");
+        }
+    }
 
     #[test]
     fn parses_minimal() {
@@ -896,17 +903,15 @@ mod tests {
         assert!(with("").is_err());
         assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap().partitions.mounted.is_empty(), "a phone may need none");
     }
+
     #[test]
-    fn the_settings_are_kept_where_the_device_says() {
-        let with = |place: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[settings]\nplace = \"{place}\"\n"));
-        assert_eq!(with("vendor").unwrap().settings.place, SettingsPlace::Vendor);
-        assert_eq!(with("data").unwrap().settings.place, SettingsPlace::Data);
-        assert!(with("sdcard").is_err(), "shared storage is no place for settings");
-        assert_eq!(
-            DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap().settings.place,
-            SettingsPlace::Data,
-            "a phone that says nothing keeps them on the data partition"
-        );
+    fn the_phone_is_read_from_a_configuration_this_build_cannot_read_whole() {
+        let whole = "[device]\ncodename = \"ishtar\"\nab = \"no longer a switch\"\n[display]\nwidth = \"wide\"\n[aurora]\nnew = 1\n";
+        assert_eq!(codename(whole).unwrap(), "ishtar");
+        let later = "[device]\ncodename = \"x\"\nab = \"no longer a switch\"\n[display]\nwidth = \"wide\"\n[aurora]\nnew = 1\n";
+        assert!(DeviceConfig::parse(later).is_err());
+        assert_eq!(codename(later).unwrap(), "x");
+        assert!(codename("[display]\nwidth = 1440\n").is_err(), "a configuration that names no phone");
     }
 
     #[test]
