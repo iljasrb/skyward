@@ -63,6 +63,22 @@ pub fn system_limit(db: &Path) -> Option<u8> {
     value("charging_control_charging_limit")?.parse().ok()
 }
 
+/// The limit kept from the last time the data partition was open, where the
+/// phone's configuration names a file for it: none while the file is missing,
+/// and none while it says the system keeps none.
+pub fn cached(path: &Path) -> Option<u8> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Keep `limit` for the next start, or that the system keeps none.
+pub fn cache(path: &Path, limit: Option<u8>) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    let text = limit.map_or_else(|| "off".to_string(), |limit| limit.to_string());
+    fs::write(path, text).with_context(|| format!("write {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +100,17 @@ mod tests {
         assert_eq!(read(), "1", "below the hysteresis");
         switch.keep(100, None).unwrap();
         assert_eq!(read(), "1", "no limit");
+    }
+
+    #[test]
+    fn the_limit_kept_is_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skyward/charge-limit");
+        assert_eq!(cached(&path), None, "nothing kept yet");
+        cache(&path, Some(78)).unwrap();
+        assert_eq!(cached(&path), Some(78));
+        cache(&path, None).unwrap();
+        assert_eq!(cached(&path), None, "the system keeps none");
     }
 
     #[test]
