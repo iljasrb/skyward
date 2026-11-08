@@ -1640,17 +1640,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             // refresh.
             surface.speed_up()?;
             rested_at = None;
-        } else if surface.is_on() {
-            // With the backlight off, the panel rests, and the touch
-            // controller following it stops drawing power.
-            surface.rest()?;
-            rested_at = Some(Instant::now());
-        } else if rested_at.is_some_and(|at| at.elapsed() >= REST) {
-            // Rested long enough, the display goes off: the panel and the
-            // display processor feeding it stop drawing power.
-            surface.turn_off()?;
-            rested_at = None;
         }
+        // The panel is left on with the backlight off, which is how the
+        // fork has always turned the screen off. Upstream rests it in its
+        // low-power mode and then turns the display off; bronco's panel goes
+        // into that mode and does not come back from it, the display
+        // scanning out again with the backlight lit and the panel dark, so
+        // neither is done here. `Surface::rest` and `Surface::turn_off` stay
+        // for a panel whose low-power mode is known to come back.
         // A page at rest draws the rows it has yet to while nothing else
         // is to be done, a band at a time, looking for input between bands.
         let ahead = panel.is_some() && !shown && app.draw_ahead(&fonts, &info);
