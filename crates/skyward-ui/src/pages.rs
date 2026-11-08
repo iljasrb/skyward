@@ -421,6 +421,22 @@ pub fn settings(cx: &Ctx) -> Frame {
     out.extend(hits(&usb.rows, &[Action::Toggle(Switch::FileTransfer)]));
     let note = S_WHEN_ON_A_COMPUTER_CAN_MANAGE_THE_FILES_IN_INTERNAL_STORAGE_ONCE_IT_IS_DECRYPTED;
     y = widgets::footnote(&mut c, t, f, usb.bottom, note);
+
+    if s.charging_available {
+        y = widgets::section(&mut c, t, f, y, S_BATTERY);
+        let at = match (s.respect_charge_limit, s.charge_limit) {
+            (false, _) => S_OFF.to_string(),
+            (true, Some(limit)) => crate::t!(S_AT_PERCENT, limit = limit),
+            (true, None) => S_THE_SYSTEM_KEEPS_NONE.to_string(),
+        };
+        let row = Row::new(S_RESPECT_ANDROIDS_CHARGING_LIMIT)
+            .icon(GREEN, Icon::Battery)
+            .subtitle(&at)
+            .trail(Trail::Switch(s.respect_charge_limit));
+        let charging = widgets::list(&mut c, t, f, y, &[row]);
+        out.extend(hits(&charging.rows, &[Action::Toggle(Switch::RespectChargeLimit)]));
+        y = widgets::footnote(&mut c, t, f, charging.bottom, S_THE_RECOVERY_STOPS_CHARGING_AT_THE_SYSTEMS_LIMIT_AND_STARTS_AGAIN_A_FEW_PERCENT_BELOW_IT);
+    }
     y = widgets::section(&mut c, t, f, y, S_DEBUGGING);
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(TERMINAL).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));

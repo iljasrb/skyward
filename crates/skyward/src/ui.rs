@@ -43,6 +43,7 @@ use skyward_ui::app::{
     PartStop, Place, RenameRefused, RomState, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe,
     DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
 };
+use crate::charging;
 use skyward_ui::settings::Keeper;
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang, Surface};
@@ -1094,6 +1095,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     };
     let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
     app.set_screen_corners(cfg.display.corner_radius as f32);
+    // The switch the phone's kernel takes for charging, and the database the
+    // phone's own system keeps its limit in, where the configuration names
+    // them.
+    let mut charging = cfg.charging.as_ref().map(|c| charging::Switch::new(&c.switch));
+    app.state.charging_available = charging.is_some();
+    let charge_db = cfg.charging.as_ref().and_then(|c| c.system.clone());
     // The kernels this phone's own configuration adds to the root page; a
     // phone without any keeps the two methods every build carries.
     #[cfg(feature = "roots")]
@@ -1485,6 +1492,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             match reading {
                 Reading::Status(battery, usb, at) => {
                     let battery = battery?;
+                    if let (Some(switch), Some(battery)) = (&mut charging, &battery) {
+                        let limit = if app.state.respect_charge_limit { app.state.charge_limit } else { None };
+                        switch.keep(battery.level, limit)?;
+                    }
                     if asked.is_some_and(|asked| at >= asked) {
                         asked = None;
                     }
@@ -1497,6 +1508,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 }
                 Reading::All(all, at) => {
                     let all = (*all)?;
+                    if let (Some(switch), Some(battery)) = (&mut charging, &all.battery) {
+                        let limit = if app.state.respect_charge_limit { app.state.charge_limit } else { None };
+                        switch.keep(battery.level, limit)?;
+                    }
                     if asked.is_some_and(|asked| at >= asked) {
                         asked = None;
                     }
@@ -2312,6 +2327,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;
+                    // The system keeps its charge limit on the data partition.
+                    if app.state.respect_charge_limit {
+                        let limit = charge_db.as_deref().and_then(|db| charging::system_limit(Path::new(db)));
+                        app.set_charge_limit(limit);
+                    }
                     // The supplicant keeps its networks in memory until the
                     // data partition is open: it reads the ones saved there
                     // now, and joins one.
@@ -2776,6 +2796,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         }
                     },
                     Effect::ReadMounts => app.set_mounts(mounts()),
+                    Effect::ReadChargeLimit => {
+                        let limit = charge_db.as_deref().and_then(|db| charging::system_limit(Path::new(db)));
+                        app.set_charge_limit(limit);
+                    }
                     Effect::ReadSlots => app.set_boot_slots(read_slots()),
                     Effect::SetSlot(slot) => app.slot_switched(set_slot(slot), now),
                     Effect::ReadSystems => systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Read),

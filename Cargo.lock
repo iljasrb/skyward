@@ -2269,6 +2269,7 @@ dependencies = [
  "formatx",
  "libc",
  "procfs",
+ "rusqlite",
  "skyward-backup",
  "skyward-binder",
  "skyward-block",

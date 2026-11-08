@@ -1,0 +1,105 @@
+//! Keeping to the charge limit the phone's own system keeps, while the
+//! recovery runs.
+//!
+//! The system enforces its limit from its own services, which a recovery does
+//! not run: a phone booted into the recovery charges to the battery's full
+//! whatever the system's limit says. The kernel takes a switch for it, which
+//! the phone's configuration names, and the system keeps the limit itself in
+//! a settings database, which is read here.
+
+use anyhow::{Context, Result};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// How far below the limit the battery falls before charging starts again,
+/// so that it does not stop and start at every percent.
+const HYSTERESIS: u8 = 3;
+
+/// The kernel switch that stops and starts charging: 0 stops it, 1 starts it.
+pub struct Switch {
+    path: PathBuf,
+    /// Charging is stopped by this.
+    stopped: bool,
+}
+
+impl Switch {
+    pub fn new(path: impl Into<PathBuf>) -> Switch {
+        Switch { path: path.into(), stopped: false }
+    }
+
+    /// Keep to `limit`: stop charging at it, and start again a few percent
+    /// below. `None` starts charging and keeps it going.
+    pub fn keep(&mut self, level: u8, limit: Option<u8>) -> Result<()> {
+        match limit {
+            Some(limit) if level >= limit => self.write(true),
+            Some(limit) if level.saturating_add(HYSTERESIS) <= limit => self.write(false),
+            Some(_) => Ok(()),
+            None => self.write(false),
+        }
+    }
+
+    fn write(&mut self, stop: bool) -> Result<()> {
+        if stop == self.stopped {
+            return Ok(());
+        }
+        fs::write(&self.path, if stop { "0" } else { "1" })
+            .with_context(|| format!("write {}", self.path.display()))?;
+        self.stopped = stop;
+        Ok(())
+    }
+}
+
+/// The limit the phone's own system keeps, where it has one: a LineageOS
+/// settings database, whose `system` table holds `charging_control_enabled`
+/// and `charging_control_charging_limit`.
+pub fn system_limit(db: &Path) -> Option<u8> {
+    let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let value = |name: &str| -> Option<String> {
+        conn.query_row("select value from system where name = ?1", [name], |row| row.get(0)).ok()
+    };
+    if value("charging_control_enabled").as_deref() != Some("1") {
+        return None;
+    }
+    value("charging_control_charging_limit")?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_switch_stops_at_the_limit_and_starts_below_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("charging_enabled");
+        fs::write(&path, "1").unwrap();
+        let mut switch = Switch::new(&path);
+        let read = || fs::read_to_string(&path).unwrap();
+        switch.keep(77, Some(78)).unwrap();
+        assert_eq!(read(), "1", "below the limit");
+        switch.keep(78, Some(78)).unwrap();
+        assert_eq!(read(), "0", "at the limit");
+        switch.keep(76, Some(78)).unwrap();
+        assert_eq!(read(), "0", "within the hysteresis");
+        switch.keep(75, Some(78)).unwrap();
+        assert_eq!(read(), "1", "below the hysteresis");
+        switch.keep(100, None).unwrap();
+        assert_eq!(read(), "1", "no limit");
+    }
+
+    #[test]
+    fn a_database_without_a_limit_reads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lineagesettings.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "create table system (name text, value text);
+             insert into system values ('charging_control_enabled', '1');
+             insert into system values ('charging_control_charging_limit', '78');",
+        )
+        .unwrap();
+        assert_eq!(system_limit(&db), Some(78));
+        conn.execute("update system set value = '0' where name = 'charging_control_enabled'", []).unwrap();
+        assert_eq!(system_limit(&db), None, "the limit is off");
+        assert_eq!(system_limit(&dir.path().join("missing.db")), None);
+    }
+}

@@ -882,6 +882,8 @@ pub enum Switch {
     Wlan,
     /// Have adbd listened to on the network joined, so a computer reaches the recovery without a cable.
     AdbWifi,
+    /// Keep to the charge limit the phone's own system keeps.
+    RespectChargeLimit,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
 }
@@ -1982,6 +1984,14 @@ pub struct State {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// Keep to the charge limit the phone's own system keeps, while the
+    /// recovery runs.
+    pub respect_charge_limit: bool,
+    /// The limit the system keeps, once it has been read: none while it
+    /// keeps none.
+    pub charge_limit: Option<u8>,
+    /// The phone's kernel takes a switch that stops and starts charging.
+    pub charging_available: bool,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -2171,6 +2181,9 @@ impl Default for State {
             vibrate: true,
             vibration: SLIDER_START,
             file_transfer: true,
+            respect_charge_limit: false,
+            charge_limit: None,
+            charging_available: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,
@@ -2397,6 +2410,9 @@ pub enum Effect {
     Cancel,
     /// Read the slot's partitions for the mount page, which has just opened.
     ReadMounts,
+    /// Read the charge limit the phone's own system keeps, telling it with
+    /// [`App::set_charge_limit`].
+    ReadChargeLimit,
     /// Read what the boot control holds of the slots, telling it with
     /// [`App::set_boot_slots`].
     ReadSlots,
@@ -3759,6 +3775,15 @@ impl App {
 
     /// The runtime read the mount table again, or could not: keep it and
     /// show it if it changed.
+    /// The limit the phone's own system keeps, or none.
+    pub fn set_charge_limit(&mut self, limit: Option<u8>) {
+        if self.state.charge_limit == limit {
+            return;
+        }
+        self.state.charge_limit = limit;
+        self.refresh();
+    }
+
     pub fn set_mounts(&mut self, mounts: Result<Vec<MountRow>, String>) {
         if self.state.mounts != mounts {
             self.state.mounts = mounts;
@@ -5993,12 +6018,16 @@ impl App {
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                     Switch::AdbWifi => unreachable!("the adb over the network switch is turned above"),
+                    Switch::RespectChargeLimit => &mut self.state.respect_charge_limit,
                 };
                 *on = !*on;
                 let now_on = *on;
                 self.refresh();
                 if switch == Switch::FileTransfer {
                     return vec![Effect::FileTransfer(now_on)];
+                }
+                if switch == Switch::RespectChargeLimit && now_on {
+                    return vec![Effect::ReadChargeLimit];
                 }
             }
             Action::MountToggle(i) => {

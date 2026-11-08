@@ -26,6 +26,8 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
+# Reading the phone own system's charge limit, which it keeps in SQLite.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # The root methods, on a build that carries them.
 skyward-root = { path = "../skyward-root", optional = true }
 
