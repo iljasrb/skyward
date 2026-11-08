@@ -1,7 +1,18 @@
-#[cfg(target_os = "android")]
 use crate::canvas::Canvas;
-#[cfg(any(target_os = "android", test))]
 use anyhow::Result;
+
+/// A present target. The device backend scans out through KMS; the host
+/// preview backend encodes PNGs. Keeping the renderer behind this trait is
+/// what lets the whole UI be built and reviewed without the phone.
+pub trait Surface {
+    fn size(&self) -> (u32, u32);
+    /// Hand `canvas` to the display. It returns once the frame before it is
+    /// on the panel and this one is on its way, so the next frame is drawn
+    /// while this one goes out.
+    fn present(&mut self, canvas: &Canvas) -> Result<()>;
+    /// Wait until the frame presented last is on the panel.
+    fn settle(&mut self) -> Result<()>;
+}
 
 /// How Qualcomm's display driver drives a mode, from the text of the
 /// connector's mode_properties blob: key=value lines, a block per mode_name.
@@ -830,8 +841,8 @@ pub mod kms {
         }
     }
 
-    impl KmsSurface {
-        pub fn size(&self) -> (u32, u32) {
+    impl Surface for KmsSurface {
+        fn size(&self) -> (u32, u32) {
             (self.w, self.h)
         }
 
@@ -896,7 +907,7 @@ pub mod kms {
             Ok(())
         }
 
-        pub fn settle(&mut self) -> Result<()> {
+        fn settle(&mut self) -> Result<()> {
             if self.flipping {
                 flipped(&self.card).context("flip")?;
                 self.flipping = false;

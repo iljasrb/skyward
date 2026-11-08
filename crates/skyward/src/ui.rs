@@ -48,7 +48,7 @@ use skyward_ui::app::{
 };
 use skyward_ui::settings::Keeper;
 use skyward_ui::surface::kms::KmsSurface;
-use skyward_ui::{Canvas, Fonts, Lang};
+use skyward_ui::{Canvas, Fonts, Lang, Surface};
 use skyward_vab::{Merge, Standing};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
@@ -2951,7 +2951,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // partitions; a switch waits for it.
                     Effect::SwitchSystem(to) => {
                         if installer.is_some() {
-                            app.systems_work_failed(app.state.lang.pick(INSTALL_UNFINISHED), now);
+                            app.systems_work_failed(INSTALL_UNFINISHED, now);
                             continue;
                         }
                         skyward_sys::kmsg(&format!("switching to the {to:?} system, as the systems page asked"))?;
@@ -2959,7 +2959,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     Effect::RemoveSystem => {
                         if installer.is_some() {
-                            app.systems_work_failed(app.state.lang.pick(INSTALL_UNFINISHED), now);
+                            app.systems_work_failed(INSTALL_UNFINISHED, now);
                             continue;
                         }
                         skyward_sys::kmsg("removing the second system, as the systems page asked")?;
