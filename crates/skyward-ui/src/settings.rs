@@ -20,7 +20,6 @@ const PARTS: [&str; 4] = ["boot", "system", "data", "modem"];
 /// Where a backup goes, by name.
 const STORAGE: &str = "storage";
 const USB_DRIVE: &str = "usb_drive";
-const CLOUD: &str = "cloud";
 /// The logs exported, and where they go, by name, in the order of the page
 /// that exports them.
 const LOGS: [&str; 2] = ["recovery", "kernel"];
@@ -140,7 +139,6 @@ impl Settings {
                 to: match state.backup_to {
                     Place::Storage => STORAGE,
                     Place::UsbDrive => USB_DRIVE,
-                    Place::Cloud => CLOUD,
                 }
                 .to_string(),
                 compress: state.compress,
@@ -199,7 +197,6 @@ impl Settings {
         match self.backup.to.as_str() {
             STORAGE => state.backup_to = Place::Storage,
             USB_DRIVE => state.backup_to = Place::UsbDrive,
-            CLOUD => state.backup_to = Place::Cloud,
             _ => {}
         }
         state.compress = self.backup.compress;

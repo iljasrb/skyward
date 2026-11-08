@@ -30,9 +30,6 @@ use skyward_sys::Power;
 use skyward_files::Ownership;
 use skyward_block::usb::{self, Drive};
 use skyward_net::download;
-use skyward_cloud::config::Config as CloudConfig;
-use skyward_cloud::webdav::Info as WebDavInfo;
-use skyward_cloud::worker::{Command as CloudCommand, Event as CloudEvent, Worker as CloudWorker};
 use skyward_net::http::Servers;
 use skyward_net::release::{Build, Newest};
 use skyward_net::rom;
@@ -41,7 +38,7 @@ use skyward_sys::sleep::{Sleeper, Slept};
 use skyward_sys::uevent;
 use skyward_systems::Who;
 use skyward_ui::app::{
-    App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, CloudInfo, CloudSettings, Data, DownloadEnd, Effect,
+    App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect,
     EraseStop, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind,
     PartStop, Place, RenameRefused, RomState, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe,
     DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
@@ -82,62 +79,6 @@ const REST: Duration = Duration::from_secs(5);
 /// own folder, and where in internal storage the others do.
 const TMP_LOGS: &str = "/skyward/run/logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
-
-/// The folder the cloud settings are kept in, and the file in it.
-const CLOUD: (&str, &str) = ("cloud", "values");
-
-/// Where the cloud settings can be read and written, while the data
-/// partition is mounted.
-fn cloud_root() -> Option<PathBuf> {
-    skyward_sys::kept::mounted(skyward_sys::kept::DATA).then(|| PathBuf::from(skyward_sys::kept::DATA))
-}
-
-/// The cloud settings the data partition holds, if it is mounted and they
-/// are there.
-fn saved_cloud() -> Option<CloudConfig> {
-    let root = cloud_root()?;
-    let text = skyward_sys::kept::read(&root, CLOUD.0, CLOUD.1)?;
-    CloudConfig::from_toml(&text).ok()
-}
-
-/// Keep the cloud settings on the data partition.
-fn write_cloud(config: &CloudConfig) -> Result<()> {
-    let root = cloud_root().context("the data partition is not open")?;
-    let text = config.to_toml()?;
-    skyward_sys::kept::write_secret(&root, CLOUD.0, CLOUD.1, &text)?;
-    Ok(())
-}
-
-/// Take the cloud settings off the data partition.
-fn remove_cloud() -> Result<()> {
-    let Some(root) = cloud_root() else { return Ok(()) };
-    skyward_sys::kept::remove(&root, CLOUD.0, CLOUD.1)
-}
-
-/// What the cloud page shows, from what the data partition keeps.
-fn cloud_settings(config: &CloudConfig) -> CloudSettings {
-    CloudSettings {
-        address: config.url.clone(),
-        username: config.username.clone(),
-        password: skyward_ui::app::Secret(config.password.clone()),
-        folder: config.folder.clone(),
-    }
-}
-
-/// What the cloud worker is given, from what the page shows.
-fn cloud_config(settings: &CloudSettings) -> CloudConfig {
-    CloudConfig {
-        url: settings.address.clone(),
-        username: settings.username.clone(),
-        password: settings.password.0.clone(),
-        folder: settings.folder.clone(),
-    }
-}
-
-/// What the cloud page shows of the server's answer.
-fn cloud_info(info: WebDavInfo) -> CloudInfo {
-    CloudInfo { server: info.server, free: info.free }
-}
 
 /// The folder of internal storage the system saves its own screenshots in,
 /// which the gallery shows as its screenshots, and where in the recovery
@@ -360,8 +301,8 @@ fn asked(request: &bcb::Request) -> Asked {
     }
 }
 
-/// A folder being read on a thread of its own, so that a slow one -- the
-/// cloud storage's, whose every entry is a request -- never holds the pages.
+/// A folder being read on a thread of its own, so that a slow one never
+/// holds the pages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ListingTask {
     Files(String),
@@ -395,7 +336,6 @@ fn in_place(place: Place, path: &str) -> PathBuf {
     let top = match place {
         Place::Storage => Path::new(skyward_crypto::data::SDCARD),
         Place::UsbDrive => Path::new(USB_DRIVE),
-        Place::Cloud => Path::new(skyward_cloud::fuse::MOUNT_POINT),
     };
     if path.is_empty() {
         top.to_path_buf()
@@ -523,9 +463,9 @@ fn held(m: &skyward_backup::Manifest) -> Held {
 
 /// Look for backups in the places asked, the restore page showing what is
 /// found and saying why a place could not be looked in.
-fn find_backups(app: &mut App, storage: bool, usb: bool, cloud: bool, now: u64) {
+fn find_backups(app: &mut App, storage: bool, usb: bool, now: u64) {
     let mut found = Vec::new();
-    for (place, look) in [(Place::Storage, storage), (Place::UsbDrive, usb), (Place::Cloud, cloud)] {
+    for (place, look) in [(Place::Storage, storage), (Place::UsbDrive, usb)] {
         if look {
             match backups_at(place) {
                 Ok(mut there) => found.append(&mut there),
@@ -941,11 +881,6 @@ fn show_closed(app: &mut App, closed: &[Closed]) -> Result<()> {
 /// processes in /proc go, is left out.
 fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
-    // A folder on the cloud storage is not asked how many entries it holds:
-    // every one is a request, and a long one holds the listing.
-    let cloud = Path::new(skyward_cloud::fuse::MOUNT_POINT);
-    let cloud_mounted = skyward_block::mount::is_mount_point(cloud).unwrap_or(false);
-    let on_cloud = cloud_mounted && path.starts_with(cloud);
     let mut rows = Vec::new();
     for entry in fs::read_dir(path).with_context(|| format!("read {}", path.display()))? {
         let full = entry.with_context(|| format!("read {}", path.display()))?.path();
@@ -965,15 +900,11 @@ fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
             FileKind::Link { target: target.to_string_lossy().into_owned(), folder }
         } else if meta.is_dir() {
             // A folder that may not be read shows that in place of a count.
-            let items = if on_cloud || full == cloud {
-                None
-            } else {
-                match fs::read_dir(&full) {
-                    Ok(inside) => Some(inside.count()),
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
-                    Err(e) if gone(&e) => continue,
-                    Err(e) => return Err(e).with_context(|| format!("read {}", full.display())),
-                }
+            let items = match fs::read_dir(&full) {
+                Ok(inside) => Some(inside.count()),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
+                Err(e) if gone(&e) => continue,
+                Err(e) => return Err(e).with_context(|| format!("read {}", full.display())),
             };
             FileKind::Folder { items }
         } else if meta.is_file() {
@@ -1080,14 +1011,6 @@ const ADB_WAIT: Duration = Duration::from_secs(3);
 
 fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
-}
-
-/// The cloud storage's thread, started the first time the page asks for it.
-fn cloud_worker(cloud: &mut Option<CloudWorker>, servers: Servers) -> Result<&CloudWorker> {
-    if cloud.is_none() {
-        *cloud = Some(CloudWorker::start(servers)?);
-    }
-    Ok(cloud.as_ref().expect("the cloud thread was just started"))
 }
 
 /// Where `build`'s image is downloaded to, in the recovery's own folder,
@@ -1491,11 +1414,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         None => None,
     };
-    // The cloud storage, on a thread of its own once the page asks for it.
-    let mut cloud: Option<CloudWorker> = None;
-    if let Some(config) = saved_cloud() {
-        app.cloud_loaded(cloud_settings(&config), true);
-    }
     // A WLAN started before the data partition is open keeps its networks in
     // memory and saves the ones joined there in it: the supplicant that holds
     // them is started once the partition they are kept on is open, by the
@@ -1749,9 +1667,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(w) = &wlan {
             fds.push(w.fd());
-        }
-        if let Some(c) = &cloud {
-            fds.push(c.fd());
         }
         if let Some(c) = &checker {
             fds.push(c.worker.fd());
@@ -2216,23 +2131,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 app.set_traffic(t);
             }
         }
-        if let Some(worker) = &cloud {
-            for event in worker.events() {
-                match event {
-                    CloudEvent::Tested(result) => app.cloud_tested(result.map(cloud_info)),
-                    CloudEvent::Mounted(result) => app.cloud_mounted(result.map(cloud_info)),
-                    CloudEvent::Unmounted(result) => app.cloud_unmounted(result),
-                    CloudEvent::Forgotten(result) => {
-                        if result.is_ok() {
-                            if let Err(e) = remove_cloud() {
-                                let _ = skyward_sys::kmsg(&format!("the cloud settings are not taken away: {e:#}"));
-                            }
-                        }
-                        app.cloud_forgotten(result);
-                    }
-                }
-            }
-        }
         if let Some(until) = adb_until {
             if adbwifi::listening() {
                 adb_until = None;
@@ -2417,19 +2315,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;
-                    // The data partition now holds the WLAN's saved networks.
-                    if !app.state.cloud.pending_save && !app.state.cloud.configured() {
-                        if let Some(config) = saved_cloud() {
-                            app.cloud_loaded(cloud_settings(&config), true);
-                        }
-                    }
-                    if app.state.cloud.pending_save {
-                        let config = cloud_config(&app.state.cloud.settings);
-                        match write_cloud(&config) {
-                            Ok(()) => app.cloud_saved(Ok(())),
-                            Err(e) => app.cloud_saved(Err(format!("{e:#}"))),
-                        }
-                    }
                     // The supplicant keeps its networks in memory until the
                     // data partition is open: it reads the ones saved there
                     // now, and joins one.
@@ -2894,56 +2779,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         }
                     },
                     Effect::ReadMounts => app.set_mounts(mounts()),
-                    Effect::CloudTest(settings) => {
-                        let config = cloud_config(&settings);
-                        if cloud_root().is_some() {
-                            match write_cloud(&config) {
-                                Ok(()) => app.cloud_saved(Ok(())),
-                                Err(e) => app.cloud_saved(Err(format!("{e:#}"))),
-                            }
-                        }
-                        let sent = cloud_worker(&mut cloud, servers.clone())
-                            .and_then(|worker| worker.send(CloudCommand::Test(config)).map_err(anyhow::Error::msg));
-                        if let Err(e) = sent {
-                            app.cloud_tested(Err(format!("{e:#}")));
-                        }
-                    }
-                    Effect::CloudMount(settings) => {
-                        let config = cloud_config(&settings);
-                        if cloud_root().is_some() {
-                            match write_cloud(&config) {
-                                Ok(()) => app.cloud_saved(Ok(())),
-                                Err(e) => app.cloud_saved(Err(format!("{e:#}"))),
-                            }
-                        }
-                        let sent = cloud_worker(&mut cloud, servers.clone())
-                            .and_then(|worker| worker.send(CloudCommand::Mount(config)).map_err(anyhow::Error::msg));
-                        if let Err(e) = sent {
-                            app.cloud_mounted(Err(format!("{e:#}")));
-                        }
-                    }
-                    Effect::CloudUnmount => {
-                        let sent = match &cloud {
-                            Some(worker) => worker.send(CloudCommand::Unmount).map_err(anyhow::Error::msg),
-                            None => Ok(()),
-                        };
-                        match sent {
-                            Ok(()) if cloud.is_none() => app.cloud_unmounted(Ok(())),
-                            Ok(()) => {}
-                            Err(e) => app.cloud_unmounted(Err(format!("{e:#}"))),
-                        }
-                    }
-                    Effect::CloudForget => match &cloud {
-                        Some(worker) => {
-                            if let Err(e) = worker.send(CloudCommand::Forget).map_err(anyhow::Error::msg) {
-                                app.cloud_forgotten(Err(format!("{e:#}")));
-                            }
-                        }
-                        None => {
-                            let _ = remove_cloud();
-                            app.cloud_forgotten(Ok(()));
-                        }
-                    },
                     Effect::ReadSlots => app.set_boot_slots(read_slots()),
                     Effect::SetSlot(slot) => app.slot_switched(set_slot(slot), now),
                     Effect::ReadSystems => systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Read),
@@ -3119,7 +2954,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         backuper = Some(backup::Worker::start(backup::Task::Restore(task))?);
                         app.backup_started(true, place, true);
                     }
-                    Effect::FindBackups { storage, usb, cloud } => find_backups(&mut app, storage, usb, cloud, now),
+                    Effect::FindBackups { storage, usb } => find_backups(&mut app, storage, usb, now),
                     Effect::DeleteBackup { place, name } => {
                         let deleted = delete_backup(place, &backups_in(place).join(&name)).map_err(|e| format!("{e:#}"));
                         queue.extend(app.backup_deleted(deleted, now));

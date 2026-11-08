@@ -9,9 +9,9 @@ use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Link, Network, Power, Stage as Joining, Traffic, Wlan};
 use skyward_systems::{Named, Other, Overview, Who};
 use skyward_ui::app::{
-    Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, CloudInfo, CloudStatus, Damage,
+    Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, Damage,
     Data, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Held, Install, ItemEnd,
-    JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, Secret, SkywardEnd, SkywardJob, SkywardStage,
+    JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, SkywardEnd, SkywardJob, SkywardStage,
     Source, SystemChoice, SystemsWork, TermEnd, Touch, UsbDrive, UsbLink, SCREEN_OFF,
 };
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
@@ -379,7 +379,7 @@ fn main() -> Result<()> {
     let adding = |app: &mut App, name: &str, security: Security, field: Field, choosing: bool| {
         app.state.adding = Some(Adding { name: name.into(), security, field, choosing });
     };
-    let pages: [PageShot; 170] = [
+    let pages: [PageShot; 167] = [
         ("11-install-light-locked", Screen::Install, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         }),
@@ -930,32 +930,6 @@ fn main() -> Result<()> {
         ("99-erase-dark-locked", Screen::Erase, true, &|app| {
             app.erase_started(false, false, vec![Part::AppData, Part::AppCaches]);
             app.erase_ended(Err(EraseStop::Locked(vec![0, 999])), 0);
-        }),
-        ("21-cloud-light", Screen::Cloud, false, &|app| {
-            app.state.cloud.settings.address = "https://dav.example.com/remote.php/dav/files/me/".into();
-            app.state.cloud.settings.username = "me".into();
-            app.state.cloud.settings.password = Secret("secret".into());
-            app.state.cloud.settings.folder = "Skyward".into();
-            app.state.cloud.status = CloudStatus::Ready;
-            app.state.cloud.info = Some(CloudInfo { server: Some("dav.example.com".into()), free: Some(48 << 30) });
-        }),
-        ("21-cloud-settings-light", Screen::CloudSettings, false, &|app| {
-            app.state.cloud.settings.address = "https://dav.example.com/remote.php/dav/files/me/".into();
-            app.state.cloud.settings.username = "me".into();
-            app.state.cloud.settings.password = Secret("secret".into());
-            app.state.cloud.settings.folder = "Skyward".into();
-            app.state.cloud.status = CloudStatus::Ready;
-            app.state.cloud.info = Some(CloudInfo { server: Some("dav.example.com".into()), free: Some(48 << 30) });
-        }),
-        ("21-cloud-dark-mounted", Screen::Cloud, true, &|app| {
-            app.state.cloud.settings.address = "https://dav.example.com/remote.php/dav/files/me/".into();
-            app.state.cloud.settings.username = "me".into();
-            app.state.cloud.settings.password = Secret("secret".into());
-            app.state.cloud.settings.folder = "Skyward".into();
-            app.state.cloud.status = CloudStatus::Mounted;
-            app.state.cloud.mounted = true;
-            app.state.cloud.saved = true;
-            app.state.cloud.info = Some(CloudInfo { server: Some("dav.example.com".into()), free: Some(48 << 30) });
         }),
     ];
     for (name, screen, dark, set) in pages {

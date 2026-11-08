@@ -38,7 +38,6 @@ zstd = { version = "0.14.3", default-features = false }
 evdev = "0.13.2"
 skyward-backup = { path = "../skyward-backup" }
 skyward-binder = { path = "../skyward-binder" }
-skyward-cloud = { path = "../skyward-cloud" }
 skyward-crypto = { path = "../skyward-crypto" }
 skyward-files = { path = "../skyward-files" }
 zip = { version = "8.6.0", default-features = false }
