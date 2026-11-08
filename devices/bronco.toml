@@ -355,6 +355,15 @@ name = "Infinity X"
 feed = "https://raw.githubusercontent.com/iljasrb/bronco-infinityx/main/bronco.json"
 flavor = "infinity_"
 
+# The charge limit the system keeps, so the recovery keeps to it too: the
+# kernel switch that stops and starts charging, and the LineageOS settings
+# database whose `system` table holds `charging_control_enabled` and
+# `charging_control_charging_limit`. Writing 0 to the switch stops charging,
+# 1 starts it.
+[charging]
+switch = "/sys/module/qpnp_adaptive_charge/parameters/charging_enabled"
+system = "/data/user_de/0/org.lineageos.lineagesettings/databases/lineagesettings.db"
+
 # The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
 # exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
 # android13-5.10's. Skyward would read the announced version and ask ksud for
