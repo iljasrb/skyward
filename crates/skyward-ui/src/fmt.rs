@@ -241,6 +241,29 @@ pub fn snapshot_slot_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
     Some(text)
 }
 
+/// What the recovery says as it starts, of a switch between the systems
+/// that a restart or a loss of power cut off: finished, or why not.
+pub fn switch_resumed(_l: Lang) -> &'static str {
+    S_THE_SWITCH_OF_SYSTEMS_CUT_OFF_LAST_TIME_IS_FINISHED
+}
+
+pub fn switch_unfinished(_l: Lang, why: &str) -> String {
+    crate::t!(S_THE_SWITCH_OF_SYSTEMS_CUT_OFF_LAST_TIME_COULDNT_BE_FINISHED, why = why)
+}
+
+/// Why the second system does not start yet while an update is in flight,
+/// which the main system has to start once more to merge; `None` when none
+/// is.
+pub fn snapshot_system_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
+    let text = match s {
+        SnapshotState::None => return None,
+        SnapshotState::Snapshotted | SnapshotState::Merging => S_THE_SECOND_SYSTEM_DOESNT_START_UNTIL_THE_SYSTEM_UPDATE_MERGES,
+        SnapshotState::MergeFailed => S_THE_SECOND_SYSTEM_DOESNT_START_UNTIL_THE_MAIN_SYSTEM_DEALS_WITH_THE_UPDATE,
+        SnapshotState::Unknown => S_THE_SECOND_SYSTEM_DOESNT_START_UNTIL_THE_UPDATES_STATUS_CAN_BE_READ,
+    };
+    Some(text)
+}
+
 /// What an install script that writes to super does to an update in
 /// flight; `None` when none is known to be.
 pub fn snapshot_script_note(_l: Lang, s: &SnapshotState) -> Option<&'static str> {
@@ -858,6 +881,15 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
             .into(),
         Refusal::Panicked => S_THIS_UPDATE_CANT_BE_INSTALLED_NOW_REBOOT_TO_THE_SYSTEM_THEN_TRY_AGAIN
             .into(),
+        Refusal::SystemAsked => S_THE_SYSTEM_ASKED_FOR_ANOTHER_SYSTEM_TO_BE_INSTALLED_WHICH_ONLY_GOES_IN_BY_HAND_ON_THIS_PHONE
+            .into(),
+        Refusal::DataClosed => S_THE_OTHER_SYSTEM_GOES_INTO_THE_DATA_PARTITION_DECRYPT_IT_FIRST
+            .into(),
+        Refusal::SystemInstalled(name) => crate::t!(S_IS_INSTALLED_ALREADY_REMOVE_IT_IN_DUAL_BOOT_THEN_TRY_AGAIN, name = name),
+        Refusal::NoRoom { least, room } => {
+            let (least, room) = (bytes(*least), bytes(*room));
+            crate::t!(S_THIS_SYSTEM_NEEDS_AT_LEAST_AND_THE_DATA_PARTITION_HAS_TO_SPARE, least = least, room = room)
+        }
         Refusal::NotBrick(_) | Refusal::NoSerial => unreachable!("only a request to erase partitions is refused as {r:?}"),
     }
 }
@@ -1231,6 +1263,27 @@ mod tests {
     }
 
     // Xiaomi 13 Ultra battery as `skyward info` read it.
+    #[test]
+    fn battery_lines() {
+        let b = Battery {
+            level: 100,
+            charge: Charge::Full,
+            temp: Some(338),
+            health: Some("Good".into()),
+            cycles: Some(169),
+            design: Some(5_500_000),
+            full: Some(5_095_000),
+            voltage: Some(4_482_000),
+            quick: false,
+            plugged: true,
+        };
+        assert_eq!(level(HANS, &b), "100% · Full");
+        assert_eq!(celsius(b.temp.unwrap()), "33.8°C");
+        assert_eq!([degrees(352), degrees(400), degrees(-5)], ["35.2", "40.0", "-0.5"], "to the tenth, a whole degree too");
+        assert_eq!(wear(HANS, &b).unwrap(), "Good · Maximum capacity 93%");
+        assert_eq!(mah(b.design.unwrap()), "5500mAh");
+        assert_eq!(volts(b.voltage.unwrap()), "4.48V");
+    }
 
     // Xiaomi 17 Ultra build and panel, as its stock settings print them.
 

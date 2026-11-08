@@ -30,6 +30,7 @@ const MOUNT: Text = S_MOUNT;
 
 pub const ENTRIES: &[Entry] = &[
     entry("Wi-Fi", HOME, Screen::Wlan, &["wifi", "wlan"]),
+    entry(S_DUAL_BOOT, HOME, Screen::Systems, &["dualboot", "multiboot", "linux", "dual", "boot"]),
     entry(INSTALL, HOME, Screen::Install, &["anzhuang", "az", "install", "shuaji", "sj"]),
     entry(
         S_SYSTEM_UPDATE_2,
@@ -189,6 +190,14 @@ mod tests {
         assert_eq!(find_on("wlan", Lang::En, |_| true).iter().map(|e| e.title).collect::<Vec<_>>(), ["Wi-Fi"]);
         assert!(find_on("wlan", Lang::En, |s| s != Screen::Wlan).is_empty());
         assert_eq!(titles("download"), ["Update"]);
+    }
+
+    #[test]
+    fn the_second_system_is_found_where_the_phone_can_hold_one() {
+        assert_eq!(titles("dual"), ["Dual boot"]);
+        assert_eq!(titles("multiboot"), ["Dual boot"]);
+        assert_eq!(find("dual", Lang::En).iter().map(|e| e.title).collect::<Vec<_>>(), ["Dual boot"]);
+        assert!(find_on("dualboot", Lang::En, |s| s != Screen::Systems).is_empty());
     }
 
     #[test]

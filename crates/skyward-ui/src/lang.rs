@@ -26,6 +26,35 @@ impl Lang {
             .map_err(|e| anyhow::anyhow!("read the locale {tag:?}: {e}"))?;
         Ok(Lang::En)
     }
+
+    /// Of the same text written in each language, in the order of
+    /// upstream's [`Lang::ALL`], the one this language writes.
+    ///
+    /// The pages speak English alone, so this is always the English one.
+    /// It exists so that a merge of upstream, whose pages still write their
+    /// texts in all three languages, builds as it lands: `scripts/locales.py
+    /// convert` moves those texts into `locales/en.json` and leaves none of
+    /// them calling this.
+    pub fn pick<T>(self, [_hans, _hant, en]: [T; 3]) -> T {
+        let _ = self;
+        en
+    }
+}
+
+/// A text written in each language, with its placeholders filled: the
+/// English one, which the pages speak.
+///
+/// This is the shape upstream's pages write their texts in, so that a merge
+/// of upstream builds before `scripts/locales.py convert` has moved them
+/// into `locales/en.json`.
+#[macro_export]
+#[allow(unused_macros)]
+macro_rules! tr {
+    ($l:expr, $hans:literal, $hant:literal, $en:literal $(,)?) => {{
+        let _ = &$l;
+        let _ = ($hans, $hant);
+        format!($en)
+    }};
 }
 
 /// A text from the language files, with its placeholders filled.

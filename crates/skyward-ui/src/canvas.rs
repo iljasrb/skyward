@@ -257,10 +257,29 @@ impl Canvas {
         }
     }
 
-    /// Paint rows `y0..y1` with a colour computed per pixel centre.
-        /// Overwrite row `y`, which the canvas holds, with `paint(x)` for every
+    /// Overwrite row `y`, which the canvas holds, with `paint(x)` for every
     /// column `x` it holds.
-        /// Lay `layer`, whose top-left corner goes at (`x`, `y`), over this
+    pub fn paint_row(&mut self, y: u32, paint: impl Fn(usize) -> Rgba) {
+        let start = self.at(self.left as i32, y as i32);
+        let row = &mut self.data[start..start + (self.span * 4) as usize];
+        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let c = paint(self.left as usize + x);
+            *p = [c.r, c.g, c.b, c.a];
+        }
+    }
+
+    /// Dim this opaque canvas toward black, keeping `level` of its light.
+    pub fn dim(&mut self, level: f32) {
+        let keep = (level.clamp(0.0, 1.0) * 256.0).round() as u32;
+        if keep >= 256 {
+            return;
+        }
+        for p in self.data.as_chunks_mut::<4>().0 {
+            *p = darken(*p, keep);
+        }
+    }
+
+    /// Lay `layer`, whose top-left corner goes at (`x`, `y`), over this
     /// opaque canvas at `alpha` of its strength.
     pub fn lay(&mut self, layer: &Canvas, x: i32, y: i32, alpha: f32) {
         assert!(layer.whole(), "a layer laid holds all of itself");

@@ -16,7 +16,8 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
 - Safety fixes
-- Separated locales
+- Separated locales, with `scripts/locales.py` to take a merge of upstream's
+  three-language texts into `locales/en.json` (see `locales/README.md`)
 
 
 ## Features
@@ -27,6 +28,7 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Take boot, init_boot, vendor_boot, recovery, dtbo and vbmeta images out of a
   system package
 - `7za` and `zstd` for install scripts, which ROMs with a super image compressed by zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it
+- Install a second system beside the installed one, and switch between them
 - Online system updates
 - Skyward's own updates, from its newest release on GitHub
 - Backup and restore
@@ -50,6 +52,13 @@ cargo install cargo-ndk
 
 cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
 cargo build --release -p skyward-pack
+```
+
+The second system's first program runs before any library is there to load, so it
+is built as a static program:
+
+```sh
+RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init --target-dir target/system-init
 ```
 
 The service is built for the phone and the packer for the computer. Packing an

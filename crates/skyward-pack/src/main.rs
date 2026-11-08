@@ -7,11 +7,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 mod avb;
-mod image;
-mod ramdisk;
 
-use image::BootImage;
-use ramdisk::Ramdisk;
+use skyward_bootimg::{BootImage, Ramdisk};
 
 /// Builds Skyward recovery images from a device's own stock images.
 #[derive(Parser)]
@@ -53,6 +50,11 @@ enum Cmd {
         /// Skyward built for the device (aarch64-linux-android).
         #[arg(long)]
         binary: PathBuf,
+        /// The first program of a system installed beside the installed
+        /// one, skyward-system-init built for the device and linked
+        /// statically.
+        #[arg(long)]
+        system_init: PathBuf,
         /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
         config: PathBuf,
@@ -106,7 +108,7 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, config, font, mono, mono_license, tools, out } => {
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, tools, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
@@ -125,10 +127,7 @@ fn main() -> Result<()> {
             for command in paths::COMMANDS {
                 rd.link(command, recovery)?;
             }
-            // The recovery binary answers to the names install scripts use
-            // for the tools a recovery gives them.
-            rd.link("system/bin/avbctl", recovery)?;
-            rd.link("system/bin/resetprop", recovery)?;
+            rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
             if let Some(tools) = &tools {
                 add_tools(&mut rd, tools)?;
             }
@@ -269,10 +268,10 @@ fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
         }
         if meta.file_type().is_symlink() {
             let target = std::fs::read_link(&path).with_context(|| format!("read the link {}", path.display()))?;
-            rd.put_symlink(&format!("system/bin/{name}"), &target.to_string_lossy())?;
+            rd.link(&format!("system/bin/{name}"), &target.to_string_lossy())?;
         } else if meta.is_file() {
             let data = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            rd.put(&format!("system/bin/{name}"), 0o755, data)?;
+            rd.add(&format!("system/bin/{name}"), 0o755, data)?;
         }
     }
     Ok(())

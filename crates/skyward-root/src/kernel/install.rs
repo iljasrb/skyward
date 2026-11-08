@@ -375,6 +375,7 @@ mod tests {
             full: None,
             voltage: None,
             quick: false,
+            plugged: true,
         }
     }
 
