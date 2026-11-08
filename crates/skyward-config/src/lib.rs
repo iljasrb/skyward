@@ -88,6 +88,10 @@ pub struct DeviceConfig {
     /// The stock build the recovery is made on.
     #[serde(default)]
     pub stock: Option<Stock>,
+    /// How the phone's charging is stopped and started, on phones whose
+    /// kernel takes a switch for it.
+    #[serde(default)]
+    pub charging: Option<Charging>,
     /// What the KernelSU-family page needs to know about this phone's kernel.
     #[serde(default)]
     pub ksu: Ksu,
@@ -235,6 +239,20 @@ pub struct Update {
     /// The image among a release's files that this phone is written from.
     #[serde(default = "recovery_image")]
     pub asset: String,
+}
+
+/// How the phone's charging is stopped and started, so the recovery can keep
+/// to a charge limit.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Charging {
+    /// The file the kernel reads to stop and start charging: writing 0 stops
+    /// it, 1 starts it.
+    pub switch: String,
+    /// Where the phone's own system keeps its charge limit, if it has one: a
+    /// LineageOS settings database, whose `system` table holds
+    /// `charging_control_enabled` and `charging_control_charging_limit`.
+    #[serde(default)]
+    pub system: Option<String>,
 }
 
 fn recovery_image() -> String {
@@ -675,6 +693,16 @@ impl DeviceConfig {
                 let path = Path::new(file);
                 let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
                 ensure!(path.is_absolute() && plain && path.file_name().is_some(), "[[owners]] paths: {file} is not an absolute path to a file");
+            }
+        }
+        if let Some(charging) = &cfg.charging {
+            ensure!(
+                Path::new(&charging.switch).is_absolute(),
+                "[charging] switch: {} is not an absolute path",
+                charging.switch
+            );
+            if let Some(system) = &charging.system {
+                ensure!(Path::new(system).is_absolute(), "[charging] system: {system} is not an absolute path");
             }
         }
         if let Some(rom) = &cfg.rom {

@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 mod adbwifi;
 #[cfg(target_os = "android")]
 mod backup;
+// The charge limit is kept on the host too, where its tests run.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod charging;
 #[cfg(target_os = "android")]
 mod decrypt;
 #[cfg(target_os = "android")]

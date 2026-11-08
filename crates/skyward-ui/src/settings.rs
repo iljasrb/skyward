@@ -50,6 +50,9 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// Keep to the charge limit the phone's own system keeps, while the
+    /// recovery runs.
+    pub respect_charge_limit: bool,
     /// The WLAN was on, so that a recovery that had it on brings it back up
     /// by itself.
     pub wlan: bool,
@@ -130,6 +133,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            respect_charge_limit: state.respect_charge_limit,
             // Starting counts as on: the user asked for it, and a write that
             // lands before the driver is up must not record it as off.
             wlan: state.wlan.as_ref().is_some_and(|w| !matches!(w.power, Power::Off | Power::Failed(_))),
@@ -191,6 +195,7 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.respect_charge_limit = self.respect_charge_limit;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);
