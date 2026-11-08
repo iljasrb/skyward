@@ -363,6 +363,9 @@ flavor = "infinity_"
 [charging]
 switch = "/sys/module/qpnp_adaptive_charge/parameters/charging_enabled"
 system = "/data/user_de/0/org.lineageos.lineagesettings/databases/lineagesettings.db"
+# The limit last read, kept where the recovery reads before the data
+# partition opens, so a start that never opens it still keeps to the limit.
+cache = "/metadata/skyward/charge-limit"
 
 # The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
 # exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
