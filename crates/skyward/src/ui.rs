@@ -31,7 +31,7 @@ use skyward_files::Ownership;
 use skyward_block::usb::{self, Drive};
 use skyward_net::download;
 use skyward_net::http::Servers;
-use skyward_net::release::{Build, Newest};
+use skyward_net::github::{Build, Newest};
 use skyward_net::rom;
 use skyward_net::wlan::{Power as WlanPower, Stage as Joining, Wlan};
 use skyward_sys::sleep::{Sleeper, Slept};

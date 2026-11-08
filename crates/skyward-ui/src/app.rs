@@ -22,7 +22,7 @@ use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
 use skyward_info::DeviceInfo;
 use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
-use skyward_net::release::{Build, Newest, Unanswered};
+use skyward_net::github::{Build, Newest, Unanswered};
 use skyward_net::rom;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Joined, Network, Power, Stage as Joining, Traffic, Wlan};
@@ -11669,7 +11669,7 @@ mod tests {
         rom::Release {
             build: "Project Infinity X 4.1 · 01.11.2026".into(),
             timestamp: 1_793_491_200,
-            image: skyward_net::release::Asset {
+            image: skyward_net::github::Asset {
                 name: "Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into(),
                 url: "https://rom.flac.moe/bronco/latest/Project_Infinity-X-4.1-bronco-01.11.2026-VANILLA-UNOFFICIAL.zip".into(),
                 size: 1_866_720_728,

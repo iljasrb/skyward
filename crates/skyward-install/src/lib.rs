@@ -15,6 +15,10 @@ pub mod package;
 pub mod payload;
 pub mod script;
 pub mod signature;
+// Upstream's way of writing a release's zip into the recovery partitions,
+// kept as it is. The fork writes a raw image through `skyward/src/recovery.rs`;
+// this stays so a merge of upstream lands here without a conflict.
+pub mod upgrade;
 pub mod wipe;
 
 #[cfg(target_os = "android")]

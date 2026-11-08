@@ -12,7 +12,7 @@ use skyward_install::ota::Trouble;
 use skyward_install::{Failure, ImageKind, Ramdisk, Refusal};
 use skyward_net::download::Failure as DownloadFailure;
 use skyward_net::reach::Reach;
-use skyward_net::release::Unanswered;
+use skyward_net::github::Unanswered;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Power, Stage as WlanStage, Wlan};
 use skyward_vab::{Hold, Slot, SnapshotState, Standing};

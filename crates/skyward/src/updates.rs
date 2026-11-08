@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
-use skyward_net::release::{self, Build, Release, Unanswered};
+use skyward_net::github::{self, Build, Release, Unanswered};
 use skyward_net::rom;
 use skyward_sys::worker;
 use skyward_vab::Slot;
@@ -90,7 +90,7 @@ impl Worker {
                 Task::Check { repo, asset, build, probe } => {
                     let a = http::agent(servers.clone());
                     *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                    let answer = release::newest(&a, &repo, &asset)
+                    let answer = github::newest(&a, &repo, &asset)
                         .map_err(|e| unanswered(&e, &repo, &probe, &servers))
                         .and_then(|found| match found {
                             // A release nothing can be checked against is
@@ -252,7 +252,7 @@ fn published_sha(agent: &ureq::Agent, remote: &Remote) -> Result<String> {
     let status = response.status();
     anyhow::ensure!(status.is_success(), "{url} answered {status}");
     let body = response.body_mut().read_to_string().with_context(|| format!("read {url}"))?;
-    release::sha256_in(&body, &remote.name).with_context(|| format!("{url} says nothing of {}", remote.name))
+    github::sha256_in(&body, &remote.name).with_context(|| format!("{url} says nothing of {}", remote.name))
 }
 
 /// Download the package, trying again while the connection fails and

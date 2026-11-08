@@ -3,7 +3,7 @@ use skyward_config::DeviceConfig;
 use skyward_info::{Battery, Boot, Charge, Cpu, DeviceInfo, PatchLevel, Storage};
 use skyward_install::{Failure, ImageKind, Outcome, Ramdisk, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
-use skyward_net::release::{Build, Newest, Unanswered};
+use skyward_net::github::{Build, Newest, Unanswered};
 use skyward_net::reach::Reach;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Link, Network, Power, Stage as Joining, Traffic, Wlan};

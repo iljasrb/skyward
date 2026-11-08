@@ -1,7 +1,7 @@
 //! The system the phone's ROM publishes: the newest full package, where it
 //! is, and the build it is, read from the manifest the publisher writes.
 
-use crate::release::Asset;
+use crate::github::Asset;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 
