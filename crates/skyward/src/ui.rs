@@ -1101,6 +1101,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut charging = cfg.charging.as_ref().map(|c| charging::Switch::new(&c.switch));
     app.state.charging_available = charging.is_some();
     let charge_db = cfg.charging.as_ref().and_then(|c| c.system.clone());
+    let charge_cache = cfg.charging.as_ref().and_then(|c| c.cache.clone());
     // The kernels this phone's own configuration adds to the root page; a
     // phone without any keeps the two methods every build carries.
     #[cfg(feature = "roots")]
@@ -1185,6 +1186,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let locale = request.locale.as_deref().or(info.locale.as_deref());
     let named = locale.map(Lang::for_locale).transpose()?;
     app.take_settings(kept.settings(), named);
+    // The limit the system kept when the data partition was last open, which
+    // is all there is until it opens again.
+    if let Some(cache) = &charge_cache {
+        if let Some(limit) = charging::cached(Path::new(cache)) {
+            app.set_charge_limit(Some(limit));
+        }
+    }
     let mut keeper = Keeper::new(&kept);
     let mut wlan_wanted = kept.settings().is_some_and(|s| s.wlan);
     skyward_sys::kmsg(&format!(
@@ -2330,10 +2338,18 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;
-                    // The system keeps its charge limit on the data partition.
-                    if app.state.respect_charge_limit {
-                        let limit = charge_db.as_deref().and_then(|db| charging::system_limit(Path::new(db)));
-                        app.set_charge_limit(limit);
+                    // The system keeps its charge limit on the data partition;
+                    // keep what it says for a start that does not open it.
+                    if let Some(db) = &charge_db {
+                        let limit = charging::system_limit(Path::new(db));
+                        if limit != app.state.charge_limit {
+                            app.set_charge_limit(limit);
+                        }
+                        if let Some(cache) = &charge_cache {
+                            if let Err(e) = charging::cache(Path::new(cache), limit) {
+                                let _ = skyward_sys::kmsg(&format!("the charge limit is not kept: {e:#}"));
+                            }
+                        }
                     }
                     // The supplicant keeps its networks in memory until the
                     // data partition is open: it reads the ones saved there

@@ -253,6 +253,11 @@ pub struct Charging {
     /// `charging_control_enabled` and `charging_control_charging_limit`.
     #[serde(default)]
     pub system: Option<String>,
+    /// Where the limit last read is kept, on a partition the recovery reads
+    /// before the data partition opens: the system's own limit is on the data
+    /// partition, which a recovery may never open.
+    #[serde(default)]
+    pub cache: Option<String>,
 }
 
 fn recovery_image() -> String {
@@ -703,6 +708,9 @@ impl DeviceConfig {
             );
             if let Some(system) = &charging.system {
                 ensure!(Path::new(system).is_absolute(), "[charging] system: {system} is not an absolute path");
+            }
+            if let Some(cache) = &charging.cache {
+                ensure!(Path::new(cache).is_absolute(), "[charging] cache: {cache} is not an absolute path");
             }
         }
         if let Some(rom) = &cfg.rom {
