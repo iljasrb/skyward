@@ -1,114 +1,119 @@
-//! The recovery's own releases, read from the fork's releases on GitHub: the
-//! newest image built for this phone, where to download it, and the SHA-256
-//! it is checked against.
+//! The phone maker's update server: which system is the newest for the
+//! installed one, asked the way the stock updater asks it, and where the
+//! full package of that system is.
 
-use anyhow::{ensure, Context, Result};
+use aes::cipher::block_padding::Pkcs7;
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use anyhow::{bail, ensure, Context, Result};
+use base64::Engine;
 use serde::Deserialize;
 
-/// A release published for the recovery.
+/// The key and first block the stock updater seals its questions with,
+/// and the server its answers, when no account is signed in.
+const KEY: &[u8; 16] = b"miuiotavalided11";
+const IV: &[u8; 16] = b"0102030405060708";
+
+/// The stock updater's version the server is told of, which it asks of an
+/// Android 15 or later.
+const UPDATER: &str = "9.3.7";
+
+/// What the server says when it has answered.
+const ANSWERED: u32 = 2000;
+
+type Sealer = cbc::Encryptor<aes::Aes128>;
+type Opener = cbc::Decryptor<aes::Aes128>;
+
+/// The installed system, as the server is told of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    /// ro.product.mod_device: the phone, and after it the region its system
+    /// is for, such as `_global`; the Chinese system has none.
+    pub device: String,
+    /// The system's version, such as OS3.0.308.0.WMACNXM.
+    pub version: String,
+    /// ro.build.version.release.
+    pub android: String,
+    pub unlocked: bool,
+}
+
+impl Installed {
+    /// The region the server knows the system's by: what follows the
+    /// phone's name in its device name, the European one under its own.
+    fn region(&self) -> String {
+        match self.device.split_once('_').map(|(_, rest)| rest) {
+            None => "CN".into(),
+            Some("global") => "MI".into(),
+            Some("eea_global") => "EU".into(),
+            Some(rest) => rest.trim_end_matches("_global").to_uppercase(),
+        }
+    }
+
+    /// The question, as the stock updater puts it.
+    pub fn question(&self) -> String {
+        let region = self.region();
+        let language = if region == "CN" { "zh_CN" } else { "en_US" };
+        // A system whose version says it is for developers is on their
+        // branch; any other on the stable one.
+        let branch = if self.version.to_uppercase().ends_with(".DEV") { "X" } else { "F" };
+        let mut q = serde_json::json!({
+            "b": branch,
+            "c": self.android,
+            "d": self.device,
+            "f": "1",
+            "id": "",
+            "l": language,
+            "ov": self.version,
+            "p": self.device,
+            "pn": self.device,
+            "r": region,
+            "security": "",
+            "token": "",
+            "unlock": if self.unlocked { "1" } else { "0" },
+            "v": format!("MIUI-{}", self.version),
+        });
+        if self.android.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 15) {
+            q["options"] = serde_json::json!({ "av": UPDATER });
+        }
+        q.to_string()
+    }
+}
+
+/// A question sealed, as the form carries it.
+pub fn seal(question: &str) -> String {
+    let sealed = Sealer::new(KEY.into(), IV.into()).encrypt_padded_vec_mut::<Pkcs7>(question.as_bytes());
+    base64::engine::general_purpose::URL_SAFE.encode(sealed)
+}
+
+/// An answer opened.
+pub fn open(answer: &str) -> Result<String> {
+    let sealed = base64::engine::general_purpose::STANDARD
+        .decode(answer.trim())
+        .context("the update server's answer is not sealed the way it seals them")?;
+    let opened = Opener::new(KEY.into(), IV.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(&sealed)
+        .map_err(|_| anyhow::anyhow!("the update server's answer does not open with its key"))?;
+    String::from_utf8(opened).context("the update server's answer is not text")
+}
+
+/// The newest system, and where its full package is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
-    /// The tag it was published under, such as `bronco-20261030`.
-    pub tag: String,
-    /// When it was published, written as GitHub writes a time, such as
-    /// `2026-10-30T19:37:12Z`, for the page to show.
-    pub published: String,
-    /// The recovery image itself.
-    pub image: Asset,
-    /// The file of SHA-256 sums beside it, where the release has one.
-    pub sums: Option<Asset>,
-}
-
-/// One file of a release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Asset {
-    pub name: String,
-    pub url: String,
-    pub size: u64,
-    /// The SHA-256 GitHub computed for it, where it says.
-    pub digest: Option<String>,
-}
-
-/// The newest release, as the page shows it: its tag, whether it is newer
-/// than the build running, and the image for this phone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Newest {
     pub version: String,
-    pub newer: bool,
-    pub build: Option<Build>,
-}
-
-/// The image a release carries for this phone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Build {
+    /// The package's own name.
     pub name: String,
-    /// Where the image is downloaded from.
-    pub url: String,
-    /// The release's own link to it, kept for the page.
-    pub link: String,
-    pub size: u64,
-    /// Its SHA-256, where the release names it; the sums file otherwise.
-    pub sha256: String,
-    /// Where the file of sums that names the image is, where the digest is
-    /// not known.
-    pub sums: Option<String>,
+    /// Where it can be downloaded, best first. The server signs each for a
+    /// day only.
+    pub urls: Vec<String>,
+    /// The package's MD5, in hex.
+    pub md5: String,
+    /// How big the server says it is, such as 7.1G, in units of 1024.
+    pub size: String,
+    /// How many bytes it is, as where it is downloaded from says; none
+    /// until that is asked.
+    pub length: Option<u64>,
 }
 
-impl Release {
-    /// Whether this release is newer than `build`, the stamp of the running
-    /// recovery: the tag it was built from, or the time it was made when it
-    /// was not built from one. Tags of this phone carry the day, so they sort
-    /// as they are written and nothing here parses a time.
-    ///
-    /// The time a release is published is not compared: a build is made
-    /// before its release is published, so every release would look newer
-    /// than the build it was made from, and a phone on the newest one would
-    /// be offered it for ever. A build that was never stamped cannot be
-    /// compared with anything, and is taken as older than every release.
-    pub fn is_newer_than(&self, build: &str) -> bool {
-        if build == "unknown" {
-            return true;
-        }
-        match (tag_key(&self.tag), tag_key(build)) {
-            (Some(mine), Some(theirs)) => mine > theirs,
-            _ => self.tag.as_str() > build,
-        }
-    }
-
-    /// The SHA-256 the image is to be checked against: the release's own,
-    /// or else the line for it in the sums file, once that has been read.
-    pub fn sha256(&self, sums: Option<&str>) -> Option<String> {
-        if let Some(digest) = &self.image.digest {
-            return Some(digest.trim_start_matches("sha256:").to_lowercase());
-        }
-        sha256_in(sums?, &self.image.name)
-    }
-}
-
-/// A tag's name, day and build number, so that `-10` comes after `-9`; none
-/// for a tag that is not `name-yyyymmdd[-n]`.
-fn tag_key(tag: &str) -> Option<(&str, u32, u32)> {
-    let (head, last) = tag.rsplit_once('-')?;
-    let number: u32 = last.parse().ok()?;
-    if last.len() == 8 {
-        Some((head, number, 0))
-    } else {
-        let (name, day) = head.rsplit_once('-')?;
-        Some((name, day.parse().ok()?, number))
-    }
-}
-
-/// The SHA-256 `sums` names for `name`, as `sha256sum` writes a line of it.
-pub fn sha256_in(sums: &str, name: &str) -> Option<String> {
-    sums.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        let (hash, file) = (parts.next()?, parts.next()?);
-        let file = file.trim_start_matches('*');
-        (file == name && hash.len() == 64).then(|| hash.to_lowercase())
-    })
-}
-
-/// Why the releases could not be read.
+/// Why the server gave no answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unanswered {
     /// The network joined wants a login in a browser first.
@@ -120,163 +125,147 @@ pub enum Unanswered {
 }
 
 #[derive(Deserialize)]
-struct Listed {
-    tag_name: String,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
-    published_at: Option<String>,
-    #[serde(default)]
-    assets: Vec<ListedAsset>,
+struct Answer {
+    #[serde(rename = "Code")]
+    code: Option<Code>,
+    #[serde(rename = "LatestRom")]
+    latest: Option<Rom>,
+    #[serde(rename = "MirrorList", default)]
+    mirrors: Vec<String>,
 }
 
 #[derive(Deserialize)]
-struct ListedAsset {
-    name: String,
-    browser_download_url: String,
-    size: u64,
-    digest: Option<String>,
+struct Code {
+    code: u32,
+    message: Option<String>,
 }
 
-/// Where the releases of `repo` are listed, newest first.
-fn listing(repo: &str) -> String {
-    format!("https://api.github.com/repos/{repo}/releases?per_page=10")
+#[derive(Deserialize)]
+struct Rom {
+    version: String,
+    filename: String,
+    md5: String,
+    filesize: String,
 }
 
-/// The name of the file of sums a release carries, if it does.
-const SUMS: &str = "SHA256SUMS";
-
-/// Read `repo`'s releases and take the newest published one that carries
-/// `asset`; none while there is none such.
-pub fn newest(agent: &ureq::Agent, repo: &str, asset: &str) -> Result<Option<Release>> {
-    let url = listing(repo);
-    let mut response = agent
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "skyward-recovery")
-        .call()
-        .with_context(|| format!("ask {url}"))?;
-    let status = response.status();
-    ensure!(status.is_success(), "{url} answered {status}");
-    let body = response.body_mut().read_to_string().with_context(|| format!("read the answer of {url}"))?;
-    releases(&body, asset)
-}
-
-/// The newest published release in `body` that carries `asset`; none while
-/// there is none such.
-pub fn releases(body: &str, asset: &str) -> Result<Option<Release>> {
-    let listed: Vec<Listed> = serde_json::from_str(body).context("read the releases GitHub lists")?;
-    let mut published: Vec<Listed> = listed.into_iter().filter(|r| !r.draft && !r.prerelease && r.published_at.is_some()).collect();
-    // The list comes newest first, but a time is what the comparison is on.
-    published.sort_by(|a, b| b.published_at.cmp(&a.published_at));
-    for release in published {
-        let found = |name: &str| release.assets.iter().find(|a| a.name == name).map(|a| Asset {
-            name: a.name.clone(),
-            url: a.browser_download_url.clone(),
-            size: a.size,
-            digest: a.digest.clone(),
-        });
-        let Some(image) = found(asset) else { continue };
-        ensure!(image.size > 0, "the release {} names an empty {asset}", release.tag_name);
-        return Ok(Some(Release {
-            tag: release.tag_name,
-            published: release.published_at.expect("a release with no time was filtered out"),
-            image,
-            sums: found(SUMS),
-        }));
+/// The newest system the opened `answer` tells of; none when the server
+/// knows of none for the installed system.
+pub fn release(answer: &str) -> Result<Option<Release>> {
+    let a: Answer = serde_json::from_str(answer).context("read the update server's answer")?;
+    if let Some(code) = &a.code {
+        ensure!(
+            code.code == ANSWERED,
+            "the update server answered {}{}",
+            code.code,
+            code.message.as_deref().map(|m| format!(" ({m})")).unwrap_or_default()
+        );
     }
-    Ok(None)
+    let Some(rom) = a.latest else { return Ok(None) };
+    let name = rom.filename.split('?').next().unwrap_or_default().to_string();
+    ensure!(!name.is_empty() && !name.contains('/'), "the update server names the package {}", rom.filename);
+    // A mirror that keeps to HTTPS comes before one that does not.
+    let mut mirrors = a.mirrors;
+    mirrors.sort_by_key(|m| !m.starts_with("https://"));
+    let urls = mirrors.iter().map(|m| format!("{}/{}/{}", m.trim_end_matches('/'), rom.version, rom.filename)).collect::<Vec<_>>();
+    if urls.is_empty() {
+        bail!("the update server says of no place to download {name}");
+    }
+    Ok(Some(Release { version: rom.version, name, urls, md5: rom.md5.to_lowercase(), size: rom.filesize, length: None }))
+}
+
+/// How many bytes the package at `url` is, as its server says.
+pub fn length(agent: &ureq::Agent, url: &str) -> Result<u64> {
+    let head = agent.head(url).call().context("ask the server about the package")?;
+    ensure!(head.status().is_success(), "the server answered {}", head.status());
+    crate::download::content_length(head.headers()).context("the server does not say how long the package is")
+}
+
+/// Ask `server` which system is the newest for `installed`.
+pub fn ask(agent: &ureq::Agent, server: &str, installed: &Installed) -> Result<Option<Release>> {
+    let q = seal(&installed.question());
+    let mut response = agent
+        .post(server)
+        .send_form([("q", q.as_str()), ("t", ""), ("s", "1")])
+        .with_context(|| format!("ask {server}"))?;
+    let status = response.status();
+    ensure!(status.is_success(), "{server} answered {status}");
+    let body = response.body_mut().read_to_string().with_context(|| format!("read the answer of {server}"))?;
+    release(&open(&body)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn listing_json() -> String {
-        serde_json::json!([
-            {
-                "tag_name": "bronco-20261101",
-                "draft": false,
-                "prerelease": false,
-                "published_at": "2026-11-01T10:00:00Z",
-                "assets": [
-                    { "name": "skyward-bronco.img", "browser_download_url": "https://example.invalid/new.img", "size": 104857600u64, "digest": "sha256:ABCDEF" },
-                    { "name": "SHA256SUMS", "browser_download_url": "https://example.invalid/SHA256SUMS", "size": 120u64, "digest": null }
-                ]
-            },
-            {
-                "tag_name": "bronco-20261030",
-                "draft": false,
-                "prerelease": false,
-                "published_at": "2026-10-30T19:37:12Z",
-                "assets": [
-                    { "name": "skyward-bronco.img", "browser_download_url": "https://example.invalid/old.img", "size": 104857600u64, "digest": null }
-                ]
-            },
-            {
-                "tag_name": "bronco-20261105",
-                "draft": true,
-                "prerelease": false,
-                "published_at": "2026-11-05T10:00:00Z",
-                "assets": [
-                    { "name": "skyward-bronco.img", "browser_download_url": "https://example.invalid/draft.img", "size": 1u64, "digest": null }
-                ]
-            }
-        ])
-        .to_string()
+    fn thirteen_ultra() -> Installed {
+        Installed { device: "ishtar".into(), version: "OS3.0.306.0.WMACNXM".into(), android: "16".into(), unlocked: true }
     }
 
     #[test]
-    fn the_newest_published_release_is_taken_and_a_draft_is_not() {
-        let r = releases(&listing_json(), "skyward-bronco.img").unwrap().expect("a release");
-        assert_eq!(r.tag, "bronco-20261101");
-        assert_eq!(r.image.url, "https://example.invalid/new.img");
-        assert!(r.sums.is_some());
-        assert_eq!(r.sha256(None).as_deref(), Some("abcdef"));
+    fn the_question_says_what_the_stock_updater_says() {
+        let q: serde_json::Value = serde_json::from_str(&thirteen_ultra().question()).unwrap();
+        assert_eq!(q["d"], "ishtar");
+        assert_eq!(q["pn"], "ishtar");
+        assert_eq!(q["r"], "CN");
+        assert_eq!(q["l"], "zh_CN");
+        assert_eq!(q["b"], "F");
+        assert_eq!(q["ov"], "OS3.0.306.0.WMACNXM");
+        assert_eq!(q["v"], "MIUI-OS3.0.306.0.WMACNXM");
+        assert_eq!(q["unlock"], "1");
+        assert_eq!(q["options"]["av"], UPDATER);
+        let older = Installed { android: "14".into(), ..thirteen_ultra() };
+        let q: serde_json::Value = serde_json::from_str(&older.question()).unwrap();
+        assert!(q.get("options").is_none(), "only Android 15 and later is asked the updater's version");
     }
 
     #[test]
-    fn a_stamp_decides_whether_a_release_is_newer() {
-        let r = releases(&listing_json(), "skyward-bronco.img").unwrap().expect("a release");
-        // The phone built from this release is on the newest one already, even
-        // though it was built before the release was published.
-        assert!(!r.is_newer_than("bronco-20261101"), "the tag it was built from is not newer");
-        assert!(r.is_newer_than("bronco-20261031"));
-        assert!(!r.is_newer_than("bronco-20261102"));
-        // A build made from no tag compares as a time, which sorts before any tag.
-        assert!(r.is_newer_than("2026-10-31T00:00:00Z"));
-        // A build that was never stamped is older than anything published.
-        assert!(r.is_newer_than("unknown"));
-        // The build number is a number, not the text it is written as.
-        let mut r = r;
-        r.tag = "bronco-20261104-10".into();
-        assert!(r.is_newer_than("bronco-20261104-9"));
-        assert!(!r.is_newer_than("bronco-20261104-10"));
-        assert!(r.is_newer_than("bronco-20261104"));
+    fn a_region_is_read_from_the_device_name() {
+        let region = |device: &str| Installed { device: device.into(), ..thirteen_ultra() }.region();
+        assert_eq!(region("ishtar"), "CN");
+        assert_eq!(region("nuwa_global"), "MI");
+        assert_eq!(region("nuwa_eea_global"), "EU");
+        assert_eq!(region("nuwa_in_global"), "IN");
+        assert_eq!(region("nuwa_tw_global"), "TW");
     }
 
     #[test]
-    fn a_release_without_a_digest_is_checked_against_its_sums_file() {
-        let one = serde_json::json!([{
-            "tag_name": "t", "draft": false, "prerelease": false, "published_at": "2026-10-30T19:37:12Z",
-            "assets": [{ "name": "skyward-bronco.img", "browser_download_url": "u", "size": 4096u64, "digest": null }]
-        }])
-        .to_string();
-        let r = releases(&one, "skyward-bronco.img").unwrap().expect("a release");
-        assert_eq!(r.sha256(None), None, "nothing to check against yet");
-        let sums = format!("{}  skyward-bronco.img\n{} *other.img\n", "a".repeat(64), "b".repeat(64));
-        assert_eq!(r.sha256(Some(&sums)), Some("a".repeat(64)));
-        assert_eq!(r.sha256(Some("nonsense\n")), None);
+    fn a_question_sealed_opens_again_as_the_server_opens_it() {
+        let q = thirteen_ultra().question();
+        let sealed = seal(&q);
+        assert!(!sealed.contains('+') && !sealed.contains('/'), "sealed for a form, as the stock updater does");
+        let standard = base64::engine::general_purpose::STANDARD.encode(base64::engine::general_purpose::URL_SAFE.decode(&sealed).unwrap());
+        assert_eq!(open(&standard).unwrap(), q);
+        assert!(open("not sealed").is_err());
+    }
+
+    /// What the server answered of the 13 Ultra's OS3.0.306.0.WMACNXM on
+    /// 2026-10-22, with the parts that do not matter here left out.
+    const ANSWERED_306: &str = r#"{"UserLevel":9,"LatestRom":{"type":"rom","device":"ishtar","name":"3.0.308.0.WMACNXM","md5":"E3D01BE14A3CF95D8E1171A1A2A28EB9","codebase":"16.0","branch":"F","filename":"ishtar-ota_full-OS3.0.308.0.WMACNXM-user-16.0-e3d01be14a.zip?t=1792686801&s=eb90f665fb7c903a898efb9c8c5e297d","filesize":"7.1G","version":"OS3.0.308.0.WMACNXM","changelog":{"系统":[{"txt":"修复 系统稳定性偶现问题，提升用户体验"}],"相机":[{"txt":"优化 拍照速度"},{"txt":"修复 偶现闪退"}]},"Erase":0},"CurrentRom":{"version":"OS3.0.306.0.WMACNXM","filename":"ishtar-ota_full-OS3.0.306.0.WMACNXM-user-16.0-42184b59d7.zip"},"IncrementRom":{"type":"ota","filename":"ishtar-ota_incremental-OS3.0.306.0.WMACNXM-OS3.0.308.0.WMACNXM-user-16.0-33f55688b4.zip?t=1792686801&s=cc6f4b0ca2124927b494954ab13cf29c"},"MirrorList":["http://superota.d.miui.com","https://ultimateota.d.miui.com","https://superota.d.miui.com"],"Code":{"code":2000,"message":"success"}}"#;
+
+    #[test]
+    fn the_answer_gives_the_newest_full_package_and_where_it_is() {
+        let r = release(ANSWERED_306).unwrap().expect("the server knows a newer system");
+        assert_eq!(r.version, "OS3.0.308.0.WMACNXM");
+        assert_eq!(r.name, "ishtar-ota_full-OS3.0.308.0.WMACNXM-user-16.0-e3d01be14a.zip");
+        assert_eq!(r.md5, "e3d01be14a3cf95d8e1171a1a2a28eb9");
+        assert_eq!(r.size, "7.1G");
+        assert_eq!(
+            r.urls,
+            [
+                "https://ultimateota.d.miui.com/OS3.0.308.0.WMACNXM/ishtar-ota_full-OS3.0.308.0.WMACNXM-user-16.0-e3d01be14a.zip?t=1792686801&s=eb90f665fb7c903a898efb9c8c5e297d",
+                "https://superota.d.miui.com/OS3.0.308.0.WMACNXM/ishtar-ota_full-OS3.0.308.0.WMACNXM-user-16.0-e3d01be14a.zip?t=1792686801&s=eb90f665fb7c903a898efb9c8c5e297d",
+                "http://superota.d.miui.com/OS3.0.308.0.WMACNXM/ishtar-ota_full-OS3.0.308.0.WMACNXM-user-16.0-e3d01be14a.zip?t=1792686801&s=eb90f665fb7c903a898efb9c8c5e297d",
+            ]
+        );
+        assert_eq!(r.length, None, "the length is asked of where the package is");
     }
 
     #[test]
-    fn a_release_that_carries_no_image_for_this_phone_is_passed_over() {
-        let one = serde_json::json!([{
-            "tag_name": "t", "draft": false, "prerelease": false, "published_at": "2026-10-30T19:37:12Z",
-            "assets": [{ "name": "nuwa.img", "browser_download_url": "u", "size": 4096u64, "digest": null }]
-        }])
-        .to_string();
-        assert_eq!(releases(&one, "skyward-bronco.img").unwrap(), None);
+    fn an_answer_with_nothing_or_a_failure_says_so() {
+        assert_eq!(release(r#"{"Code":{"code":2000,"message":"success"},"MirrorList":[]}"#).unwrap(), None);
+        let e = release(r#"{"Code":{"code":2001,"message":"device not found"}}"#).unwrap_err();
+        assert_eq!(e.to_string(), "the update server answered 2001 (device not found)");
+        let nowhere = r#"{"LatestRom":{"version":"V","filename":"a.zip","md5":"m","filesize":"1G"},"MirrorList":[]}"#;
+        assert!(release(nowhere).is_err(), "a package with no place to download it from");
     }
 }
