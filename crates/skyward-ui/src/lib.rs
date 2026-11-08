@@ -1,5 +1,6 @@
 pub mod app;
 pub mod canvas;
+pub mod charge;
 pub mod color;
 pub mod editor;
 pub mod files;
@@ -30,4 +31,5 @@ pub use color::Rgba;
 pub use font::Fonts;
 pub use lang::Lang;
 pub use pages::Ctx;
+pub use surface::Surface;
 pub use theme::Theme;

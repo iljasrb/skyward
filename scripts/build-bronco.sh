@@ -47,10 +47,18 @@ export SKYWARD_BUILD=${SKYWARD_BUILD:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 cargo ndk -t arm64-v8a --platform 30 build --release --features roots -p skyward
 cargo build --release -p skyward-pack
 
+# The second system's first program runs before any library is there to
+# load, so it is linked statically and built into a target directory of its
+# own, where the static flags do not reach the rest.
+RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init \
+    --target-dir target/system-init
+
 mkdir -p "$(dirname "$out")"
 target/release/skyward-pack recovery \
     --stock "$stock" \
     --binary "$root/target/aarch64-linux-android/release/skyward" \
+    --system-init "$root/target/system-init/aarch64-linux-android/release/system-init" \
     --config "$root/devices/bronco.toml" \
     --font "$root/resources/fonts/MiSansVF.ttf" \
     --mono "$root/resources/fonts/KirkMono-Regular.ttf" \

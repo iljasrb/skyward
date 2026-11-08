@@ -33,7 +33,9 @@ cargo install cargo-ndk
 scripts/build-bronco.sh --stock /path/to/stock-recovery.img
 ```
 
-The output is `out/skyward-bronco.img`.
+The script builds the recovery service, the packer and the second system's
+first program, which is linked statically, and packs them onto the stock
+recovery. The output is `out/skyward-bronco.img`.
 
 ## Flash
 

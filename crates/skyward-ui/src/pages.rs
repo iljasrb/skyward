@@ -2,8 +2,8 @@ use crate::app::{
     Action, AdbWifi, BackupAt, BackupEnd, BackupJob, ClashChoice, CloudField, CloudState, CloudStatus, Confirm, Damage, Data, Dock,
     DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit,
     Install, JobEnd, Keys, Pick, Place, Rows, RomCheck, Screen, SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State,
-    Switch, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES,
-    SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
+    Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION,
+    FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs, starting,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -18,12 +18,13 @@ use crate::strings::*;
 use crate::term::{self, Term};
 use crate::theme::Theme;
 use crate::icons::{self, Icon};
-use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, Tone, Trail};
+use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
 use skyward_info::{DeviceInfo, BUILD, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Network, Power, Stage as Joining};
+use skyward_systems::Who;
 use skyward_vab::{Slot, Standing};
 use std::path::Path;
 
@@ -98,6 +99,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::License => license(cx),
         Screen::FontLicense => font_license(cx),
         Screen::Slot => slot(cx),
+        Screen::Systems => systems(cx),
         Screen::Fastboot => fastboot(cx),
         Screen::Erase => erase(cx),
         Screen::CantStart => cant_start(cx),
@@ -152,6 +154,9 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::RunScript => (INSTALL, true),
         Confirm::Merge => (S_SLIDE_TO_MERGE, true),
         Confirm::Relabel => (S_SLIDE_TO_FIX, true),
+        Confirm::SwitchSystem => (S_SLIDE_TO_SWITCH_AND_REBOOT, false),
+        Confirm::RemoveSystem => (S_SLIDE_TO_REMOVE, true),
+        Confirm::InstallSystem => (INSTALL, false),
         #[cfg(feature = "roots")]
         Confirm::ApatchPatch => match s.apatch.as_ref().is_some_and(|root| root.patched) {
             true => (S_SLIDE_TO_PATCH_IT_AGAIN, true),
@@ -204,6 +209,7 @@ const TERMINAL: Text = S_TERMINAL;
 const TIME_ZONE: Text = S_TIME_ZONE;
 const LICENSE: Text = S_OPEN_SOURCE_LICENSES;
 const FONTS: Text = S_UI_FONTS;
+const DUAL_BOOT: Text = S_DUAL_BOOT;
 const CHECKING: Text = S_CHECKING_FOR_UPDATES;
 const CHECK_FOR_UPDATES: Text = S_CHECK_FOR_UPDATES;
 const DOWNLOADING: Text = S_DOWNLOADING;
@@ -286,16 +292,37 @@ pub fn home(cx: &Ctx) -> Frame {
         rows.push(Row::new(title).icon(ORANGE, Icon::Power).subtitle(note).trail(Trail::Arrow));
         opens.push(Some(Action::Open(Screen::Slot)));
     }
+    if cx.state.system_notice.is_some() {
+        let why = S_TAP_TO_SEE_WHY;
+        rows.push(Row::new(SECOND_FAILED).icon(RED, Icon::Systems).subtitle(why).trail(Trail::Arrow));
+        opens.push(Some(Action::Open(Screen::Systems)));
+    }
     let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &rows);
     out.push(Hit { rect: card.rows[0], action: Action::Open(Screen::About) });
     out.extend(card.rows[1..].iter().zip(&opens).filter_map(|(&rect, open)| open.map(|action| Hit { rect, action })));
     y = card.bottom + t.m.card_gap;
     // On a phone whose WLAN the recovery brings up, the WLAN comes first
-    // under the device, as on the stock settings home.
+    // under the device, as on the stock settings home; with it, where the
+    // phone can hold a second system, the two systems.
+    let mut rows = Vec::new();
+    let mut opens = Vec::new();
     if let Some(w) = &cx.state.wlan {
-        let wlan = widgets::list(&mut c, t, f, y, &[Row::new(WLAN).icon(BLUE, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, w)))]);
-        out.extend(hits(&wlan.rows, &[Action::Open(Screen::Wlan)]));
-        y = wlan.bottom + t.m.card_gap;
+        rows.push(Row::new(WLAN).icon(BLUE, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, w))));
+        opens.push(Action::Open(Screen::Wlan));
+    }
+    let starts = systems_value(cx);
+    if cx.state.offers(Screen::Systems) {
+        let row = Row::new(DUAL_BOOT).icon(PURPLE, Icon::Systems);
+        rows.push(match &starts {
+            Some(value) => row.trail(Trail::Value(value)),
+            None => row,
+        });
+        opens.push(Action::Open(Screen::Systems));
+    }
+    if !rows.is_empty() {
+        let first = widgets::list(&mut c, t, f, y, &rows);
+        out.extend(hits(&first.rows, &opens));
+        y = first.bottom + t.m.card_gap;
     }
     let tools = widgets::list(&mut c, t, f, y, &[
         Row::new(S_INSTALL_2).icon(GREEN, Icon::Install),
@@ -337,6 +364,19 @@ pub fn home(cx: &Ctx) -> Frame {
     // away.
     let height = fitted(t, system.bottom).max(t.m.h + fold.span.ceil() as u32);
     Frame { back: false, fold: Some(fold), ..Frame::new(t, c.crop_height(height), out, HOME_TITLE, cards_top) }
+}
+
+/// What the home page says beside its entry to the systems: the one that
+/// starts, where a second system is installed, once they are read.
+fn systems_value(cx: &Ctx) -> Option<String> {
+    match &cx.state.systems {
+        Some(Ok(systems)) => Some(match (&systems.other, starting(systems)) {
+            (None, _) => S_NO_SECOND_SYSTEM.into(),
+            (Some(_), Who::Installed) => systems.installed.name.clone(),
+            (Some(other), Who::Other) => other.name.clone(),
+        }),
+        _ => None,
+    }
 }
 
 /// What the advanced page says beside its recovery update entry: a download
@@ -1087,7 +1127,11 @@ pub fn install(cx: &Ctx) -> Frame {
     let from_usb = Action::Open(Screen::Choose(Place::UsbDrive));
     let from_cloud = Action::Open(Screen::Choose(Place::Cloud));
     out.extend(hits(&methods.rows, &[from_storage, from_usb, from_cloud, Action::Sideload, Action::OpenPackageImages]));
-    let what = S_INSTALLS_A_B_FULL_OTA_PACKAGES_AND_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_A_SYSTEM_UPDATE_INSTALLS_TO_THE_OTHER_SLOT_WHICH_STARTS_AFTER_A_REBOOT_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES;
+    // A phone that can hold a second system installs one from here too.
+    let what = match cx.state.dual_boot {
+        true => S_INSTALLS_A_B_FULL_OTA_PACKAGES_FLASHABLE_ZIPS_AND_A_SECOND_SYSTEMS_PACKAGE,
+        false => S_INSTALLS_A_B_FULL_OTA_PACKAGES_AND_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_A_SYSTEM_UPDATE_INSTALLS_TO_THE_OTHER_SLOT_WHICH_STARTS_AFTER_A_REBOOT_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES,
+    };
     let y = widgets::footnote(&mut c, t, f, methods.bottom, what);
     let y = widgets::section(&mut c, t, f, y, S_OPTIONS);
     let check = Row::new(S_VERIFY_ZIP_SIGNATURES).trail(Trail::Switch(cx.state.check_signature));
@@ -1215,7 +1259,32 @@ fn update_stage(_l: Lang, stage: Option<&Stage>) -> (String, Option<f32>) {
         }
         Some(Stage::Finishing) => (S_STEP_3_OF_3_FINISHING.into(), None),
         Some(Stage::Reflashing { done, total }) => (REFLASHING.into(), Some(*done as f32 / *total as f32)),
-        Some(Stage::Flashing { .. } | Stage::Script { .. } | Stage::Signature { .. }) | None => (S_GETTING_READY.into(), None),
+        Some(Stage::Flashing { .. } | Stage::Script { .. } | Stage::Signature { .. } | Stage::Allocating { .. } | Stage::Root { .. } | Stage::Storing) | None => {
+            (S_GETTING_READY.into(), None)
+        }
+    }
+}
+
+/// Where installing a system beside the installed one stands, and the share
+/// of its step done when known.
+fn system_stage(_l: Lang, stage: Option<&Stage>) -> (String, Option<f32>) {
+    match stage {
+        Some(Stage::Allocating { done, total }) => {
+            let s = share(*done, *total);
+            let p = percent(s);
+            (crate::t!(S_STEP_1_OF_3_SETTING_ROOM_ASIDE_IN_THE_DATA_PARTITION, p = p), Some(s))
+        }
+        Some(Stage::Root { done, total }) => {
+            let s = share(*done, *total);
+            let p = percent(s);
+            let said = match done * 2 <= *total {
+                true => crate::t!(S_STEP_2_OF_3_WRITING_THE_SYSTEM, p = p),
+                false => crate::t!(S_STEP_2_OF_3_VERIFYING_THE_SYSTEM, p = p),
+            };
+            (said, Some(s))
+        }
+        Some(Stage::Storing) => (S_STEP_3_OF_3_KEEPING_ITS_BOOT_IMAGES.into(), None),
+        _ => (S_GETTING_READY.into(), None),
     }
 }
 
@@ -1487,6 +1556,38 @@ pub fn installing(cx: &Ctx) -> Frame {
             };
             widgets::footnote(&mut c, t, f, y, keep)
         }
+        Install::SystemChoosing(choice) => {
+            let version = &choice.version;
+            let detail = crate::t!(S_TO_INSTALL_AS_THE_SECOND_SYSTEM, version = version);
+            let y = widgets::list(&mut c, t, f, top, &[standing(&choice.name, PURPLE, Icon::Systems, &detail)]).bottom;
+            let y = widgets::section(&mut c, t, f, y, S_ROOM_FOR_IT);
+            let sizes: Vec<String> = choice.sizes.iter().map(|&b| fmt::bytes(b)).collect();
+            let least = S_THE_LEAST_THE_SYSTEM_TAKES;
+            let rows: Vec<Row> = sizes
+                .iter()
+                .enumerate()
+                .map(|(k, size)| {
+                    let row = Row::new(size).trail(Trail::Check(k == choice.size));
+                    if k == 0 { row.subtitle(least) } else { row }
+                })
+                .collect();
+            let list = widgets::list(&mut c, t, f, y, &rows);
+            let picks: Vec<Action> = (0..choice.sizes.len()).map(Action::SystemSize).collect();
+            out.extend(hits(&list.rows, &picks));
+            let note = S_THE_ROOM_CHOSEN_IS_SET_ASIDE_IN_THE_DATA_PARTITION_FOR_THE_SECOND_SYSTEMS_FILES_CANT_BE_CHANGED_ONCE_ITS_INSTALLED_AND_COMES_BACK_WHEN_THE_SECOND_SYSTEM_IS_REMOVED_NOTHING_OF_THE_MAIN_SYSTEMS_PARTITIONS_IS_WRITTEN;
+            let y = widgets::footnote(&mut c, t, f, list.bottom, note);
+            let (label, danger) = confirm_label(Confirm::InstallSystem, cx.state);
+            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+            out.push(Hit { rect: track, action: Action::Confirm(Confirm::InstallSystem) });
+            let note = S_GOING_BACK_CANCELS_THE_INSTALL_WITHOUT_WRITING_ANYTHING;
+            widgets::footnote(&mut c, t, f, track.y + track.h, note)
+        }
+        Install::Systeming { name, stage } => {
+            let title = crate::t!(S_INSTALLING, name = name);
+            let (detail, done) = system_stage(l, stage.as_ref());
+            let y = widgets::progress_card(&mut c, t, f, top, &title, &detail, done);
+            widgets::footnote(&mut c, t, f, y, until_installed(l, s.source))
+        }
         Install::ConfirmingScript => {
             let name = s.package_name.as_deref().unwrap_or(S_FLASHABLE_ZIP);
             let detail = S_THIS_ZIP_RUNS_THE_INSTALL_SCRIPT_IT_HOLDS_WHICH_CAN_REWRITE_ANY_PARTITION_OF_THIS_PHONE;
@@ -1635,6 +1736,13 @@ fn finished(
             let y = reflashed(c, cx, next.bottom);
             let y = afterwards_of(c, cx, y, true);
             script_output(c, cx, y, rows)
+        }
+        Outcome::SystemInstalled { name } => {
+            let detail = crate::t!(S_IS_INSTALLED_AS_THE_SECOND_SYSTEM_SWITCH_TO_IT_FROM_DUAL_BOOT, name = name);
+            let y = widgets::list(c, t, f, top, &[standing(installed, GREEN, Icon::Systems, &detail)]).bottom;
+            let next = widgets::list(c, t, f, y + gap, &[Row::new(DUAL_BOOT).icon(PURPLE, Icon::Systems)]);
+            out.extend(hits(&next.rows, &[Action::Open(Screen::Systems)]));
+            afterwards_of(c, cx, next.bottom, true)
         }
         Outcome::Cancelled => {
             let y = widgets::list(c, t, f, top, &[standing(S_CANCELLED, SLATE, Icon::Install, nothing_written)]).bottom;
@@ -3581,6 +3689,135 @@ pub fn slot(cx: &Ctx) -> Frame {
     let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Slot) });
     Frame::new(t, c, out, title, top)
+}
+
+const MAIN_SYSTEM: Text = S_MAIN_SYSTEM;
+const SECOND_SYSTEM: Text = S_SECOND_SYSTEM;
+
+/// What the home page and the systems page say once the second system's
+/// start stopped.
+const SECOND_FAILED: Text = S_SECOND_FAILED;
+
+/// The two systems as big cards one over the other, laid out as the boot
+/// slot page lays out its slots: the main system, in the phone's own
+/// partitions, and the second, whose files lie in the data partition, or
+/// the place to install one, the one that starts next checked. Picking the
+/// other and swiping writes its boot images into the slot that starts
+/// next, and restarts into it. Under them, the second system, and removing
+/// it.
+pub fn systems(cx: &Ctx) -> Frame {
+    let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let title = DUAL_BOOT;
+    // While the boot partitions are written, or the second system removed,
+    // the page only says so: of a switch the system asked for, perhaps
+    // before the systems are read.
+    if let Some(work) = s.systems_work {
+        let (heading, detail) = match work {
+            SystemsWork::Switching(to) => {
+                let name = match (&s.systems, to) {
+                    (Some(Ok(systems)), Who::Installed) => Some(systems.installed.name.as_str()),
+                    (Some(Ok(systems)), Who::Other) => systems.other.as_ref().map(|o| o.name.as_str()),
+                    _ => None,
+                };
+                let heading = match name {
+                    Some(name) => crate::t!(S_SWITCHING_TO, name = name),
+                    None => S_SWITCHING_SYSTEMS.to_string(),
+                };
+                (heading, S_WRITING_ITS_BOOT_IMAGES)
+            }
+            SystemsWork::Removing => (
+                S_REMOVING_THE_SECOND_SYSTEM.to_string(),
+                S_GIVING_ITS_ROOM_BACK_TO_THE_DATA_PARTITION,
+            ),
+        };
+        let y = widgets::progress_card(&mut c, t, f, top, &heading, detail, None);
+        let y = widgets::footnote(&mut c, t, f, y, S_DONT_POWER_OFF_UNTIL_ITS_DONE);
+        return Frame::new(t, fit(c, t, y), out, title, top);
+    }
+    let systems = match &s.systems {
+        Some(Ok(systems)) => systems,
+        Some(Err(why)) => {
+            let list = widgets::list(&mut c, t, f, top, &[Row::new(S_COULDNT_READ_THE_SYSTEMS).trail(Trail::None)]);
+            let y = widgets::footnote(&mut c, t, f, list.bottom, why);
+            return Frame::new(t, fit(c, t, y), out, title, top);
+        }
+        None => return Frame::new(t, fit(c, t, top), out, title, top),
+    };
+    let starts = starting(systems);
+    let chosen = s.system_pick.unwrap_or(starts);
+    let second_role = SECOND_SYSTEM;
+    let main = SystemCard {
+        role: MAIN_SYSTEM,
+        name: &systems.installed.name,
+        detail: systems.installed.version.as_deref().unwrap_or_default(),
+        mark: SystemMark::Check(chosen == Who::Installed),
+    };
+    let second = match &systems.other {
+        Some(other) => SystemCard { role: second_role, name: &other.name, detail: &other.version, mark: SystemMark::Check(chosen == Who::Other) },
+        None => SystemCard {
+            role: second_role,
+            name: S_INSTALL_A_SYSTEM,
+            detail: S_CHOOSE_THE_SECOND_SYSTEMS_PACKAGE,
+            mark: SystemMark::Opens,
+        },
+    };
+    let y = widgets::section_first(&mut c, t, f, top, S_NEXT_BOOT);
+    let shown = widgets::system_cards(&mut c, t, f, y, &[main, second]);
+    let second_opens = match systems.other {
+        Some(_) => Action::PickSystem(Who::Other),
+        None => Action::Open(Screen::Install),
+    };
+    out.extend(hits(&shown.rows, &[Action::PickSystem(Who::Installed), second_opens]));
+    let mut y = shown.bottom + t.m.dp(12.0);
+    if let Some(why) = &s.system_notice {
+        y = widgets::info_card(&mut c, t, f, y, &[(SECOND_FAILED, why.clone())]);
+    }
+    if chosen != starts {
+        match (chosen, fmt::snapshot_system_note(l, &i.snapshot)) {
+            (Who::Other, Some(note)) => y = widgets::footnote(&mut c, t, f, y, note),
+            _ => {
+                let (label, danger) = confirm_label(Confirm::SwitchSystem, s);
+                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(12.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::SwitchSystem) });
+                y = track.y + track.h;
+            }
+        }
+    }
+    let what = S_TAP_A_CARD_TO_PICK_A_SYSTEM_SWITCHING_REWRITES_ONLY_THE_BOOT_AND_INIT_BOOT_PARTITIONS_OF_THE_SLOT_THAT_STARTS_NEXT_AND_LEAVES_THE_MAIN_SYSTEMS_OTHER_PARTITIONS_AS_THEY_ARE_THE_SECOND_SYSTEMS_FILES_ARE_KEPT_IN_THE_DATA_PARTITION;
+    y = widgets::footnote(&mut c, t, f, y, what);
+    if systems.other.is_some() && systems.changed {
+        let note = S_THE_MAIN_SYSTEMS_VENDOR_BOOT_OR_DTBO_PARTITION_HAS_CHANGED_SINCE_THE_SECOND_SYSTEM_WAS_INSTALLED_SO_THE_SECOND_SYSTEM_MAY_NOT_START_PROPERLY;
+        y = widgets::footnote(&mut c, t, f, y, note);
+    }
+    if let Some(other) = &systems.other {
+        y = widgets::section(&mut c, t, f, y, second_role);
+        let size = fmt::bytes(other.size);
+        let facts = widgets::list(&mut c, t, f, y, &[Row::new(S_SPACE_USED).trail(Trail::Text(&size))]);
+        let mounted = matches!(s.data, Data::Open | Data::Locked { .. });
+        let remove = Row::new(S_REMOVE_THE_SECOND_SYSTEM).tint(t.pal.danger);
+        let (remove, act) = match mounted {
+            true => (remove.trail(Trail::None), Action::AskDelete),
+            false => (remove.subtitle(DECRYPT_NEEDED), Action::Open(Screen::Decrypt)),
+        };
+        let removing = widgets::list(&mut c, t, f, facts.bottom + t.m.card_gap, &[remove]);
+        out.extend(hits(&removing.rows, &[act]));
+        y = removing.bottom;
+        if s.asking_delete && mounted {
+            let ask = match starts {
+                Who::Other => S_THE_PHONE_GOES_BACK_TO_THE_MAIN_SYSTEM_FIRST_THEN_THE_SECOND_SYSTEM_AND_ALL_ITS_DATA_ARE_REMOVED_FOR_GOOD,
+                Who::Installed => S_REMOVE_THE_SECOND_SYSTEM_AND_ALL_ITS_DATA_IT_CANT_BE_BROUGHT_BACK,
+            };
+            let y2 = widgets::footnote(&mut c, t, f, y, ask);
+            let (label, danger) = confirm_label(Confirm::RemoveSystem, s);
+            let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, danger, s.confirm);
+            out.push(Hit { rect: track, action: Action::Confirm(Confirm::RemoveSystem) });
+            y = track.y + track.h;
+        }
+    }
+    Frame::new(t, fit(c, t, y), out, title, top)
 }
 
 /// The phone's own fastbootd serving the computer: whether it runs, how far

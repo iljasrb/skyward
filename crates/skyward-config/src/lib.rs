@@ -17,12 +17,17 @@ pub mod ramdisk {
     pub const MONO_LICENSE: &str = "skyward/KirkMono-OFL.txt";
     /// The recovery service binary init starts.
     pub const RECOVERY: &str = "system/bin/recovery";
+    /// The first program of a system installed beside the installed one,
+    /// which Skyward puts in that system's init_boot image: linked
+    /// statically, since it runs before any system's libraries are there.
+    pub const SYSTEM_INIT: &str = "skyward/system-init";
     /// The commands install scripts written for other recoveries run that
-    /// Skyward answers itself: 7za and zstd, which a stock recovery does not
-    /// carry, and unzip, whose stock version holds all that `-p` takes out in
-    /// memory. Each is a link to the recovery service binary beside it, which
-    /// runs the command it is started as.
-    pub const COMMANDS: [&str; 3] = ["system/bin/7za", "system/bin/unzip", "system/bin/zstd"];
+    /// Skyward answers itself: 7za, avbctl, resetprop and zstd, which a
+    /// stock recovery does not carry, and unzip, whose stock version holds
+    /// all that `-p` takes out in memory. Each is a link to the recovery
+    /// service binary beside it, which runs the command it is started as.
+    pub const COMMANDS: [&str; 5] =
+        ["system/bin/7za", "system/bin/avbctl", "system/bin/resetprop", "system/bin/unzip", "system/bin/zstd"];
     /// The first property file init loads in recovery mode.
     pub const PROP_DEFAULT: &str = "prop.default";
     /// The scheduling profiles libprocessgroup reads.
@@ -281,9 +286,10 @@ pub struct Wipe {
 /// The data partition, which the folders erasing takes in are in.
 const DATA: &str = "/data";
 
-/// The vibration motor's click, played through the kernel's force-feedback
-/// events: a waveform its driver keeps, or one made from samples at the
-/// motor's resonant frequency, which the driver plays as they are given.
+/// The vibration motor, played through the kernel's force-feedback events:
+/// its click, a waveform its driver keeps or one made from samples at the
+/// motor's resonant frequency, which the driver plays as they are given,
+/// and the ticks of the screen going off by the power key, made too.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Haptics {
     /// The driver's number for a click waveform it keeps, on phones whose
