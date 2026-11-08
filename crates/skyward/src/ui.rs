@@ -2343,7 +2343,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             app.set_charge_limit(limit);
                         }
                         if let Some(cache) = &charge_cache {
-                            if let Err(e) = charging::cache(Path::new(cache), limit) {
+                            let kept = settings::writable(|| charging::cache(Path::new(cache), limit));
+                            if let Err(e) = kept {
                                 let _ = skyward_sys::kmsg(&format!("the charge limit is not kept: {e:#}"));
                             }
                         }

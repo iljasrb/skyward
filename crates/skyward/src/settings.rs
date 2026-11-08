@@ -17,6 +17,17 @@ const FILE: &str = "/metadata/skyward/settings.json";
 /// What a write goes into first, to be moved over the file whole.
 const WRITING: &str = "/metadata/skyward/settings.json.new";
 
+/// Run `work` with /metadata writable, and read-only again after: anything
+/// the recovery keeps there goes through this.
+pub fn writable<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_metadata(|| {
+        skyward_vab::metadata_writable(true)?;
+        let wrote = work();
+        let back = skyward_vab::metadata_writable(false);
+        wrote.and_then(|value| back.map(|()| value))
+    })
+}
+
 /// What the file holds. The recovery starts as well where it cannot be
 /// read, as with /metadata damaged, so why goes to the kernel log.
 pub fn read() -> Result<Kept> {
