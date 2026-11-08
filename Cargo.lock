@@ -2247,7 +2247,6 @@ dependencies = [
  "skyward-backup",
  "skyward-binder",
  "skyward-block",
- "skyward-cloud",
  "skyward-config",
  "skyward-crypto",
  "skyward-files",
@@ -2312,26 +2311,6 @@ dependencies = [
  "libc",
  "lz4_flex",
  "tempfile",
-]
-
-[[package]]
-name = "skyward-cloud"
-version = "0.4.2"
-dependencies = [
- "anyhow",
- "base64",
- "libc",
- "percent-encoding",
- "polyfuse-kernel",
- "rustls",
- "serde",
- "skyward-block",
- "skyward-net",
- "tempfile",
- "toml",
- "url",
- "zerocopy",
- "zeroize",
 ]
 
 [[package]]

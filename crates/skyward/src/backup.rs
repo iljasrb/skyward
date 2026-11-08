@@ -51,9 +51,8 @@ const RESTORE_ORDER: [Part; 4] = [Part::Boot, Part::System, Part::Efs, Part::Dat
 /// what the system makes again, its caches, compiled code and the updates
 /// it downloaded; and the second system, which lies where /metadata keeps
 /// it.
-const DATA_SKIPPED: [&str; 22] = [
+const DATA_SKIPPED: [&str; 21] = [
     "media",
-    "skyward/cloud",
     "lost+found",
     "per_boot",
     "unencrypted",
