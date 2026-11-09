@@ -41,7 +41,7 @@ impl std::error::Error for Unmounted {}
 /// The installed system's rules for labeling files, from each partition of
 /// `slot` that keeps some: every one of those partitions the slot has must
 /// be mounted, and the system's own are always there.
-pub fn rule_files(slot: Slot) -> Result<Vec<PathBuf>> {
+pub fn rule_files(slot: Option<Slot>) -> Result<Vec<PathBuf>> {
     let bases = skyward_vab::slot_bases(slot)?;
     let mounted: Vec<PathBuf> = skyward_vab::mounted_partitions(slot)?.into_iter().map(|m| m.mount_point).collect();
     let mut found = Vec::new();

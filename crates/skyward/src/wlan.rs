@@ -39,8 +39,10 @@ const HOME: &str = "/skyward/run/supplicant";
 const WIFI: u32 = 1010;
 
 /// How long the driver may take to make its interface, the chip's firmware
-/// loading meanwhile.
-const INTERFACE_WAIT: Duration = Duration::from_secs(20);
+/// loading meanwhile. cnss2 downloads the firmware and boots the WLAN
+/// processor before the driver makes wlan0; on r8q that took over half a
+/// minute from fs_ready.
+const INTERFACE_WAIT: Duration = Duration::from_secs(120);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);

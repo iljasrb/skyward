@@ -168,7 +168,10 @@ impl Face {
 
     fn bounds(&self, ch: char, em_px: f32) -> (f32, f32) {
         let glyph = self.font.glyph_id(ch).with_scale_and_position(self.scale(em_px), ab_glyph::point(0.0, 0.0));
-        let og = self.font.outline_glyph(glyph).unwrap_or_else(|| panic!("font has no outline for {ch:?}"));
+        // A typeface that does not carry a character draws nothing for it,
+        // rather than taking the recovery down: a file name or a network's
+        // name may hold anything.
+        let Some(og) = self.font.outline_glyph(glyph) else { return (0.0, 0.0) };
         let b = og.px_bounds();
         (b.min.y, b.max.y)
     }

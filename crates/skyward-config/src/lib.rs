@@ -476,6 +476,11 @@ pub struct Service {
     /// as the interface and then which of them it is.
     #[serde(default)]
     pub ready_hardware_service: Option<String>,
+    /// Services the program registers with that other directory besides
+    /// the one it is waited for, or instead of one: named here so the
+    /// directory's description includes them, without waiting for them.
+    #[serde(default)]
+    pub hardware: Vec<String>,
     /// Where one model's hardware comes in more than one build, the
     /// installed system's own properties say which build it is: the program
     /// runs only where the property has this value.

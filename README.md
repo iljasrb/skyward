@@ -1,85 +1,105 @@
 ![Skyward Recovery](assets/hero.jpg)
 
-# Skyward
+# Skyward for the Galaxy S20 FE 5G (r8q)
 
-Skyward is a recovery written in Rust, from scratch. This is a fork's generic
-branch: it carries the code, not one phone's files. Device branches add a
-`devices/<codename>.toml`, a build script and a release workflow; the ThinkPhone
-(`bronco`) branch is `bronco`.
+A fork of [Skyward](https://github.com/kirklin/skyward), a recovery written in
+Rust, for the Samsung Galaxy S20 FE 5G (`r8q`, SM-G781B). The pages are English;
+their texts live in `locales/en.json`.
 
+This branch builds **without the root methods**: no `--features roots`, no root
+page, and no `[[root]]` or `[ksu]` in the device configuration.
 
-## Fork changes
+## Status
 
-- Payload/OTA tooling
-- Root boot image patching
-- Recovery updates from the fork's own releases
-- Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
-- Settings persist
-- Safety fixes
-- Separated locales, with `scripts/locales.py` to take a merge of upstream's
-  three-language texts into `locales/en.json` (see `locales/README.md`)
+The image rides on the LineageOS recovery for r8q (boot header version 2: a
+kernel, a gzip ramdisk, the recovery dtbo and the dtb). It is packed with
+`devices/r8q.toml` and `scripts/build-r8q.sh`.
 
+What this first build carries:
 
-## Features
+- The Skyward screen, touch, keys, MTP, adb and fastbootd
+- Mounting the phone's logical partitions from `super`, which r8q keeps
+  without slots
+- Backup and restore of the boot set, the baseband's partitions and the data
+  partition
+- Installing zips, partition images and install scripts
+- Wiping data and factory reset
+- WLAN, through Samsung's own driver and the phone's AIDL `wpa_supplicant`
+- The recovery's own updates from the fork's releases
 
-- Decrypt the data partition
-- Install zips, full OTA packages, payloads and partition images, from internal
-  storage, a USB drive or adb sideload
-- Take boot, init_boot, vendor_boot, recovery, dtbo and vbmeta images out of a
-  system package
-- `7za` and `zstd` for install scripts, which ROMs with a super image compressed by zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it
-- Install a second system beside the installed one, and switch between them
-- Online system updates
-- Skyward's own updates, from its newest release on GitHub
-- Backup and restore
-- Wipe data and factory reset
-- Mount partitions, repair and format filesystems
-- File manager and terminal
-- WLAN
-- MTP file transfer, adb and fastbootd
-- Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
-- Light and dark themes; English
+What it does **not** carry yet:
 
-## Building
+- **Decryption.** The r8q vendor has Samsung's Keymaster 4.0 (HIDL) and
+  gatekeeper `mdfpp`, while Skyward's decrypt code speaks KeyMint AIDL. The
+  OrangeFox r8q tree shows the services and the property dance a Keymaster 4.0
+  path needs; that is a separate change.
+- **Second system, snapshots and A/B updates.** r8q is not an A/B phone
+  (`ro.build.ab_update=false`, no slot suffix), so the pages for a second
+  system, a snapshot merge and a slot switch are not offered.
+- **ROM updates.** `[rom]` is omitted; the phone's system is LineageOS, whose
+  update feed is not the shape the ROM page reads.
 
-Skyward builds with the stable Rust that `rust-toolchain.toml` names, the
-`aarch64-linux-android` target, the Android NDK r29 and
-[cargo-ndk](https://github.com/bbqsrc/cargo-ndk).
+## Build
+
+The image rides on the LineageOS recovery ramdisk, which is not in this
+repository. The build script downloads the nightly of 2026-11-07 and checks it
+against its SHA-256:
 
 ```sh
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 
-cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
-cargo build --release -p skyward-pack
+scripts/build-r8q.sh
 ```
 
-The second system's first program runs before any library is there to load, so it
-is built as a static program:
+With the recovery image already on disk:
 
 ```sh
-RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init --target-dir target/system-init
+scripts/build-r8q.sh --stock /path/to/recovery.img
 ```
 
-The service is built for the phone and the packer for the computer. Packing an
-image needs the phone's stock recovery and a device configuration; a device
-branch supplies both. See `scripts/build-bronco.sh` on the `bronco` branch for
-an example.
+The script builds the recovery service without `--features roots`, the packer,
+and the second system's first program, which is linked statically, then packs
+them onto the LineageOS recovery. The output is `out/skyward-r8q.img` and its
+`.sha256`.
 
-Tests and lints run on the computer; what runs only on the phone is linted for
-it:
+It needs an Android NDK r29 or newer in `ANDROID_NDK_HOME` (or under
+`~/toolchains` or `/opt`). The ramdisk is packed with gzip, which fits the
+82,694,144-byte recovery partition; the stock recovery's own screen resources
+are left out, and the UI typeface is a Latin subset of MiSans.
+
+## Flash
+
+The recovery partition is `recovery`; there is no slot suffix. Use Odin or
+Heimdall with the phone in download mode (Volume Up + Volume Down, then the
+USB cable), or:
 
 ```sh
-cargo test --workspace --features roots
-cargo clippy --workspace --all-targets --features roots -- -D warnings
-cargo ndk -t arm64-v8a --platform 30 clippy -p skyward -p skyward-install -- -D warnings
+heimdall flash --RECOVERY out/skyward-r8q.img
 ```
 
-## Languages
+To start the recovery, hold Volume Up + Power while the phone is connected to a
+computer by USB.
 
-The pages' texts live in `locales/en.json`, one flat key for each text, in a
-format Crowdin imports and exports. See `locales/README.md`.
+## Notes
 
-## License
+- `persist` carries the secure world's state the screen lock is bound to.
+  Restoring an old copy can make the PIN unverifiable. It is deliberately not
+  in the baseband backup.
+- The build's `[update]` section points at `iljasrb/skyward` and the
+  `skyward-r8q.img` asset. Releases are published from `r8q-*` tags by
+  `.github/workflows/release.yml`.
+- The phone's vendor is Samsung's Android 13 tree; the installed system is
+  LineageOS 23.2 (Android 16). The recovery's build properties are taken from
+  the installed system once its partitions are mounted, as the secure world
+  expects.
 
-[GPL-3.0-or-later](LICENSE). Skyward is KirKlin's.
+## Credit
+
+Skyward is KirKlin's, GPL-3.0-or-later. Device facts come from the LineageOS
+trees for [r8q](https://github.com/LineageOS/android_device_samsung_r8q) and
+[sm8250-common](https://github.com/LineageOS/android_device_samsung_sm8250-common),
+the [OrangeFox r8q tree](https://github.com/ForcePushWarning/android_device_samsung_r8q),
+and the [stock recovery unpacked](https://github.com/SavedByLight/android_device_samsung_r8q_stock_recovery_unpacked).
+Some fixes were ported from [huime180/skyward](https://github.com/huime180/skyward)
+and [Rinrroy/skyward](https://github.com/Rinrroy/skyward).

@@ -18,22 +18,23 @@ const AT: &str = skyward_block::BY_NAME;
 /// the one it boots the recovery from, and the other slot's when it holds
 /// this same recovery already — after a slot switch that one is what boots,
 /// and an older build there would come back with it.
-pub fn slots(active: Slot) -> Result<Vec<Slot>> {
+pub fn slots(active: Option<Slot>) -> Result<Vec<Option<Slot>>> {
+    let Some(active) = active else { return Ok(vec![None]) };
     let skyward = |slot: Slot| -> Result<bool> {
-        let path = image::device(Path::new(AT), PARTITION, slot);
+        let path = image::device(Path::new(AT), PARTITION, Some(slot));
         let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
         image::is_skyward(&mut file).with_context(|| format!("look into {}", path.display()))
     };
-    let mut wanted = vec![active];
+    let mut wanted = vec![Some(active)];
     if skyward(active.other())? {
-        wanted.push(active.other());
+        wanted.push(Some(active.other()));
     }
     Ok(wanted)
 }
 
 /// Write the image at `path` over the recovery partitions of `slots`, telling
 /// `progress` how many bytes of the whole are done.
-pub fn install(path: &Path, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+pub fn install(path: &Path, slots: &[Option<Slot>], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let length = file.metadata().with_context(|| format!("look at {}", path.display()))?.len();
     let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(Path::new(AT), PARTITION, slot)).collect();
@@ -49,6 +50,6 @@ mod tests {
         // Without a phone there are no partitions to look into; what is
         // checked here is only which slots a phone that cannot be read gets.
         assert_eq!(PARTITION, "recovery");
-        assert_eq!(image::device(Path::new(AT), PARTITION, Slot::B), Path::new(AT).join("recovery_b"));
+        assert_eq!(image::device(Path::new(AT), PARTITION, Some(Slot::B)), Path::new(AT).join("recovery_b"));
     }
 }

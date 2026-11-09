@@ -3,6 +3,7 @@ use crate::{snapshot_state, MergeStatus, Slot, SnapshotState, METADATA};
 use anyhow::{ensure, Context, Result};
 use skyward_block::{devnum, dm, mount, BY_NAME};
 use skyward_lp::{Extent, Metadata, Partition, ATTR_DISABLED};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,15 @@ pub fn mount_point(base: &str) -> PathBuf {
     }
 }
 
+/// The name a logical partition has in super: with the slot's suffix where
+/// the phone has slots, and as it is where it has none.
+pub fn partition_name(base: &str, slot: Option<Slot>) -> String {
+    match slot {
+        Some(slot) => format!("{base}{}", slot.suffix()),
+        None => base.to_string(),
+    }
+}
+
 fn super_device() -> PathBuf {
     Path::new(BY_NAME).join("super")
 }
@@ -66,9 +76,15 @@ fn bytes(p: &Partition) -> u64 {
     p.sectors() * 512
 }
 
+/// The metadata slot the phone's logical partitions are in: the one the
+/// booted slot uses, or the first where the phone has no slots.
+fn metadata_slot(slot: Option<Slot>) -> u32 {
+    slot.map_or(0, Slot::number)
+}
+
 /// Map partition `p` from super read-only with device-mapper and mount it
 /// over its point. A device that does not mount is removed again.
-fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mounted> {
+fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Option<Slot>) -> Result<Mounted> {
     let device = dm::create(&p.name, &targets(p, devices), true)?;
     let mount_point = mount_point(base(p, slot));
     let mounted = (|| -> Result<String> {
@@ -85,21 +101,32 @@ fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mo
 }
 
 /// The slot's partitions that hold data. Copy-on-write partitions such as
-/// odm_b-cow end in -cow and stay out.
-fn slot_partitions(md: &Metadata, slot: Slot) -> Vec<&Partition> {
+/// odm_b-cow end in -cow and stay out. A phone without slots has no suffix
+/// to pick them by, and all of super's partitions are its own.
+fn slot_partitions(md: &Metadata, slot: Option<Slot>) -> Vec<&Partition> {
     md.partitions
         .iter()
-        .filter(|p| p.name.ends_with(slot.suffix()) && !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0)
+        .filter(|p| {
+            let of_slot = slot.is_none_or(|slot| p.name.ends_with(slot.suffix()));
+            of_slot && !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0
+        })
         .collect()
 }
 
-fn base(p: &Partition, slot: Slot) -> &str {
-    &p.name[..p.name.len() - slot.suffix().len()]
+fn base(p: &Partition, slot: Option<Slot>) -> &str {
+    match slot {
+        Some(slot) => &p.name[..p.name.len() - slot.suffix().len()],
+        None => &p.name,
+    }
 }
 
 /// Partitions are mapped only while no update snapshot is outstanding,
 /// since a snapshotted partition reads correctly only through its snapshot.
-fn ensure_no_snapshot() -> Result<()> {
+/// A phone without slots has no snapshots to keep out of the way.
+fn ensure_no_snapshot(slot: Option<Slot>) -> Result<()> {
+    if slot.is_none() {
+        return Ok(());
+    }
     let state = snapshot_state()?;
     ensure!(state == SnapshotState::None, "an update snapshot is outstanding ({state:?})");
     Ok(())
@@ -111,18 +138,18 @@ fn ensure_no_snapshot() -> Result<()> {
 /// snapshot, as the system's own first stage maps it, merging where the
 /// merge is under way. A partition an earlier run of the recovery service
 /// mounted, and that still shows, is taken as it is.
-pub fn mount_partitions(slot: Slot) -> Result<Mounts> {
+pub fn mount_partitions(slot: Option<Slot>) -> Result<Mounts> {
     let metadata = Path::new(METADATA);
     if !mount::is_mount_point(metadata)? {
         mount::mount_ro(&Path::new(BY_NAME).join("metadata"), metadata)?;
     }
     let super_dev = super_device();
-    let md = skyward_lp::read(&super_dev, slot.number())?;
+    let md = skyward_lp::read(&super_dev, metadata_slot(slot))?;
     let devices = block_devices(&md, &super_dev)?;
-    let snaps = Snapshots::lock(true)?;
-    let through = match &snaps {
-        Some(s) if s.needed(slot)? => Some(s),
-        _ => None,
+    // A phone without slots keeps no update snapshots; super is read as it is.
+    let snaps = match slot {
+        Some(_) => Snapshots::lock(true)?,
+        None => None,
     };
 
     let shown = mounted_partitions(slot)?;
@@ -132,9 +159,18 @@ pub fn mount_partitions(slot: Slot) -> Result<Mounts> {
             mounts.partitions.push(m.clone());
             continue;
         }
-        let mounted = match through.map(|s| Ok::<_, anyhow::Error>((s, s.live(p)?))).transpose()? {
-            Some((s, Some(status))) => mount_snapshot(s, &md, &devices, p, &status, slot)?,
-            _ => map_and_mount(p, &devices, slot)?,
+        let mounted = match slot {
+            Some(slot) => {
+                let live = match &snaps {
+                    Some(snaps) if snaps.needed(slot)? => snaps.live(p)?,
+                    _ => None,
+                };
+                match live {
+                    Some(status) => mount_snapshot(snaps.as_ref().expect("a live snapshot has its snapshots"), &md, &devices, p, &status, slot)?,
+                    None => map_and_mount(p, &devices, Some(slot))?,
+                }
+            }
+            None => map_and_mount(p, &devices, None)?,
         };
         mounts.partitions.push(mounted);
     }
@@ -161,7 +197,7 @@ pub fn snapshots_mapped(slot: Slot) -> Result<bool> {
         return Ok(false);
     }
     let mut any = false;
-    for p in slot_partitions(&md, slot) {
+    for p in slot_partitions(&md, Some(slot)) {
         if snaps.live(p)?.is_some() {
             if !snapshots::is_snapshot(&p.name)? {
                 return Ok(false);
@@ -192,7 +228,7 @@ fn mount_snapshot(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], p: &
 /// Mount partition `p`, mapped as its snapshot at `device`, read-only over
 /// its point; the snapshot is taken apart again if it does not mount.
 fn mount_mapped(p: &Partition, device: PathBuf, slot: Slot) -> Result<Mounted> {
-    let mount_point = mount_point(base(p, slot));
+    let mount_point = mount_point(base(p, Some(slot)));
     let mounted = (|| -> Result<String> {
         fs::create_dir_all(&mount_point).with_context(|| format!("create {}", mount_point.display()))?;
         Ok(mount::mount_ro_over(&device, &mount_point).with_context(|| format!("mount {}", p.name))?.to_string())
@@ -208,15 +244,15 @@ fn mount_mapped(p: &Partition, device: PathBuf, slot: Slot) -> Result<Mounted> {
 
 /// The base names of the slot's logical partitions (such as `system`,
 /// `vendor`), in the order super lists them, whether or not they are mounted.
-pub fn slot_bases(slot: Slot) -> Result<Vec<String>> {
-    let md = skyward_lp::read(&super_device(), slot.number())?;
+pub fn slot_bases(slot: Option<Slot>) -> Result<Vec<String>> {
+    let md = skyward_lp::read(&super_device(), metadata_slot(slot))?;
     Ok(slot_partitions(&md, slot).into_iter().map(|p| base(p, slot).to_string()).collect())
 }
 
 /// The slot's logical partitions by base name with the bytes each holds, in
 /// the order super lists them.
-pub fn slot_sizes(slot: Slot) -> Result<Vec<(String, u64)>> {
-    let md = skyward_lp::read(&super_device(), slot.number())?;
+pub fn slot_sizes(slot: Option<Slot>) -> Result<Vec<(String, u64)>> {
+    let md = skyward_lp::read(&super_device(), metadata_slot(slot))?;
     Ok(slot_partitions(&md, slot).into_iter().map(|p| (base(p, slot).to_string(), bytes(p))).collect())
 }
 
@@ -232,12 +268,12 @@ pub struct Whole {
 
 /// Map the slot's logical partition `base_name` whole as `name`, read-only
 /// or not, while no update snapshot is outstanding.
-pub fn map_whole(slot: Slot, base_name: &str, name: &str, readonly: bool) -> Result<Whole> {
-    ensure_no_snapshot()?;
+pub fn map_whole(slot: Option<Slot>, base_name: &str, name: &str, readonly: bool) -> Result<Whole> {
+    ensure_no_snapshot(slot)?;
     let super_dev = super_device();
-    let md = skyward_lp::read(&super_dev, slot.number())?;
+    let md = skyward_lp::read(&super_dev, metadata_slot(slot))?;
     let devices = block_devices(&md, &super_dev)?;
-    let full = format!("{base_name}{}", slot.suffix());
+    let full = partition_name(base_name, slot);
     let p = slot_partitions(&md, slot).into_iter().find(|p| p.name == full).with_context(|| format!("super holds no {full}"))?;
     let device = dm::create(name, &targets(p, &devices), readonly)?;
     Ok(Whole { name: name.into(), device, size: bytes(p) })
@@ -262,10 +298,10 @@ pub struct SlotMaps {
 /// at /dev/block/mapper/<name>; while no update snapshot is outstanding.
 /// One the recovery has mapped read-only already is made writable where
 /// it is, in use or not.
-pub fn map_slot(slot: Slot) -> Result<SlotMaps> {
-    ensure_no_snapshot()?;
+pub fn map_slot(slot: Option<Slot>) -> Result<SlotMaps> {
+    ensure_no_snapshot(slot)?;
     let super_dev = super_device();
-    let md = skyward_lp::read(&super_dev, slot.number())?;
+    let md = skyward_lp::read(&super_dev, metadata_slot(slot))?;
     let devices = block_devices(&md, &super_dev)?;
     let mut maps = SlotMaps::default();
     for p in slot_partitions(&md, slot) {
@@ -308,15 +344,16 @@ pub fn unmap_slot(maps: &SlotMaps) -> Result<()> {
 /// name (such as `system` or `vendor`): through its snapshot where the slot
 /// reads through an update's snapshots, from the snapshot already mapped
 /// where it was only unmounted.
-pub fn mount_one(slot: Slot, base_name: &str) -> Result<Mounted> {
+pub fn mount_one(slot: Option<Slot>, base_name: &str) -> Result<Mounted> {
     let super_dev = super_device();
-    let md = skyward_lp::read(&super_dev, slot.number())?;
+    let md = skyward_lp::read(&super_dev, metadata_slot(slot))?;
     let devices = block_devices(&md, &super_dev)?;
-    let name = format!("{base_name}{}", slot.suffix());
+    let name = partition_name(base_name, slot);
     let p = slot_partitions(&md, slot)
         .into_iter()
         .find(|p| p.name == name)
         .with_context(|| format!("super holds no {name}"))?;
+    let Some(slot) = slot else { return map_and_mount(p, &devices, None) };
     let snaps = Snapshots::lock(true)?;
     let status = match &snaps {
         Some(s) if s.needed(slot)? => s.live(p)?.map(|status| (s, status)),
@@ -325,7 +362,7 @@ pub fn mount_one(slot: Slot, base_name: &str) -> Result<Mounted> {
     match status {
         Some(_) if dm::status(&name)?.is_some() => mount_mapped(p, Path::new("/dev/block").join(dm_node(&name)?), slot),
         Some((s, status)) => mount_snapshot(s, &md, &devices, p, &status, slot),
-        None => map_and_mount(p, &devices, slot),
+        None => map_and_mount(p, &devices, Some(slot)),
     }
 }
 
@@ -351,10 +388,10 @@ fn unmap(name: &str, point: &Path) -> Result<()> {
 /// its device-mapper device. One that reads through a snapshot is only
 /// unmounted: its snapshot stays mapped, for its merge to go on and for it
 /// to be mounted again.
-pub fn unmount_one(slot: Slot, base_name: &str) -> Result<()> {
-    let name = format!("{base_name}{}", slot.suffix());
+pub fn unmount_one(slot: Option<Slot>, base_name: &str) -> Result<()> {
+    let name = partition_name(base_name, slot);
     let point = mount_point(base_name);
-    if !snapshots::is_snapshot(&name)? {
+    if slot.is_none() || !snapshots::is_snapshot(&name)? {
         return unmap(&name, &point);
     }
     let dev = dm::status(&name)?.with_context(|| format!("{name} is not mapped"))?;
@@ -366,7 +403,11 @@ pub fn unmount_one(slot: Slot, base_name: &str) -> Result<()> {
 
 /// The slot's partitions that are mapped and show on their mount points, in
 /// the order they were mapped.
-pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
+pub fn mounted_partitions(slot: Option<Slot>) -> Result<Vec<Mounted>> {
+    let known: Option<HashSet<String>> = match slot {
+        Some(_) => None,
+        None => Some(skyward_lp::read(&super_device(), 0)?.partitions.iter().map(|p| p.name.clone()).collect()),
+    };
     let mut found = Vec::new();
     for entry in fs::read_dir("/sys/block").context("read /sys/block")? {
         let entry = entry?;
@@ -375,7 +416,18 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
         let name_file = entry.path().join("dm/name");
         let name = fs::read_to_string(&name_file).with_context(|| format!("read {}", name_file.display()))?;
         let name = name.trim();
-        let Some(base) = name.strip_suffix(slot.suffix()) else { continue };
+        let base = match slot {
+            Some(slot) => match name.strip_suffix(slot.suffix()) {
+                Some(base) => base,
+                None => continue,
+            },
+            None => {
+                if !known.as_ref().is_some_and(|known| known.contains(name)) {
+                    continue;
+                }
+                name
+            }
+        };
         let device = Path::new("/dev/block").join(&node);
         let mount_point = mount_point(base);
         let Some(shown) = mount::visible(&mount_point)? else { continue };
@@ -394,7 +446,7 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
 /// whose mount point is in `busy` still has files in use; it only leaves
 /// the tree, and those files and its device stay until let go. /metadata
 /// stays mounted for the update.
-pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
+pub fn release_partitions(slot: Option<Slot>, busy: &[PathBuf]) -> Result<()> {
     for m in mounted_partitions(slot)?.into_iter().rev() {
         if busy.contains(&m.mount_point) {
             mount::umount_detach_over(&m.mount_point)?;
@@ -409,8 +461,8 @@ pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
 /// Undo `mount_partitions`: unmount the slot's partitions where their own
 /// device is what shows, remove their device-mapper devices, and unmount
 /// /metadata.
-pub fn unmount_partitions(slot: Slot) -> Result<()> {
-    let md = skyward_lp::read(&super_device(), slot.number())?;
+pub fn unmount_partitions(slot: Option<Slot>) -> Result<()> {
+    let md = skyward_lp::read(&super_device(), metadata_slot(slot))?;
     for p in slot_partitions(&md, slot).into_iter().rev() {
         unmap(&p.name, &mount_point(base(p, slot)))?;
     }

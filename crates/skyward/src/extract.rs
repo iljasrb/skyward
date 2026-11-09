@@ -91,17 +91,15 @@ fn extract(task: &Task, say: &impl Fn(Event), stop: &Arc<AtomicBool>) -> Result<
     }
     // An image larger than the partition it goes to cannot be written, so
     // do not spend the time and the room taking it out.
-    if let Some(slot) = skyward_vab::current_slot()? {
-        let target = Path::new(BY_NAME).join(format!("{}{}", partition.name, slot.suffix()));
-        if let Ok(size) = skyward_block::size_bytes(&target) {
-            ensure!(
-                partition.size <= size,
-                "{} is {} bytes, more than the {} its partition holds",
-                partition.name,
-                partition.size,
-                size
-            );
-        }
+    let target = Path::new(BY_NAME).join(skyward_vab::partition_name(&partition.name, skyward_vab::current_slot()?));
+    if let Ok(size) = skyward_block::size_bytes(&target) {
+        ensure!(
+            partition.size <= size,
+            "{} is {} bytes, more than the {} its partition holds",
+            partition.name,
+            partition.size,
+            size
+        );
     }
     let mut last = Instant::now() - PROGRESS_EVERY;
     let mut progress = |done, total| {

@@ -39,7 +39,7 @@ pub fn check(image: &[u8], codename: &str) -> Result<()> {
 pub fn slots(dir: &Path, next: Slot) -> Result<Vec<Slot>> {
     let mut slots = Vec::new();
     for slot in [Slot::A, Slot::B] {
-        let path = image::device(dir, PARTITION, slot);
+        let path = image::device(dir, PARTITION, Some(slot));
         let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
         image::drop_cache(&file).with_context(|| format!("drop the cached pages of {}", path.display()))?;
         if slot == next || image::is_skyward(&mut file).with_context(|| format!("look into {}", path.display()))? {
@@ -52,7 +52,7 @@ pub fn slots(dir: &Path, next: Slot) -> Result<Vec<Slot>> {
 /// Write `image` into the recovery partitions of `slots`, among the links
 /// in `dir`, and read each back; `progress` hears the bytes so far, of all.
 pub fn write(dir: &Path, image: &[u8], slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-    let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(dir, PARTITION, slot)).collect();
+    let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(dir, PARTITION, Some(slot))).collect();
     image::flash(&mut Cursor::new(image), image.len() as u64, &devices, progress)
 }
 
