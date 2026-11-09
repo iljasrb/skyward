@@ -158,7 +158,12 @@ impl Power {
     }
 }
 
+/// Ask the phone to leave the recovery for `target`. Whichever page asks,
+/// the request is written down first: what follows is a reboot, and the
+/// phone's own logs stop where the recovery does, so without this a reboot
+/// asked for on purpose looks like the recovery having gone away.
 pub fn power(target: Power) -> Result<()> {
+    kmsg(&format!("leaving the recovery: {}", target.command()))?;
     set_prop("sys.powerctl", target.command())
 }
 
