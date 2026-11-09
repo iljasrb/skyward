@@ -53,13 +53,25 @@ pub struct Encryption {
 impl Encryption {
     /// Read what an entry of the phone's own table says.
     pub fn of(entry: &Entry) -> Result<Encryption> {
-        let said = entry.extra("metadata_encryption").context("the phone says its data partition is not encrypted whole")?;
+        // A phone may say what the whole partition is encrypted with, or
+        // only what each of its files is; where it says the second, the
+        // first is the same cipher, and the rest of the line describes
+        // which ciphers each file may be given instead. Samsung's own table
+        // says the second and says nothing of the key itself.
+        let said = entry
+            .extra("metadata_encryption")
+            .or_else(|| entry.extra("fileencryption"))
+            .context("the phone says its data partition is not encrypted whole")?;
         let (name, rest) = said.split_once(':').unwrap_or((said, ""));
+        let name = name.split('+').next().unwrap_or(name);
         let cipher = CIPHERS
             .iter()
             .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
             .with_context(|| format!("no cipher here is the {name} the phone names"))?;
-        Ok(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" })
+        // The key the storage hardware is given is wrapped again for this
+        // start of the phone only where the table says so.
+        let wrapped = rest.split(':').any(|part| part == "wrappedkey_v0");
+        Ok(Encryption { cipher: cipher.to_string(), wrapped })
     }
 }
 
@@ -116,14 +128,22 @@ fn open(service: &KeyMint) -> Result<Opened> {
             false => None,
         };
         std::fs::create_dir_all(MOUNT).with_context(|| format!("make {MOUNT}"))?;
-        mount::mount(&mapped, Path::new(MOUNT), &entry.filesystem, &entry.options)?;
+        // The phone's own mount options are speeds and limits it tuned for
+        // itself; a recovery kernel may not know one of them and refuses the
+        // whole mount over it. The files read and write without them, so
+        // keep only what every kernel knows.
+        let options: Vec<String> = entry.options.iter().filter(|o| matches!(o.as_str(), "noatime" | "nosuid" | "nodev")).cloned().collect();
+        mount::mount(&mapped, Path::new(MOUNT), &entry.filesystem, &options)?;
         Ok((checked, entry.filesystem.clone()))
     })();
     match mounted {
         Ok((checked, filesystem)) => Ok(Opened { mapped, filesystem, checked }),
-        Err(e) => match dm::remove(MAPPED) {
-            Ok(()) => Err(e),
-            Err(r) => Err(e.context(format!("removing {MAPPED} afterwards failed too: {r:#}"))),
+        Err(e) => match dm::status(MAPPED) {
+            Ok(Some(_)) => match dm::remove(MAPPED) {
+                Ok(()) => Err(e),
+                Err(r) => Err(e.context(format!("removing {MAPPED} afterwards failed too: {r:#}"))),
+            },
+            _ => Err(e),
         },
     }
 }
@@ -133,9 +153,25 @@ fn open(service: &KeyMint) -> Result<Opened> {
 /// and the device the filesystem is read and written through.
 fn map(service: &KeyMint) -> Result<(Vec<Entry>, PathBuf)> {
     let entries = skyward_block::fstab::read(MOUNT)?;
-    let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
-    let encryption = Encryption::of(entry)?;
+    // A phone may name the data partition once for each filesystem it might
+    // hold, and only the entry of the one it holds says how the whole of it
+    // is encrypted. Take that one for the key, and let the mount below pick
+    // the entry of the filesystem that is actually there.
+    let entry = entries
+        .iter()
+        .find(|e| e.extra("metadata_encryption").is_some() || e.extra("keydirectory").is_some())
+        .or_else(|| entries.first())
+        .with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
     let device = skyward_block::fstab::device(entry)?;
+    // A phone may encrypt each file rather than the whole partition. Then
+    // there is no key for the whole of it and nothing to map: the partition
+    // is mounted as it is, and the keys of the files are let in afterwards.
+    // A phone that names a key directory holds the key for the whole of it
+    // there, and that is what says the whole of it is encrypted.
+    if entry.extra("metadata_encryption").is_none() && entry.extra("keydirectory").is_none() {
+        return Ok((entries, device.into()));
+    }
+    let encryption = Encryption::of(entry)?;
     let key = storage_key(service, entry, &encryption)?;
     let sectors = skyward_block::size_bytes(&device)? / 512;
     let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
