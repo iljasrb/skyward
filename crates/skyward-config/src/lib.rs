@@ -295,8 +295,10 @@ pub struct Rom {
 /// keeps the same.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct Backup {
-    /// The partitions that keep the baseband's settings, with the phone's
-    /// own identity, and the sensors' calibration.
+    /// The partitions that are the phone's own rather than the build's: the
+    /// baseband's settings with the phone's own identity, the sensors'
+    /// calibration, the camera's tuning and the vendor's configuration, and
+    /// the keys the secure world keeps.
     #[serde(default)]
     pub efs: Vec<String>,
     /// Folders in the data partition, from its top, that the phone's own
