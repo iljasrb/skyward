@@ -65,6 +65,12 @@ export ANDROID_NDK_HOME=$ndk
 # publication time comes back from GitHub, which is what the update page
 # compares; nothing at runtime parses a time.
 export SKYWARD_BUILD=${SKYWARD_BUILD:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+# The binaries keep the path of every file they were built from, for the
+# messages a panic prints: the crates from the cargo home, and the workspace's
+# own. Left as they are, they name the machine and the user who built the
+# image, which is nobody's business once it is published. Remapped to a name
+# that says nothing, the longest prefix first.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$root=/build/skyward --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/build/cargo --remap-path-prefix=$HOME=/build"
 
 # No --features roots: this branch is the recovery without the root methods.
 cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
@@ -73,7 +79,7 @@ cargo build --release -p skyward-pack
 # The second system's first program runs before any library is there to
 # load, so it is linked statically and built into a target directory of its
 # own, where the static flags do not reach the rest.
-RUSTFLAGS="-C target-feature=+crt-static" \
+RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static" \
     cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init \
     --target-dir target/system-init
 
