@@ -283,12 +283,14 @@ libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/ve
 service = "android.hardware.wifi.supplicant.ISupplicant/default"
 probe = "http://connectivitycheck.gstatic.com/generate_204"
 
-# The baseband's own copy of the phone's identity, and the sensors'
-# calibration. persist is deliberately not here: it holds the secure world's
-# non-volatile storage, and restoring an older copy leaves the phone's PIN
-# unverifiable.
+# The partitions that are the phone's own rather than the build's: the
+# baseband's copy of the phone's identity, the sensors' calibration, the
+# camera's tuning and the vendor's configuration in optics, prism and omr,
+# and the keys the secure world keeps in keydata and keyrefuge. persist is
+# deliberately not here: it holds the secure world's non-volatile storage,
+# and restoring an older copy leaves the phone's PIN unverifiable.
 [backup]
-efs = ["efs", "sec_efs", "modemst1", "modemst2", "fsg", "fsc", "devinfo"]
+efs = ["efs", "sec_efs", "modemst1", "modemst2", "fsg", "fsc", "devinfo", "optics", "prism", "omr", "keydata", "keyrefuge"]
 data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
 
 # Where the phone's own programs keep logs and crash records in the data
