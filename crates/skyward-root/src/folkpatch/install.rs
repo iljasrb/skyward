@@ -196,7 +196,7 @@ impl<'a> Run<'a> {
         }
         self.slots = crate::slots(&self.options.slots).map_err(|_| Stop::Refused(Refusal::NoSlot))?;
         for slot in &self.slots.clone() {
-            let device = image::device(&self.options.partition_dir, BOOT, *slot);
+            let device = image::device(&self.options.partition_dir, BOOT, Some(*slot));
             if !device.exists() {
                 return Err(Stop::Refused(Refusal::Missing(*slot)));
             }
@@ -231,7 +231,7 @@ impl<'a> Run<'a> {
         // A partition's own device says where its end is; metadata does not.
         let mut need = MARGIN;
         for slot in &self.slots.clone() {
-            let device = image::device(&self.options.partition_dir, BOOT, *slot);
+            let device = image::device(&self.options.partition_dir, BOOT, Some(*slot));
             need += partition_size(&device).map_err(Stop::Why)?;
         }
         let have = available(storage).map_err(Stop::Why)?;
@@ -247,7 +247,7 @@ impl<'a> Run<'a> {
     fn saved(&mut self) -> Result<(), Stop> {
         for slot in &self.slots.clone() {
             self.told(Stage::BackingUp { slot: *slot, done: 0, total: 0 });
-            let device = image::device(&self.options.partition_dir, BOOT, *slot);
+            let device = image::device(&self.options.partition_dir, BOOT, Some(*slot));
             let mut tell = |stage: Stage| (self.tell)(stage);
             let copy = backup::save(&device, &self.layout.backups, *slot, &mut tell).map_err(Stop::Why)?;
             self.backups.push(copy);
@@ -298,7 +298,7 @@ impl<'a> Run<'a> {
     /// Patch `slot`'s boot partition into a file, with the key down a pipe.
     fn patch(&mut self, slot: Slot) -> Result<PathBuf, Stop> {
         let key = self.key.as_ref().context("the key was made before any write")?;
-        let source = image::device(&self.options.partition_dir, BOOT, slot);
+        let source = image::device(&self.options.partition_dir, BOOT, Some(slot));
         let out = self.tools.join(format!("patched{}.img", slot.suffix()));
         let (read, mut write) = pipe()?;
         let fd = read.as_raw_fd();
@@ -334,7 +334,7 @@ impl<'a> Run<'a> {
     /// footer where the phone's bootloader looks for one.
     fn verify(&mut self, slot: Slot, patched: &Path) -> Result<u64, Stop> {
         let size = fs::metadata(patched).with_context(|| format!("find the size of {}", patched.display()))?.len();
-        let source = image::device(&self.options.partition_dir, BOOT, slot);
+        let source = image::device(&self.options.partition_dir, BOOT, Some(slot));
         let room = partition_size(&source)?;
         if size == 0 || size > room {
             return Err(Stop::Why(anyhow::anyhow!("the patch is {size} bytes, more than the {room} its partition holds")));
@@ -360,7 +360,7 @@ impl<'a> Run<'a> {
     }
 
     fn flash(&mut self, slot: Slot, patched: &Path, size: u64) -> Result<(), Stop> {
-        let device = image::device(&self.options.partition_dir, BOOT, slot);
+        let device = image::device(&self.options.partition_dir, BOOT, Some(slot));
         let mut file = File::open(patched).with_context(|| format!("open {}", patched.display()))?;
         let mut progress = |done: u64, total: u64| (self.tell)(Stage::Flashing { slot, done, total });
         image::flash(&mut file, size, std::slice::from_ref(&device), &mut progress)
@@ -510,7 +510,7 @@ pub fn patched_slot(partition_dir: &Path, slot: Slot, private: &Path) -> Result<
         let kptools = tools.join("kptools");
         fs::write(&kptools, KPTOOLS).with_context(|| format!("write {}", kptools.display()))?;
         fs::set_permissions(&kptools, fs::Permissions::from_mode(0o700)).with_context(|| format!("let {} be run", kptools.display()))?;
-        let device = image::device(partition_dir, BOOT, slot);
+        let device = image::device(partition_dir, BOOT, Some(slot));
         let mut image = File::open(&device).with_context(|| format!("open {}", device.display()))?;
         let kernel = tools.join("kernel.img");
         fs::write(&kernel, kernel_of(&mut image)?).with_context(|| format!("write {}", kernel.display()))?;

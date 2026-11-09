@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 mod avb;
 
-use skyward_bootimg::{BootImage, Ramdisk};
+use skyward_bootimg::{BootImage, Compression, Ramdisk};
 
 /// Builds Skyward recovery images from a device's own stock images.
 #[derive(Parser)]
@@ -75,6 +75,17 @@ enum Cmd {
         /// A folder of programs to put in /system/bin, such as 7za and zstd.
         #[arg(long)]
         tools: Option<PathBuf>,
+        /// A folder of libraries to put in /system/lib64, such as the ones
+        /// the phone's own key service was built against.
+        #[arg(long)]
+        libs: Option<PathBuf>,
+        /// Pack the ramdisk with gzip rather than LZ4's legacy framing.
+        #[arg(long)]
+        gzip: bool,
+        /// A ramdisk path to take out, with everything under it; may be
+        /// given more than once.
+        #[arg(long)]
+        remove: Vec<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -117,10 +128,13 @@ fn main() -> Result<()> {
             };
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, tools, out } => {
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, tools, libs, gzip, remove, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
+            for name in &remove {
+                rd.remove_tree(name);
+            }
             // A stock recovery ramdisk has no third-party tree; refuse to build
             // on top of another custom recovery.
             if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
@@ -139,6 +153,9 @@ fn main() -> Result<()> {
             rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
             if let Some(tools) = &tools {
                 add_tools(&mut rd, tools)?;
+            }
+            if let Some(libs) = &libs {
+                add_programs(&mut rd, libs, "system/lib64", 0o644)?;
             }
             rd.add(paths::CONFIG, 0o644, read(&config)?)?;
             rd.add(paths::FONT, 0o644, read(&font)?)?;
@@ -163,7 +180,7 @@ fn main() -> Result<()> {
             let mut props = without(stock_props, &BUILD_VERSION);
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
             rd.replace(paths::PROP_DEFAULT, props)?;
-            img.ramdisk = rd.encode()?;
+            img.ramdisk = rd.encode_as(if gzip { Compression::Gzip } else { Compression::Lz4 })?;
             let bytes = img.to_bytes()?;
             write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
         }
@@ -260,6 +277,12 @@ fn without(props: &[u8], names: &[&str]) -> Vec<u8> {
 /// Put every program in `dir` in the ramdisk's /system/bin, keeping a
 /// symbolic link a symbolic link.
 fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
+    add_programs(rd, dir, "system/bin", 0o755)
+}
+
+/// Put every file in `dir` in the ramdisk's `folder`, keeping a symbolic
+/// link a symbolic link.
+fn add_programs(rd: &mut Ramdisk, dir: &Path, folder: &str, mode: u32) -> Result<()> {
     let mut entries = std::fs::read_dir(dir)
         .with_context(|| format!("read {}", dir.display()))?
         .collect::<std::io::Result<Vec<_>>>()
@@ -268,7 +291,7 @@ fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
     for entry in entries {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "recovery" {
+        if folder == "system/bin" && name == "recovery" {
             bail!("{} holds recovery, which is the recovery binary itself", dir.display());
         }
         let meta = std::fs::symlink_metadata(&path).with_context(|| format!("look at {}", path.display()))?;
@@ -277,10 +300,10 @@ fn add_tools(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
         }
         if meta.file_type().is_symlink() {
             let target = std::fs::read_link(&path).with_context(|| format!("read the link {}", path.display()))?;
-            rd.link(&format!("system/bin/{name}"), &target.to_string_lossy())?;
+            rd.link(&format!("{folder}/{name}"), &target.to_string_lossy())?;
         } else if meta.is_file() {
             let data = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            rd.add(&format!("system/bin/{name}"), 0o755, data)?;
+            rd.add(&format!("{folder}/{name}"), mode, data)?;
         }
     }
     Ok(())
@@ -303,11 +326,14 @@ fn list(image: &Path) -> Result<()> {
     let img = BootImage::read(image)?;
     let h = &img.header;
     println!(
-        "header v{}  kernel {} bytes  ramdisk {} bytes  {:?}",
+        "header v{}  kernel {} bytes  ramdisk {} bytes  second {} bytes  recovery dtbo {} bytes  dtb {} bytes  {:?}",
         h.header_version(),
         img.kernel.len(),
         img.ramdisk.len(),
-        h.osversionpatch
+        img.second.len(),
+        img.recovery_dtbo.len(),
+        img.dtb.len(),
+        h.osversionpatch()
     );
     if img.ramdisk.is_empty() {
         return Ok(());

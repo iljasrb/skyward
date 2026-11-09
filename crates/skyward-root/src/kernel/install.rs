@@ -213,7 +213,7 @@ impl<'a> Run<'a> {
         }
         let mut need = MARGIN;
         for slot in slots {
-            let device = image::device(&self.options.partition_dir, PARTITION, slot);
+            let device = image::device(&self.options.partition_dir, PARTITION, Some(slot));
             if !device.exists() {
                 return Err(Stop::Refused(Refusal::Missing { slot, partition: PARTITION }));
             }

@@ -802,6 +802,9 @@ pub fn partition_role(_l: Lang, name: &str) -> &'static str {
 
 /// `slot B`, `slots A and B`, `slot B`, `slots A and B`
 pub fn slots(_l: Lang, slots: &[Slot]) -> String {
+    if slots.is_empty() {
+        return "the phone".into();
+    }
     let letters: Vec<&str> = slots.iter().map(|s| s.letter()).collect();
     let joined = letters.join(S_AND);
     if slots.len() == 1 {

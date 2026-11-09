@@ -35,8 +35,8 @@ impl Kept {
     /// slot does not hold Skyward, as when it was started without being
     /// flashed.
     pub fn hold(dir: &Path, current: Slot) -> Result<Option<Kept>> {
-        let (a, image_a) = read(&image::device(dir, PARTITION, Slot::A))?;
-        let (b, image_b) = read(&image::device(dir, PARTITION, Slot::B))?;
+        let (a, image_a) = read(&image::device(dir, PARTITION, Some(Slot::A)))?;
+        let (b, image_b) = read(&image::device(dir, PARTITION, Some(Slot::B)))?;
         let (held, image) = match current {
             Slot::A => (a, image_a),
             Slot::B => (b, image_b),
@@ -48,15 +48,15 @@ impl Kept {
     /// the partitions hold once the install is done; `next` is the slot
     /// that starts next.
     pub fn wanted(&self, next: Slot) -> Result<Vec<Slot>> {
-        let (a, _) = read(&image::device(&self.dir, PARTITION, Slot::A))?;
-        let (b, _) = read(&image::device(&self.dir, PARTITION, Slot::B))?;
+        let (a, _) = read(&image::device(&self.dir, PARTITION, Some(Slot::A)))?;
+        let (b, _) = read(&image::device(&self.dir, PARTITION, Some(Slot::B)))?;
         Ok(restore(self.before, [a, b], self.own, next))
     }
 
     /// Write this recovery into the recovery partitions of `slots` and read
     /// each back; `progress` hears the bytes so far, of all.
     pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
+        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, Some(slot))).collect();
         image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress)
     }
 }

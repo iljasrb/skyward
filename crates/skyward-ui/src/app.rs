@@ -1367,12 +1367,16 @@ pub enum Pick {
 impl Pick {
     pub const ALL: [Pick; 3] = [Pick::Current, Pick::Other, Pick::Both];
 
-    /// The slots this means on a phone running from `current`.
-    pub fn slots(self, current: Slot) -> Vec<Slot> {
-        match self {
-            Pick::Current => vec![current],
-            Pick::Other => vec![current.other()],
-            Pick::Both => vec![Slot::A, Slot::B],
+    /// The slots this means on a phone running from `current`. A phone
+    /// without slots has one of each partition, and the pick means it.
+    pub fn slots(self, current: Option<Slot>) -> Vec<Slot> {
+        match current {
+            Some(current) => match self {
+                Pick::Current => vec![current],
+                Pick::Other => vec![current.other()],
+                Pick::Both => vec![Slot::A, Slot::B],
+            },
+            None => vec![Slot::A],
         }
     }
 }

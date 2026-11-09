@@ -287,7 +287,7 @@ fn main() -> Result<()> {
         Cmd::Payload { package } => payload(&package),
         Cmd::Extract { package, partition, out } => extract(&package, &partition, &out),
         Cmd::Mount => {
-            let mounts = skyward_vab::mount_partitions(booted_slot()?)?;
+            let mounts = skyward_vab::mount_partitions(skyward_vab::current_slot()?)?;
             for d in &mounts.damaged {
                 println!("damaged: {d}");
             }
@@ -296,10 +296,10 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Umount => skyward_vab::unmount_partitions(booted_slot()?),
+        Cmd::Umount => skyward_vab::unmount_partitions(skyward_vab::current_slot()?),
         #[cfg(target_os = "android")]
         Cmd::Services { config } => {
-            let props = skyward_info::installed_props(booted_slot()?)?;
+            let props = skyward_info::installed_props(skyward_vab::current_slot()?)?;
             let mut services = DeviceConfig::load(&config)?.services;
             services.retain(|s| s.runs_on(&props));
             services::start(&services, secure::libraries()?.as_deref())?;
@@ -349,8 +349,8 @@ fn main() -> Result<()> {
         }
         #[cfg(target_os = "android")]
         Cmd::Keymint { key, alias } => {
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::keymint::KeyMint::open(&binder, Some(&hardware))?;
             let hw = service.hardware()?;
             println!("keymint {} version {} at security level {} by {}", hw.name, hw.version, hw.security_level, hw.author);
             if let Some(alias) = alias {
@@ -409,8 +409,8 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::keymint::KeyMint::open(&binder, Some(&hardware))?;
             let opening = data::open_without_credential(&service)?;
             match &opening.mounted {
                 Some(mounted) => {
@@ -454,7 +454,7 @@ fn booted_slot() -> Result<skyward_vab::Slot> {
 fn lp(super_dev: &Path, slot: Option<u32>) -> Result<()> {
     let slot = match slot {
         Some(n) => n,
-        None => booted_slot()?.number(),
+        None => skyward_vab::current_slot()?.map_or(0, skyward_vab::Slot::number),
     };
     let md = skyward_lp::read(super_dev, slot)?;
     let g = md.geometry;
@@ -510,7 +510,7 @@ fn load_modules(cfg: &DeviceConfig, names: &[String]) -> Result<Vec<PathBuf>> {
 /// driver and the touch processing. Of the programs the configuration
 /// names, only those this phone's build of the hardware runs are started.
 #[cfg(target_os = "android")]
-fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
+fn bring_up(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>) -> Result<()> {
     let nodes = skyward_sys::ueventd::apply()?;
     skyward_sys::kmsg(&format!("{nodes} device nodes given the owner their phone describes"))?;
     let props = skyward_info::installed_props(slot)?;
@@ -541,7 +541,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         let handed = hand_over(&cfg.owners)?;
         skyward_sys::kmsg(&format!("{handed} of the phone's own files handed to the accounts its init gives them"))?;
     }
-    let hardware: Vec<String> = services.iter().filter_map(|s| s.ready_hardware_service.clone()).collect();
+    let hardware: Vec<String> = services.iter().flat_map(|s| s.ready_hardware_service.iter().chain(&s.hardware)).cloned().collect();
     if !hardware.is_empty() {
         secure::prepare_hardware_directory(&hardware)?;
         skyward_sys::kmsg("the directory for the phone's hardware services can run")?;
@@ -782,7 +782,7 @@ fn recovery() -> Result<()> {
             // erasing them, which may take super with them, and undoing
             // shared blocks, which writes to the slot's own.
             if !matches!(request.work, bcb::Work::Fastboot | bcb::Work::WipeAb { .. } | bcb::Work::UnshareBlocks) {
-                prepare(&cfg, booted_slot()?)?;
+                prepare(&cfg, skyward_vab::current_slot()?)?;
             }
             let root = Path::new("/");
             ui::run(&cfg, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None)
@@ -801,7 +801,7 @@ fn recovery() -> Result<()> {
 /// from them. Recovery has to stay usable when super cannot be mounted, as
 /// after it is wiped, so the reason goes to the kernel log instead.
 #[cfg(target_os = "android")]
-fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
+fn prepare(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>) -> Result<()> {
     match skyward_vab::mount_partitions(slot) {
         Ok(mounts) => {
             for d in &mounts.damaged {

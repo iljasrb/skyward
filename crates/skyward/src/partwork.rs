@@ -151,7 +151,7 @@ fn disable(package_size: u64, tell: &mut dyn FnMut(Event)) -> Result<(), Stop> {
 /// carries no e2fsck of its own, the installed system's is copied out
 /// first.
 fn unshare(slot: Slot, tell: &mut dyn FnMut(Event)) -> Result<(), Stop> {
-    let bases = skyward_vab::slot_bases(slot).map_err(|e| Stop::Failed(said(&e)))?;
+    let bases = skyward_vab::slot_bases(Some(slot)).map_err(|e| Stop::Failed(said(&e)))?;
     tell(Event::Listed(bases.clone()));
     let mut held = Vec::new();
     for (index, base) in bases.iter().enumerate() {
@@ -171,7 +171,7 @@ fn unshare(slot: Slot, tell: &mut dyn FnMut(Event)) -> Result<(), Stop> {
         tell(Event::At(index));
         let base = &bases[index];
         let ran = (|| -> Result<(Fixed, tools::Ran)> {
-            let whole = skyward_vab::map_whole(slot, base, WORK_MAPPING, false)?;
+            let whole = skyward_vab::map_whole(Some(slot), base, WORK_MAPPING, false)?;
             let ran = fsck::unshare_blocks(&e2fsck, &whole.device);
             skyward_vab::unmap_whole(&whole)?;
             ran
@@ -189,7 +189,7 @@ fn unshare(slot: Slot, tell: &mut dyn FnMut(Event)) -> Result<(), Stop> {
 /// What the slot's partition `base` holds, looked at through a mapping of
 /// its own.
 fn filesystem_of(slot: Slot, base: &str) -> Result<Option<String>> {
-    let whole = skyward_vab::map_whole(slot, base, WORK_MAPPING, true)?;
+    let whole = skyward_vab::map_whole(Some(slot), base, WORK_MAPPING, true)?;
     let held = probe::filesystem(&whole.device);
     skyward_vab::unmap_whole(&whole)?;
     held
@@ -208,13 +208,13 @@ fn e2fsck(slot: Slot) -> Result<tools::Tool, Stop> {
 /// for the moment, to where they run from once the system is let go.
 fn copy_e2fsck(slot: Slot) -> Result<tools::Tool, Stop> {
     let copied = (|| -> Result<Result<tools::Tool, Stop>> {
-        skyward_vab::mount_one(slot, tools::SYSTEM)?;
+        skyward_vab::mount_one(Some(slot), tools::SYSTEM)?;
         let found = tools::find(fsck::E2FSCK);
         let copied = match &found {
             Ok(tool) => copy_with_libraries(&tool.program),
             Err(_) => Ok(PathBuf::new()),
         };
-        skyward_vab::unmount_one(slot, tools::SYSTEM)?;
+        skyward_vab::unmount_one(Some(slot), tools::SYSTEM)?;
         let program = copied?;
         Ok(match found {
             Ok(_) => Ok(tools::Tool { program, libraries: vec![E2FSCK_COPY.into(), tools::RECOVERY_LIB64.into()] }),

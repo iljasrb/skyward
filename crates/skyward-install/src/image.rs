@@ -7,7 +7,7 @@ use abootimg_oxide::binrw::BinRead;
 use abootimg_oxide::{Header, VendorHeader};
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
-use skyward_vab::Slot;
+use skyward_vab::{partition_name, Slot};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -173,21 +173,29 @@ pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
     find(ramdisk, |name| name == skyward_config::ramdisk::CONFIG, read).context("read the ramdisk")
 }
 
-/// The partition `name` of `slot` among the links in `dir`.
-pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
-    dir.join(format!("{name}{}", slot.suffix()))
+/// The partition `name` of `slot` among the links in `dir`: with the
+/// slot's suffix where the phone has slots, and as it is where it has none.
+pub fn device(dir: &Path, name: &str, slot: Option<Slot>) -> PathBuf {
+    dir.join(partition_name(name, slot))
 }
 
-/// The partitions `kind` fits that this phone has in both slots, among the
-/// links in `dir`, the likeliest first.
-pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
+/// The partitions `kind` fits that this phone has, among the links in
+/// `dir`, the likeliest first. A phone with slots has each of them in both;
+/// a phone without has one of each.
+pub fn partitions(kind: ImageKind, dir: &Path, slot: Option<Slot>) -> Result<Vec<&'static str>> {
     let mut found = Vec::new();
     for name in kind.partitions() {
-        let mut has = true;
-        for slot in [Slot::A, Slot::B] {
-            let path = device(dir, name, slot);
-            has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
-        }
+        let has = match slot {
+            Some(_) => {
+                let mut has = true;
+                for slot in [Slot::A, Slot::B] {
+                    let path = device(dir, name, Some(slot));
+                    has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
+                }
+                has
+            }
+            None => device(dir, name, None).try_exists().with_context(|| format!("look for {}", device(dir, name, None).display()))?,
+        };
         if has {
             found.push(*name);
         }
@@ -439,9 +447,9 @@ mod tests {
             std::fs::File::create(dir.path().join(name)).unwrap();
         }
         let both = ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery };
-        assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
-        assert_eq!(partitions(ImageKind::Vbmeta, dir.path()).unwrap(), ["vbmeta"]);
-        assert!(partitions(ImageKind::Dtbo, dir.path()).unwrap().is_empty());
+        assert_eq!(partitions(both, dir.path(), Some(Slot::A)).unwrap(), ["recovery", "boot"]);
+        assert_eq!(partitions(ImageKind::Vbmeta, dir.path(), Some(Slot::A)).unwrap(), ["vbmeta"]);
+        assert!(partitions(ImageKind::Dtbo, dir.path(), Some(Slot::A)).unwrap().is_empty());
     }
 
     /// A partition of `size` bytes filled with 0xAA, so untouched bytes

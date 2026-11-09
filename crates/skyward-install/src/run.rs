@@ -655,7 +655,7 @@ fn remount_metadata() -> Result<()> {
 
 /// The phone, and the system on it as its mounted partitions tell.
 fn phone(slot: Slot) -> Result<Phone> {
-    let props = skyward_info::installed_props(slot)?;
+    let props = skyward_info::installed_props(Some(slot))?;
     let installed = match (props.get("ro.build.date.utc"), props.get("ro.build.version.security_patch")) {
         (Some(time), Some(patch)) => Some(Build {
             timestamp: time.parse().with_context(|| format!("ro.build.date.utc {time:?}"))?,
@@ -783,7 +783,8 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
 
 fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     let dir = Path::new(skyward_block::BY_NAME);
-    let partitions = image::partitions(kind, dir)?;
+    let current = skyward_vab::current_slot()?;
+    let partitions = image::partitions(kind, dir, current)?;
     if partitions.is_empty() {
         return Ok(Done::Decided(Outcome::Refused(Refusal::NoPartition)));
     }
@@ -798,7 +799,10 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
         installed_boot_set()?;
     }
-    let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
+    let devices: Vec<_> = match current {
+        Some(_) => slots.iter().map(|&slot| image::device(dir, partition, Some(slot))).collect(),
+        None => vec![image::device(dir, partition, None)],
+    };
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     let mut told: Option<Instant> = None;
     image::flash(&mut file, size, &devices, &mut |done, total| {
@@ -807,6 +811,9 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
             told = Some(Instant::now());
         }
     })?;
+    // A phone without slots has one partition of each name, and the
+    // screen says so rather than naming a slot.
+    let slots = if current.is_some() { slots } else { Vec::new() };
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
 }
 
@@ -851,7 +858,7 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     // While an update is in flight, the slot's partitions in super are its
     // and stay unmapped.
     let mapped = match skyward_vab::snapshot_state()? {
-        SnapshotState::None => skyward_vab::map_slot(slot)?,
+        SnapshotState::None => skyward_vab::map_slot(Some(slot))?,
         state => {
             let _ = kmsg(&format!("install: the slot's partitions stay unmapped while an update is in flight ({state:?})"));
             SlotMaps::default()

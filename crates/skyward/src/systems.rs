@@ -52,7 +52,7 @@ pub fn next_slot() -> Result<Slot> {
 /// was installed.
 fn read(version_prop: &str) -> Result<Overview> {
     let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
-    let props = skyward_info::installed_props(current)?;
+    let props = skyward_info::installed_props(Some(current))?;
     let state = install::state()?;
     let changed = match state.system {
         Some(_) => install::changed(&state, next_slot()?)?,

@@ -9,7 +9,7 @@ pub const GROUP_FILES: [&str; 2] = ["/vendor/etc/group", "/odm/etc/group"];
 /// The accounts Android fixes once and for all. The rules, and the init
 /// scripts of the phone's own programs, name them rather than their
 /// numbers, and a recovery has no list of its own to look them up in.
-const ACCOUNTS: [(&str, u32); 34] = [
+const ACCOUNTS: [(&str, u32); 36] = [
     ("root", 0),
     ("system", 1000),
     ("radio", 1001),
@@ -40,6 +40,8 @@ const ACCOUNTS: [(&str, u32); 34] = [
     ("cameraserver", 1047),
     ("shell", 2000),
     ("inet", 3003),
+    ("net_raw", 3004),
+    ("net_admin", 3005),
     ("readproc", 3009),
     ("wakelock", 3010),
     ("uhid", 3011),
