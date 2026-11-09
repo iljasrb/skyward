@@ -849,16 +849,22 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             Ok(other) => bail!("a script waiting to be agreed to was told {other:?}"),
         }
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A phone without slots runs one system, and its recovery sits in one
+    // partition: the script gets the same room to write in either way, and
+    // what it writes over is its own business, as in Android's recovery.
+    let slot = skyward_vab::current_slot()?;
     extract_script()?;
     shell_at_sbin()?;
-    let kept = hold(ctx, slot)?;
+    let kept = match slot {
+        Some(slot) => hold(ctx, slot)?,
+        None => None,
+    };
     installed_boot_set()?;
     detach_once(ctx)?;
     // While an update is in flight, the slot's partitions in super are its
     // and stay unmapped.
     let mapped = match skyward_vab::snapshot_state()? {
-        SnapshotState::None => skyward_vab::map_slot(Some(slot))?,
+        SnapshotState::None => skyward_vab::map_slot(slot)?,
         state => {
             let _ = kmsg(&format!("install: the slot's partitions stay unmapped while an update is in flight ({state:?})"));
             SlotMaps::default()
