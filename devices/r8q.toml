@@ -287,12 +287,23 @@ libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/ve
 service = "android.hardware.wifi.supplicant.ISupplicant/default"
 probe = "http://connectivitycheck.gstatic.com/generate_204"
 
-# The partitions that are the phone's own rather than the build's: the
-# baseband's copy of the phone's identity, the sensors' calibration, the
-# camera's tuning and the vendor's configuration in optics, prism and omr,
-# and the keys the secure world keeps in keydata and keyrefuge. persist is
-# deliberately not here: it holds the secure world's non-volatile storage,
-# and restoring an older copy leaves the phone's PIN unverifiable.
+# The baseband's own copy of the phone's identity, twice over as Samsung's
+# own recovery takes it, efs and sec_efs, and the modem's settings beside it
+# in modemst1, modemst2, fsg and fsc. devinfo is the block that names the
+# phone, and the camera's optics is the module's per-unit tuning, which no
+# image brings back once it is gone.
+#
+# prism and omr are the vendor's configuration as shipped -- the CSC, the
+# preload, the regional settings -- and keydata and keyrefuge the keys
+# Samsung's own layer keeps. prism is the largest by far, most of a
+# gigabyte against a few megabytes for the rest.
+#
+# persist and spu are deliberately not here. They hold the secure world's own
+# non-volatile storage -- the keymaster and gatekeeper state the screen lock
+# is bound to -- so restoring an older copy of either leaves the phone's PIN
+# unverifiable: the trustlet derives a different proof than the one the data
+# partition recorded. A backup of them is worth taking by hand, with a ring
+# of salt; restoring one is not a thing to do by accident.
 [backup]
 efs = ["efs", "sec_efs", "modemst1", "modemst2", "fsg", "fsc", "devinfo", "optics", "prism", "omr", "keydata", "keyrefuge"]
 data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
