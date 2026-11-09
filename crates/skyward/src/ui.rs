@@ -831,6 +831,20 @@ fn answer(request: Request, fastboot: bool) -> Vec<Effect> {
     }
 }
 
+/// Where fastbootd asked the phone to go, from what it left in the
+/// bootloader message: the recovery it runs in for a `reboot recovery`, and
+/// the bootloader or fastboot itself for the other two. A message that asks
+/// for none of them -- an empty one, or whatever the phone booted with --
+/// leaves the phone where it is.
+fn left_for(asked: &bcb::Bcb) -> Option<Target> {
+    match asked.command.as_str() {
+        "" => None,
+        "bootonce-bootloader" => Some(Target::Bootloader),
+        "boot-fastboot" => Some(Target::Fastboot),
+        _ => Some(Target::Recovery),
+    }
+}
+
 /// The time of day for the status bar, in the zone the settings chose.
 fn clock(zone: usize) -> Result<String> {
     Ok(skyward_ui::fmt::clock(unix_now()?, zone))
@@ -1228,6 +1242,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // so a restart halfway comes back to it, until it is done or the user
     // leaves it for somewhere else.
     let misc = bcb::misc();
+    // The bootloader message as the fastboot page found it. fastbootd cannot
+    // reboot the phone itself: for the computer's `reboot recovery`,
+    // `bootloader` and `fastboot` it writes the request there and hands the
+    // port back, and init stops it as the port goes through "none". What it
+    // wrote while the page showed is therefore still in misc, and is carried
+    // out as the page ends.
+    let mut fastboot_found = match fastboot {
+        true => Some(bcb::read(&misc)?),
+        false => None,
+    };
     let mut kept = request.work.lasts();
     // The wipe page offers the cache partition where the phone's table has
     // one; a table that does not read leaves it out, and the page still
@@ -3149,6 +3173,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // then the slot's partitions come up as at boot.
                     Effect::EnterRecovery => {
                         skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
+                        if let Some(found) = fastboot_found.take() {
+                            let asked = bcb::read(&misc)?;
+                            if asked != found {
+                                if let Some(target) = left_for(&asked) {
+                                    skyward_sys::kmsg(&format!("fastbootd asked the phone to leave for {target:?}"))?;
+                                    power(target)?;
+                                    return Ok(());
+                                }
+                            }
+                        }
                         let slot = skyward_vab::current_slot()?;
                         crate::prepare(cfg, slot)?;
                         read_at = Instant::now();

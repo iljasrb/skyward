@@ -237,7 +237,10 @@ fn main() -> Result<()> {
     // the tools a recovery gives them.
     let started_as = std::env::args_os().next().unwrap_or_default();
     let name = Path::new(&started_as).file_name().unwrap_or_default();
-    if name == "recovery" {
+    // The service is started by path with nothing after it; a name and
+    // arguments are someone asking this binary for one of its commands, even
+    // where that name is the recovery's own.
+    if name == "recovery" && std::env::args_os().len() == 1 {
         return recovery();
     }
     // Install scripts run the commands linked to this binary by their names.
@@ -692,6 +695,32 @@ fn adopt_installed_version(props: &std::collections::HashMap<String, String>) ->
 
 /// The recovery service. Its own folder is made and its log kept there from
 /// the start, and adb comes up first so a failure later on can be
+/// Hold the recovery's own lock for as long as the recovery runs.
+///
+/// What starts recovery is the service init runs, once; anything else that
+/// reaches this binary and ends up here is a second recovery, and a second
+/// recovery is not harmless: on its way in it sets the port to `none`, which
+/// takes adb down with it, and it takes the screen and the panel from the one
+/// already running. Closing the door on it costs the first one nothing.
+fn only_one() -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let at = Path::new(skyward_sys::RUN).join("recovery.lock");
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&at)
+        .with_context(|| format!("make {}", at.display()))?;
+    // The lock is on the open file, and goes away with it: the kernel drops
+    // it even if this process is killed.
+    if unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let why = format!("another recovery holds {}: leaving it alone", at.display());
+        let _ = skyward_sys::kmsg(&why);
+        return Err(anyhow!(why));
+    }
+    Ok(held)
+}
+
 /// inspected, file transfer joining it
 /// once the screen starts; then the boot request in misc is read. A
 /// request whose work
@@ -716,6 +745,7 @@ fn recovery() -> Result<()> {
         std::fs::create_dir_all(skyward_sys::RUN).with_context(|| format!("make {}", skyward_sys::RUN))?;
         std::fs::set_permissions(skyward_sys::RUN, std::fs::Permissions::from_mode(0o755))
             .with_context(|| format!("open {} to the recovery's other users", skyward_sys::RUN))?;
+        let _only = only_one()?;
         skyward_sys::keep_log(Path::new(skyward_sys::LOG))?;
         // A recovery that ended with a function of its own in the port took
         // the port with it; going through "none" takes that function off.
