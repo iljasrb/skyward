@@ -26,19 +26,18 @@ const FN_SECDISCARDABLE: &str = "secdiscardable";
 const FN_STRETCHING: &str = "stretching";
 
 /// What the phone puts in front of a key blob it keeps: a name, and then a
-/// byte saying whether the key belongs to the phone's own key hardware or
-/// to a stand-in kept in software. What the key service reads is what
-/// follows, and a blob kept before the phone wrote the name has none.
-const WRAPPED: &[u8] = b"pKMblob";
-const WRAPPED_HEAD: usize = 8;
+/// byte saying whether the key belongs to the phone's own key hardware or to
+/// a stand-in kept in software. The service underneath reads what follows,
+/// and a blob kept before the phone wrote the name has none.
+const KEPT: &[u8] = b"pKMblob";
+const KEPT_HEAD: usize = 8;
 
-/// The key blob the phone's key service reads, out of what the phone keeps
-/// on disk. A blob that is not wrapped is handed back as it is.
-pub(crate) fn unwrapped(blob: &[u8]) -> &[u8] {
-    let wrapped = blob.len() > WRAPPED_HEAD && blob.starts_with(WRAPPED) && blob[WRAPPED_HEAD - 1] <= 1;
-    match wrapped {
-        true => &blob[WRAPPED_HEAD..],
-        false => blob,
+/// A key blob as the key service reads it, out of what the phone keeps.
+pub(crate) fn bare(kept: &[u8]) -> &[u8] {
+    let named = kept.len() > KEPT_HEAD && kept.starts_with(KEPT) && kept[KEPT_HEAD - 1] <= 1;
+    match named {
+        true => &kept[KEPT_HEAD..],
+        false => kept,
     }
 }
 
@@ -94,7 +93,7 @@ impl StoredKey {
             false => Vec::new(),
         };
         let key_blob = match dir.join(FN_KEY_BLOB).exists() {
-            true => Some(unwrapped(&read(FN_KEY_BLOB)?).to_vec()),
+            true => Some(bare(&read(FN_KEY_BLOB)?).to_vec()),
             false => None,
         };
         Ok(StoredKey { encrypted: read(FN_ENCRYPTED_KEY)?, key_blob, secdiscardable_hash })
@@ -268,9 +267,9 @@ mod tests {
         let mut held = b"pKMblob\x00".to_vec();
         held.extend_from_slice(&inner);
         held.extend_from_slice(&[0xAA; 32]);
-        assert_eq!(unwrapped(&held), [inner.as_slice(), &[0xAAu8; 32][..]].concat(), "only the name is the phone's own");
-        assert_eq!(unwrapped(&inner), inner, "a blob kept before there was a name is handed on as it is");
-        assert_eq!(unwrapped(b"pKMblob"), b"pKMblob", "one too short to hold a key is handed on as it is");
+        assert_eq!(bare(&held), [inner.as_slice(), &[0xAAu8; 32][..]].concat(), "only the name is the phone's own");
+        assert_eq!(bare(&inner), inner, "a blob kept before there was a name is handed on as it is");
+        assert_eq!(bare(b"pKMblob"), b"pKMblob", "one too short to hold a key is handed on as it is");
     }
 
     /// Why loading the directory was turned down.

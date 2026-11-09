@@ -5,7 +5,7 @@
 //! that are a user's own still encrypted.
 
 use crate::gatekeeper::Gatekeeper;
-use crate::keymint::KeyMint;
+use crate::keymint::{Decryption, KeyMint};
 use crate::keystore::{StoredKey, Unwrap};
 use crate::token::Token;
 use crate::user::Bound;
@@ -484,7 +484,8 @@ fn made_up_credential(service: &KeyMint, user: u32, id: &str, owner: Option<&Tok
     }
     let (nonce, body) = stored.split_at(NONCE_BYTES);
     let held = crate::keystore2::key_blob(Path::new(crate::keystore2::DATABASE), &alias)?;
-    let credential = service.gcm_decrypt(&held, &[], nonce, body, owner).with_context(|| {
+    let want = Decryption { key: &held, app_id: &[], nonce, body, note: owner };
+    let credential = service.gcm_decrypt(&want).with_context(|| {
         format!("open the credential the phone made up for user {user}, which is kept behind the owner's own")
     })?;
     Ok(Some(credential))
@@ -556,9 +557,8 @@ fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owne
         anyhow::bail!("the user's blob is too short to hold anything");
     }
     let (nonce, body) = content.split_at(NONCE_BYTES);
-    let inner = service
-        .gcm_decrypt(&held, &[], nonce, body, note.as_ref())
-        .context("open what the secure world holds the user's blob closed with")?;
+    let want = Decryption { key: &held, app_id: &[], nonce, body, note: note.as_ref() };
+    let inner = service.gcm_decrypt(&want).context("open what the secure world holds the user's blob closed with")?;
     let synthetic_password = crate::user::open_inner(&secret, &inner)?;
     let file_secret = crate::user::file_secret(&synthetic_password);
 

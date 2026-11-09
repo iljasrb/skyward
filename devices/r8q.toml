@@ -127,13 +127,10 @@ capabilities = ["NET_ADMIN", "NET_RAW", "SYS_MODULE"]
 # for it never brings the screen up; it is started and left to it.
 oneshot = false
 
-# The hardware services the key service and the credential service register
-# as. They are named here so the directory's description includes them; the
-# programs themselves are started further down. A program run once is not
-# waited for, so naming them here costs nothing at boot.
-# The phone's own hardware service directory: the key service and the
-# credential service are HIDL, and they register with this one, not with the
-# AIDL servicemanager the recovery starts.
+# The phone's own hardware service directory. The key service and the
+# credential service are HIDL: they register with this one, not with the AIDL
+# servicemanager the recovery starts, and a program run once is not waited
+# for, so naming the services they register costs nothing at boot.
 [[service]]
 path = "/system_ext/bin/hwservicemanager"
 libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system_ext/lib64"]

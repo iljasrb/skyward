@@ -24,15 +24,15 @@ What this first build carries:
   partition
 - Installing zips, partition images and install scripts
 - Wiping data and factory reset
+- Opening the data partition, through Samsung's Keymaster 4.0 and gatekeeper,
+  which the r8q vendor ships as hardware services: `/data` opens with the key
+  the phone keeps wrapped in `/metadata`, and the owner's own files open with
+  their screen lock
 - WLAN, through Samsung's own driver and the phone's AIDL `wpa_supplicant`
 - The recovery's own updates from the fork's releases
 
 What it does **not** carry yet:
 
-- **Decryption.** The r8q vendor has Samsung's Keymaster 4.0 (HIDL) and
-  gatekeeper `mdfpp`, while Skyward's decrypt code speaks KeyMint AIDL. The
-  OrangeFox r8q tree shows the services and the property dance a Keymaster 4.0
-  path needs; that is a separate change.
 - **Second system, snapshots and A/B updates.** r8q is not an A/B phone
   (`ro.build.ab_update=false`, no slot suffix), so the pages for a second
   system, a snapshot merge and a slot switch are not offered.
