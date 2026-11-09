@@ -554,6 +554,35 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
             ensure!(safe_file_name(name), "the backup keeps a file outside its folder: {name:?}");
         }
     }
+    // A partition the phone keeps read-only -- vbmeta, on this one -- keeps
+    // what it holds: the backup's copy of it cannot be written, and with the
+    // bootloader unlocked it is not what decides whether the phone starts. It
+    // is left as it is, and said so, rather than taking the rest of the
+    // restore with it.
+    let mut writable = Vec::with_capacity(items.len());
+    let mut kept = Vec::new();
+    for item in items {
+        let device = match item.part {
+            Part::Boot | Part::Efs => Some(target(item, slot)),
+            Part::System | Part::Data => None,
+        };
+        match device {
+            Some(device) if read_only(&device).unwrap_or(false) => kept.push(item.name.clone()),
+            _ => writable.push(item),
+        }
+    }
+    ensure!(
+        !writable.is_empty(),
+        "this phone keeps {} read-only, so nothing chosen can be written",
+        kept.join(", ")
+    );
+    if !kept.is_empty() {
+        let _ = skyward_sys::kmsg(&format!(
+            "restore: this phone keeps {} read-only, so the backup's are left as they are",
+            kept.join(", ")
+        ));
+    }
+    let items = writable;
     // All that can be seen before anything is written.
     let system = items.iter().any(|i| i.part == Part::System);
     if system || items.iter().any(|i| i.part == Part::Boot) {
@@ -635,6 +664,15 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     }
     unsafe { libc::sync() };
     Ok(unmade)
+}
+
+/// Whether the phone keeps the partition at `device` read-only, as its kernel
+/// does for vbmeta on this one: a write to it is answered with EROFS rather
+/// than changing anything.
+fn read_only(device: &Path) -> Result<bool> {
+    let (major, minor) = skyward_block::devnum(device)?;
+    let at = Path::new("/sys/dev/block").join(format!("{major}:{minor}")).join("ro");
+    Ok(fs::read_to_string(at).is_ok_and(|ro| ro.trim() == "1"))
 }
 
 /// Whether `name` is one plain file or partition name, not a path.
