@@ -84,16 +84,6 @@ oneshot = true
 user = "root"
 groups = ["root"]
 
-# The folders the phone's own WLAN programs write in, which its init makes
-# at post-fs-data. The data partition is not open here, so they are made on
-# the recovery's own root, where the daemon still finds them.
-[[service]]
-path = "/system/bin/sh"
-args = ["-c", "mkdir -p /data/vendor/wifi/wpa/sockets /data/vendor/conn; chown -R wifi:wifi /data/vendor/wifi /data/vendor/conn; chmod 0771 /data/vendor/wifi /data/vendor/conn; chmod 0770 /data/vendor/wifi/wpa /data/vendor/wifi/wpa/sockets; true"]
-oneshot = true
-user = "root"
-groups = ["root"]
-
 # The phone's own init mounts persist at /mnt/vendor/persist and its
 # programs still open /persist, as the stock system does.
 [[service]]
@@ -103,17 +93,57 @@ oneshot = true
 user = "root"
 groups = ["root"]
 
-# The WLAN's own daemon: the stock system starts it at late_start, after
-# fs_ready, and it sends the board data the firmware waits for. Started
-# before fs_ready it waits for a service that comes up later and the firmware
-# times out, so it is held until the WLAN worker writes fs_ready.
+# The images the WLAN's firmware is in are on the vendor partition, but the
+# kernel looks for firmware under the folders its own command line names,
+# which are the modem's. The kernel follows a link like any other path, so
+# one from where it looks to where the images are is enough.
 [[service]]
 path = "/system/bin/sh"
-args = ["-c", "sleep 10; LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/mnt/system/system/lib64:/mnt/system/system/lib:/system/lib64:/system/lib:/mnt/system/system/lib64/bootstrap exec /vendor/bin/cnss-daemon -n -l"]
+args = ["-c", "mkdir -p /lib/firmware; ln -sfn /vendor/firmware/qca6390 /lib/firmware/qca6390"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The IPA firmware. The phone's own init writes to this node at early-boot,
+# and that write is what makes the IPA driver attach to the SMMU and note, per
+# client, whether it is bypassed. Left unwritten, the IPA driver still holds
+# every client as bypassed while the WLAN's SMMU is not, and the WLAN's host
+# driver refuses to probe against that mismatch with -EFAULT: the chip reaches
+# MISSION_MODE, the firmware comes up, and the driver is never loaded.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "echo 1 > /dev/ipa"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The name service the phone's own programs find each other by. The WLAN's
+# firmware publishes its own service there, and without a name service the
+# daemon that sends the firmware its board data never finds it: the daemon
+# starts, finds nothing to talk to, and the driver gives up on the firmware.
+[[service]]
+path = "/vendor/bin/qrtr-ns"
+args = ["-f"]
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root"]
+oneshot = false
+
+# The WLAN's own daemon: the stock system starts it at late_start, and it
+# sends the chip's firmware the board data it waits for before it will come
+# up. It has to be running before the driver asks the chip for that firmware:
+# a chip asked with nobody to answer gives up twenty seconds later, and the
+# driver recovers from that with state the chip's driver will not probe
+# through. So it is held until the WLAN worker has made the folders it keeps
+# its socket in.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /skyward/run/wlan-folders ] && [ $i -lt 18000 ]; do i=$((i+1)); sleep 0.1; done; LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/mnt/system/system/lib64:/mnt/system/system/lib:/system/lib64:/system/lib:/mnt/system/system/lib64/bootstrap exec /vendor/bin/cnss-daemon -n -l"]
 user = "system"
 groups = ["system", "inet", "net_admin", "wifi"]
 capabilities = ["NET_ADMIN"]
 oneshot = false
+
 
 # The WLAN's MAC address is kept in efs and written to the driver by the
 # phone's own loader. It runs once, before the supplicant is started.
@@ -238,14 +268,12 @@ groups = ["root"]
 # above mounts where the kernel's firmware_class.path points.
 [wlan]
 modules = []
-# cnss2 starts the WLAN firmware download once fs_ready is written; the
-# phone's own cnss-daemon writes it after it has set up the service the
-# firmware asks for, so it is not written here. The driver's fwpath parameter
-# has a buffer too small for the path the kernel already passes it in
-# firmware_class.path, so only the mode is set.
-writes = [
-    { path = "/sys/module/wlan/parameters/con_mode", value = "0" },
-]
+# Nothing is written to the driver here: it is asked to load itself by the
+# WLAN worker, and the phone's own cnss-daemon sends it the board data once
+# the firmware is up. The driver's fwpath parameter has a buffer too small
+# for the path the kernel already passes it in firmware_class.path, and
+# con_mode is a load-time parameter the driver refuses once it is running.
+writes = []
 firmware = [
     { name = "wlan/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/WCNSS_qcom_cfg.ini" },
 ]
