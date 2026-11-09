@@ -9709,12 +9709,11 @@ mod tests {
         // The image lit the panel, so the user looks and taps past the wake
         // guard.
         tap_at(&mut app, &f, &i, Action::FlashPartition(1), 1000);
-        tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Both), 1000);
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Flash)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
         app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
-        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "vendor_boot", pick: Pick::Both }]);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "vendor_boot", pick: Pick::Current }]);
         assert_eq!(app.state.install, Install::Flashing { partition: "vendor_boot", stage: None });
         app.install(Event::Progress(Stage::Flashing { done: 10, total: 40 }), 1000);
         assert_eq!(app.state.install, Install::Flashing { partition: "vendor_boot", stage: Some(Stage::Flashing { done: 10, total: 40 }) });
@@ -9726,6 +9725,34 @@ mod tests {
         app.key(Key::Back, 2000);
         assert_eq!(app.screen(), Screen::Install);
         assert_eq!(app.state.install, Install::Idle);
+    }
+
+    #[test]
+    fn a_phone_with_one_of_each_partition_offers_no_slot() {
+        let (f, i) = (fonts(), info());
+        assert_eq!(i.slot, None, "the fixture is a phone without slots");
+        let mut app = sideloading(&f, &i);
+        app.install(Event::Checking { size: 4096 }, 0);
+        let kind = ImageKind::Boot { kernel: true, ramdisk: skyward_install::Ramdisk::Recovery };
+        app.install(Event::Image { kind, size: 4096, partitions: vec!["boot", "recovery"] }, 0);
+        let choices = app.frame(&f, &i).hits.iter().filter(|h| matches!(h.action, Action::FlashSlots(_))).count();
+        assert_eq!(choices, 0, "a phone without slots has nothing to choose between");
+    }
+
+    #[test]
+    fn a_phone_with_slots_chooses_where_the_image_goes() {
+        let (f, i) = (fonts(), DeviceInfo { slot: Some(Slot::B), ..info() });
+        let mut app = sideloading(&f, &i);
+        app.install(Event::Checking { size: 4096 }, 0);
+        let kind = ImageKind::Boot { kernel: true, ramdisk: skyward_install::Ramdisk::Recovery };
+        app.install(Event::Image { kind, size: 4096, partitions: vec!["boot", "recovery"] }, 0);
+        tap_at(&mut app, &f, &i, Action::FlashPartition(0), 1000);
+        tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Other), 1000);
+        let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Flash)).unwrap().rect;
+        let y = track.centre().1 - app.top().1;
+        app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
+        app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "boot", pick: Pick::Other }]);
     }
 
     #[test]
