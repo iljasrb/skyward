@@ -32,8 +32,9 @@ load = []
 
 # The phone's own table mounts these where its programs and drivers look for
 # them. persist and efs carry the secure world's state and the baseband's;
-# apnhlos and modem carry the firmware the WLAN and the modem ask for, at
-# /vendor/firmware_mnt and /vendor/firmware-modem.
+# apnhlos and modem carry the firmware the modem and the sensors ask for, at
+# /vendor/firmware_mnt and /vendor/firmware-modem. The WLAN's own images are
+# on the vendor partition, which the recovery mounts as /vendor.
 [partitions]
 mounted = ["persist", "metadata", "efs", "sec_efs", "apnhlos", "modem", "spu"]
 
@@ -75,11 +76,12 @@ oneshot = true
 user = "root"
 groups = ["root"]
 
-# The WLAN driver's nodes and switches belong to wifi, as the phone's own
-# init gives them. Missing ones are left alone.
+# The node the phone's own MAC loader writes the WLAN's address to belongs to
+# wifi, as the phone's own init gives it: the loader runs as that user, and
+# the node is the kernel's.
 [[service]]
 path = "/system/bin/sh"
-args = ["-c", "for p in /dev/wlan /sys/wifi/mac_addr /sys/module/wlan/parameters/fwpath /sys/module/wlan/parameters/con_mode; do [ -e $p ] && chown wifi:wifi $p && chmod 0660 $p; done; true"]
+args = ["-c", "[ -e /sys/wifi/mac_addr ] && chown wifi:wifi /sys/wifi/mac_addr && chmod 0660 /sys/wifi/mac_addr; true"]
 oneshot = true
 user = "root"
 groups = ["root"]
@@ -263,16 +265,18 @@ user = "root"
 groups = ["root"]
 
 # WLAN: Samsung's own driver, built into the kernel, with the phone's AIDL
-# wpa_supplicant. The driver reads its configuration from the vendor
-# partition; the firmware images are on apnhlos and modem, which the table
-# above mounts where the kernel's firmware_class.path points.
+# wpa_supplicant. Its configuration and its images both come from the vendor
+# partition: the configuration through the firmware loader, which the entry
+# below places where it looks, and the images through the link the services
+# above make in /lib/firmware.
 [wlan]
+# Built in, so nothing to load.
 modules = []
-# Nothing is written to the driver here: it is asked to load itself by the
-# WLAN worker, and the phone's own cnss-daemon sends it the board data once
-# the firmware is up. The driver's fwpath parameter has a buffer too small
-# for the path the kernel already passes it in firmware_class.path, and
-# con_mode is a load-time parameter the driver refuses once it is running.
+# Nothing is written to the driver: the WLAN worker asks it to load itself,
+# and the phone's own cnss-daemon sends it the board data once the firmware
+# is up. The driver's fwpath parameter has a buffer too small for the path
+# the kernel already passes it in firmware_class.path, and con_mode is a
+# load-time parameter the driver refuses once it is running.
 writes = []
 firmware = [
     { name = "wlan/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/WCNSS_qcom_cfg.ini" },
