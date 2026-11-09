@@ -127,7 +127,17 @@ fn main() -> Result<()> {
         eprintln!("axis {tag}: {min}..{max} (default {def})");
     }
 
-    let cfg = DeviceConfig::load(root.join("devices/bronco.toml"))?;
+    // The device the pages are drawn for: the one named by SKYWARD_DEVICE,
+    // or the only one the branch carries.
+    let devices = root.join("devices");
+    let named = match std::env::var("SKYWARD_DEVICE") {
+        Ok(name) => devices.join(name).with_extension("toml"),
+        Err(_) => std::fs::read_dir(&devices)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|e| e == "toml"))
+            .ok_or_else(|| anyhow!("no device in {}", devices.display()))?,
+    };
+    let cfg = DeviceConfig::load(&named)?;
     let (w, h) = (cfg.display.width, cfg.display.height);
     let ppd = cfg.display.density as f32 / 160.0;
     let light = Theme::light(w, h, ppd);
