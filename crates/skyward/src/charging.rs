@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 /// so that it does not stop and start at every percent.
 const HYSTERESIS: u8 = 3;
 
+/// The limit the phone's charging page shows and keeps until the slider on it
+/// is moved, which is the only time the settings database gets a limit of its
+/// own: 80, as the page shows it.
+const DEFAULT_LIMIT: u8 = 80;
+
 /// The kernel switch that stops and starts charging: 0 stops it, 1 starts it.
 pub struct Switch {
     path: PathBuf,
@@ -52,6 +57,11 @@ impl Switch {
 /// The limit the phone's own system keeps, where it has one: a LineageOS
 /// settings database, whose `system` table holds `charging_control_enabled`
 /// and `charging_control_charging_limit`.
+///
+/// The limit row is only written once the slider on the phone's charging
+/// page is moved: until then the page shows [`DEFAULT_LIMIT`] and the phone
+/// keeps to that, so a phone with charging control on and no limit written
+/// down keeps the default rather than none.
 pub fn system_limit(db: &Path) -> Option<u8> {
     let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let value = |name: &str| -> Option<String> {
@@ -60,7 +70,10 @@ pub fn system_limit(db: &Path) -> Option<u8> {
     if value("charging_control_enabled").as_deref() != Some("1") {
         return None;
     }
-    value("charging_control_charging_limit")?.parse().ok()
+    match value("charging_control_charging_limit") {
+        Some(text) => text.parse().ok(),
+        None => Some(DEFAULT_LIMIT),
+    }
 }
 
 /// The limit kept from the last time the data partition was open, where the
@@ -111,6 +124,22 @@ mod tests {
         assert_eq!(cached(&path), Some(78));
         cache(&path, None).unwrap();
         assert_eq!(cached(&path), None, "the system keeps none");
+    }
+
+    #[test]
+    fn a_limit_never_moved_keeps_the_pages_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lineagesettings.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "create table system (name text, value text);
+             insert into system values ('charging_control_enabled', '1');
+             insert into system values ('charging_control_mode', '3');",
+        )
+        .unwrap();
+        assert_eq!(system_limit(&db), Some(DEFAULT_LIMIT), "as the page shows it");
+        conn.execute("update system set value = '0' where name = 'charging_control_enabled'", []).unwrap();
+        assert_eq!(system_limit(&db), None, "the limit is off");
     }
 
     #[test]
