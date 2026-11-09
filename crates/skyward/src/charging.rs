@@ -23,13 +23,11 @@ const DEFAULT_LIMIT: u8 = 80;
 /// The kernel switch that stops and starts charging: 0 stops it, 1 starts it.
 pub struct Switch {
     path: PathBuf,
-    /// Charging is stopped by this.
-    stopped: bool,
 }
 
 impl Switch {
     pub fn new(path: impl Into<PathBuf>) -> Switch {
-        Switch { path: path.into(), stopped: false }
+        Switch { path: path.into() }
     }
 
     /// Keep to `limit`: stop charging at it, and start again a few percent
@@ -43,14 +41,15 @@ impl Switch {
         }
     }
 
+    /// Write the switch unless it already says so. What the node says now is
+    /// what counts: it can be written by the phone's own programs too, and a
+    /// switch remembered as set is not a battery that is not charging.
     fn write(&mut self, stop: bool) -> Result<()> {
-        if stop == self.stopped {
+        let wanted = if stop { "0" } else { "1" };
+        if fs::read_to_string(&self.path).is_ok_and(|now| now.trim() == wanted) {
             return Ok(());
         }
-        fs::write(&self.path, if stop { "0" } else { "1" })
-            .with_context(|| format!("write {}", self.path.display()))?;
-        self.stopped = stop;
-        Ok(())
+        fs::write(&self.path, wanted).with_context(|| format!("write {}", self.path.display()))
     }
 }
 
@@ -113,6 +112,19 @@ mod tests {
         assert_eq!(read(), "1", "below the hysteresis");
         switch.keep(100, None).unwrap();
         assert_eq!(read(), "1", "no limit");
+    }
+
+    #[test]
+    fn a_switch_changed_behind_its_back_is_set_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("charging_enabled");
+        fs::write(&path, "1").unwrap();
+        let mut switch = Switch::new(&path);
+        switch.keep(90, Some(80)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "0", "at the limit");
+        fs::write(&path, "1").unwrap();
+        switch.keep(90, Some(80)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "0", "written back where the limit holds");
     }
 
     #[test]
