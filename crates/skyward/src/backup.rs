@@ -248,8 +248,7 @@ fn efs_partition(name: &str, slot: Option<Slot>) -> Option<PathBuf> {
     if plain.exists() {
         return Some(plain);
     }
-    let Some(slot) = slot else { return None };
-    let slotted = partition(&format!("{name}{}", slot.suffix()));
+    let slotted = partition(&format!("{name}{}", slot?.suffix()));
     slotted.exists().then_some(slotted)
 }
 

@@ -31,5 +31,5 @@ pub fn key_blob(database: &Path, alias: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("read what {} says about {alias}", database.display()))?
         .with_context(|| format!("{} holds no key named {alias}", database.display()))?;
     let held: Vec<u8> = row.get(0).with_context(|| format!("read the key named {alias}"))?;
-    Ok(crate::keystore::unwrapped(&held).to_vec())
+    Ok(crate::keystore::bare(&held).to_vec())
 }
