@@ -1501,6 +1501,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut relabeler: Option<filework::Worker> = None;
     // Backing up or restoring under way.
     let mut backuper: Option<backup::Worker> = None;
+    // Whether a restore of the system's partitions is under way: it takes
+    // them off to write over them, and they are brought back once it ends.
+    let mut reattach = false;
     // Taking an image out of a system package under way.
     let mut extractor: Option<extract::Worker> = None;
     // An update's merge followed: one the recovery found under way, which
@@ -2157,6 +2160,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     backup::Event::Ended(end) => {
                         app.backup_ended(backup_end(end), now);
                         backed = true;
+                        if reattach {
+                            reattach = false;
+                            crate::prepare(cfg, skyward_vab::current_slot()?)?;
+                            read_at = Instant::now();
+                            info = skyward_info::collect(cfg)?;
+                            app.set_mounts(mounts());
+                            app.refresh();
+                        }
                     }
                 }
             }
@@ -3096,6 +3107,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     Effect::Restore { place, name, parts } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
+                        // A restore of the system's partitions takes them off
+                        // to write over them, and what runs from them with
+                        // it: they are brought back once it ends, so the
+                        // recovery goes on working with what it restored.
+                        reattach = parts[1];
                         if installer.is_some() {
                             app.report(INSTALL_UNFINISHED, now);
                             continue;
