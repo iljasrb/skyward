@@ -1210,6 +1210,9 @@ fn reflashed(c: &mut Canvas, cx: &Ctx, y: f32) -> f32 {
             let slots = fmt::slots(l, written);
             let said = match (l, written.len()) {
                 (Lang::En, 1) => format!("Skyward went back into {slots}'s recovery partition."),
+                // A phone without slots has one recovery partition, and no
+                // slot was named: the recovery's own is where it went.
+                (Lang::En, 0) => "Skyward went back into the recovery partition.".to_string(),
                 _ => crate::t!(S_SKYWARD_WENT_BACK_INTO_THE_RECOVERY_PARTITIONS_OF, slots = slots),
             };
             widgets::footnote(c, t, f, y, &said)

@@ -1343,13 +1343,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // look in.
     let tray = cfg.sdcard.as_ref().map(|card| card.host.clone());
     app.state.sdcard_supported = tray.is_some();
-    // Skyward lives in a recovery partition of each slot where the phone
-    // has them, and the install page then offers to keep it there. Such a
-    // phone holds a second system where it also has boot and init_boot
+    // Skyward lives in the phone's recovery partition, one of each where the
+    // phone has slots, and the install page then offers to keep it there.
+    // Such a phone holds a second system where it also has boot and init_boot
     // partitions in both slots, which a switch writes.
     let by_name = Path::new(skyward_block::BY_NAME);
     let both = |base: &str| -> Result<bool> { Ok(by_name.join(format!("{base}_a")).try_exists()? && by_name.join(format!("{base}_b")).try_exists()?) };
-    app.state.recovery_partitions = both("recovery")?;
+    let one = |base: &str| -> Result<bool> { Ok(both(base)? || by_name.join(base).try_exists()?) };
+    app.state.recovery_partitions = one("recovery")?;
     app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
     // The second system's work; the systems are read at once, for the home
     // page to name the one that starts, once a switch cut off before is
