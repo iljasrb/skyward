@@ -34,20 +34,20 @@ const CONTROL: &str = "/dev/wlan";
 
 /// The folders under the data partition the phone's own WLAN programs keep
 /// their sockets and notes in, the user and group each belongs to, and how
-/// open each is: the firmware's daemon keeps to the system's user, and the
-/// supplicant and the MAC loader to the wifi user the supplicant takes on.
+/// open each is: the firmware's daemon keeps its socket as the system's
+/// user, and the MAC's loader keeps its notes as the wifi user. The
+/// supplicant keeps neither here: its settings and its socket are in the
+/// recovery's own folder.
 ///
-/// Every folder on the way to the ones that hold the sockets is named here
+/// Every folder on the way to the ones that are written in is named here
 /// too, with the user and manner the phone's own data partition has them:
 /// made by the recovery, a folder in between would belong to root and be
 /// closed to the users below it, and a socket cannot be made in a folder
 /// that cannot be walked to.
-const SOCKETS: [(&str, u32, u32, u32); 6] = [
+const SOCKETS: [(&str, u32, u32, u32); 4] = [
     ("vendor", SYSTEM, SYSTEM, 0o771),
     ("vendor/wifi", SYSTEM, SYSTEM, 0o771),
     (SOCKET_DIR, SYSTEM, SYSTEM, 0o770),
-    ("vendor/wifi/wpa", WIFI, WIFI, 0o770),
-    ("vendor/wifi/wpa/sockets", WIFI, WIFI, 0o770),
     (CONN_DIR, WIFI, WIFI, 0o771),
 ];
 
@@ -67,7 +67,7 @@ const PARTITIONS: &str = "/skyward/wlan";
 const HOME: &str = "/skyward/run/supplicant";
 
 /// The user the supplicant takes on as it starts, who has to be able to
-/// make its socket.
+/// make its socket, and the user the MAC's loader runs as.
 const WIFI: u32 = 1010;
 
 /// The user the phone's own programs run as.
