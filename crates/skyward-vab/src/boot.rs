@@ -185,11 +185,11 @@ impl<'a> BootControl<'a> {
                 // The answer is whether it worked, and why not in text it
                 // points at.
                 let why = older(c, FIRST, SET_ACTIVE, |m| m.u32(slot.number()), |r| {
-                    let done = r.pointed()?;
+                    let done = r.bytes()?;
                     if done.first().is_some_and(|&b| b != 0) {
                         return Ok(None);
                     }
-                    let why = r.pointed()?;
+                    let why = r.bytes()?;
                     Ok(Some(String::from_utf8_lossy(why.split(|&b| b == 0).next().unwrap_or_default()).into_owned()))
                 })
                 .with_context(what)?;
