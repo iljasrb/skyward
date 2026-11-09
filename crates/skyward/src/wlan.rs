@@ -27,6 +27,38 @@ use std::time::{Duration, Instant};
 /// write.
 const FIRMWARE: &str = "/etc/firmware";
 
+/// The node the phone's own framework writes ON to when it wants the WLAN
+/// driver loaded. Nothing loads it otherwise: until it is asked, the driver
+/// leaves the chip powered down.
+const CONTROL: &str = "/dev/wlan";
+
+/// The folders under the data partition the phone's own WLAN programs keep
+/// their sockets and notes in, the user and group each belongs to, and how
+/// open each is: the firmware's daemon keeps to the system's user, and the
+/// supplicant and the MAC loader to the wifi user the supplicant takes on.
+///
+/// Every folder on the way to the ones that hold the sockets is named here
+/// too, with the user and manner the phone's own data partition has them:
+/// made by the recovery, a folder in between would belong to root and be
+/// closed to the users below it, and a socket cannot be made in a folder
+/// that cannot be walked to.
+const SOCKETS: [(&str, u32, u32, u32); 6] = [
+    ("vendor", SYSTEM, SYSTEM, 0o771),
+    ("vendor/wifi", SYSTEM, SYSTEM, 0o771),
+    (SOCKET_DIR, SYSTEM, SYSTEM, 0o770),
+    ("vendor/wifi/wpa", WIFI, WIFI, 0o770),
+    ("vendor/wifi/wpa/sockets", WIFI, WIFI, 0o770),
+    (CONN_DIR, WIFI, WIFI, 0o771),
+];
+
+/// Where the phone's own WLAN daemon listens, and the note this worker
+/// leaves at boot for that daemon to start on: the chip waits for what the
+/// daemon sends it, and for nobody else.
+const SOCKET_DIR: &str = "vendor/wifi/sockets";
+const CONN_DIR: &str = "vendor/conn";
+const DAEMON: &str = "cnss_user_server";
+const FOLDERS: &str = "/skyward/run/wlan-folders";
+
 /// Where a partition a firmware file is read from is mounted meanwhile.
 const PARTITIONS: &str = "/skyward/wlan";
 
@@ -38,11 +70,15 @@ const HOME: &str = "/skyward/run/supplicant";
 /// make its socket.
 const WIFI: u32 = 1010;
 
+/// The user the phone's own programs run as.
+const SYSTEM: u32 = 1000;
+
 /// How long the driver may take to make its interface, the chip's firmware
 /// loading meanwhile. cnss2 downloads the firmware and boots the WLAN
-/// processor before the driver makes wlan0; on r8q that took over half a
-/// minute from fs_ready.
-const INTERFACE_WAIT: Duration = Duration::from_secs(120);
+/// processor before the driver makes wlan0, and gives up on the firmware
+/// itself after twenty seconds, so a wait any longer than this says the same
+/// thing later.
+const INTERFACE_WAIT: Duration = Duration::from_secs(60);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -808,6 +844,9 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         for w in &cfg.writes {
             fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
         }
+        sockets()?;
+        wait_for_daemon()?;
+        ask_driver_to_load();
         let until = Instant::now() + INTERFACE_WAIT;
         while !net.exists() {
             ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
@@ -823,6 +862,57 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     iface::set_up(&cfg.interface, true)
+}
+
+/// Make the folders the phone's own WLAN programs keep their sockets in,
+/// and tell the phone's WLAN daemon to start on them.
+///
+/// The WLAN does not wait for the data partition: asked for before it is
+/// open, the folders are made on the recovery's own root, where the daemon
+/// finds them just the same, and the WLAN comes up on its own from there.
+/// The supplicant keeps its own settings and socket in the recovery's
+/// service folder either way, and the networks on the data partition are
+/// read in when it is opened.
+fn sockets() -> Result<()> {
+    for (folder, uid, gid, mode) in SOCKETS {
+        let at = Path::new(skyward_sys::kept::DATA).join(folder);
+        fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
+        std::os::unix::fs::chown(&at, Some(uid), Some(gid)).with_context(|| format!("give {} to {uid}:{gid}", at.display()))?;
+        fs::set_permissions(&at, fs::Permissions::from_mode(mode)).with_context(|| format!("open {} as {mode:o}", at.display()))?;
+    }
+    fs::write(FOLDERS, b"").with_context(|| format!("write {FOLDERS}"))
+}
+
+/// Wait for the phone's WLAN daemon to open its socket.
+///
+/// The chip's firmware waits for the board data this daemon sends before it
+/// will call itself up, and only for twenty seconds. Asking the driver for
+/// the interface without it there is worse than slow: the chip gives up, the
+/// driver recovers from that, and the state it recovers by is one the chip's
+/// driver will not probe through, so the WLAN cannot come up at all until
+/// the phone is rebooted.
+fn wait_for_daemon() -> Result<()> {
+    let socket = Path::new(skyward_sys::kept::DATA).join(SOCKET_DIR).join(DAEMON);
+    let until = Instant::now() + SOCKET_WAIT;
+    while !socket.exists() {
+        ensure!(Instant::now() < until, "the WLAN's daemon opened no socket in {} seconds", SOCKET_WAIT.as_secs());
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// Ask the driver to load itself, as the phone's own framework does.
+///
+/// The ask does not come back until the chip's firmware has booted, which
+/// takes tens of seconds, so it is made on a thread of its own and the wait
+/// for the interface below is what watches how it went.
+fn ask_driver_to_load() {
+    if !Path::new(CONTROL).exists() {
+        return;
+    }
+    thread::spawn(|| {
+        let _ = fs::write(CONTROL, "ON\n");
+    });
 }
 
 /// Put a file the driver asks for where the firmware loader looks.
