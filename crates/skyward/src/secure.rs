@@ -260,9 +260,16 @@ pub fn publish_descriptions(wanted: &[String], files: &[String]) -> Result<usize
         // installed system's init does whenever its directory restarts.
         let registered = registered()?;
         let was = crate::services::running(DIRECTORY_PROGRAM);
-        skyward_sys::set_prop("ctl.restart", DIRECTORY_SERVICE).context("have the service directory start again")?;
+        // Stopped and started rather than restarted: init holds back the
+        // restart of a service that died within five seconds of starting, and
+        // the directory is among the first init starts, so a restart here
+        // waited those five seconds out on every boot. Stopped, it comes back
+        // in a tenth of that.
+        skyward_sys::set_prop("ctl.stop", DIRECTORY_SERVICE).context("have the service directory stop")?;
+        skyward_sys::wait_prop(&format!("init.svc.{DIRECTORY_SERVICE}"), "stopped", STOP_TIMEOUT)?;
+        skyward_sys::set_prop("ctl.start", DIRECTORY_SERVICE).context("have the service directory start again")?;
         answering_again(was)?;
-        register_again(&registered)?;
+        register_again(&registered, wanted)?;
     }
     Ok(copied)
 }
@@ -293,8 +300,19 @@ fn registered() -> Result<Vec<(String, String)>> {
 /// until each name is registered once more. A restart through init waits
 /// out the pause it keeps between two starts of a service, seconds after
 /// the service last started; stopping it and starting it does not.
-fn register_again(registered: &[(String, String)]) -> Result<()> {
-    let services: BTreeSet<&str> = registered.iter().map(|(_, service)| service.as_str()).collect();
+fn register_again(registered: &[(String, String)], wanted: &[String]) -> Result<()> {
+    // Only what this recovery asks for by name has to be there again. A
+    // service that registered before the directory restarted and that
+    // nothing here looks up is left as the restart left it, unregistered,
+    // rather than taken down and brought back: on this phone that is the
+    // health service, five seconds of every boot for a service the recovery
+    // reads the battery without.
+    let again: Vec<&(String, String)> = registered.iter().filter(|(name, _)| wanted.contains(name)).collect();
+    let left: Vec<&str> = registered.iter().map(|(name, _)| name.as_str()).filter(|name| !wanted.iter().any(|w| w == name)).collect();
+    if !left.is_empty() {
+        skyward_sys::kmsg(&format!("the directory's restart left {} unregistered", left.join(", ")))?;
+    }
+    let services: BTreeSet<&str> = again.iter().map(|(_, service)| service.as_str()).collect();
     for service in &services {
         skyward_sys::set_prop("ctl.stop", service).with_context(|| format!("have init stop {service}"))?;
     }
@@ -304,7 +322,7 @@ fn register_again(registered: &[(String, String)]) -> Result<()> {
     }
     let binder = skyward_binder::driver::Binder::open()?;
     let until = Instant::now() + REGISTER_TIMEOUT;
-    for (name, service) in registered {
+    for (name, service) in again {
         while skyward_binder::service::find(&binder, name)?.is_none() {
             ensure!(Instant::now() < until, "{name} has not registered again since init started {service} again");
             std::thread::sleep(Duration::from_millis(50));
