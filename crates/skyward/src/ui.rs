@@ -28,7 +28,8 @@ use skyward_sys::bcb::{self, Work, REFORMATS};
 use skyward_sys::control::{Control, Request};
 use skyward_sys::Power;
 use skyward_files::Ownership;
-use skyward_block::usb::{self, Drive};
+use skyward_block::disk::Disk;
+use skyward_block::usb;
 use skyward_net::download;
 use skyward_net::http::Servers;
 use skyward_net::github::{Build, Newest};
@@ -40,8 +41,8 @@ use skyward_systems::Who;
 use skyward_ui::app::{
     App, AdbWifi, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect,
     EraseStop, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind,
-    PartStop, Place, RenameRefused, RomState, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe,
-    DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, USB_DRIVE, rom_downloaded,
+    PartStop, Place, RenameRefused, RomState, Screen, Shot, SkywardEnd, SkywardStage, Target, Medium, UsbLink, Wipe,
+    DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, SD_CARD, USB_DRIVE, rom_downloaded,
 };
 use crate::charging;
 use skyward_ui::settings::Keeper;
@@ -244,6 +245,34 @@ impl Transfer {
     }
 }
 
+/// Start file transfer where its switch is on, saying on the page why where
+/// it does not.
+fn start_transfer(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo, app: &mut App, zone: usize) -> Option<Transfer> {
+    if !app.state.file_transfer {
+        return None;
+    }
+    match Transfer::start(cfg, info, zone) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"));
+            app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(app.state.lang, &format!("{e:#}")), monotonic_ms());
+            None
+        }
+    }
+}
+
+/// Give the port up for work that takes it for itself: file transfer stops,
+/// rather than only letting internal storage go, because a service left
+/// running binds the function it serves and the port reconfigures under the
+/// work that took it -- a package on its way to an install ends with the
+/// computer's stream cut.
+fn stop_transfer(transfer: &mut Option<Transfer>) -> Result<()> {
+    match transfer.take() {
+        Some(t) => t.stop(false),
+        None => Ok(()),
+    }
+}
+
 /// Take internal storage back from file transfer, if it is on, before work
 /// that erases or rewrites the data partition, or installs; whether that
 /// work can start, which the page is told otherwise.
@@ -337,6 +366,7 @@ fn in_place(place: Place, path: &str) -> PathBuf {
     let top = match place {
         Place::Storage => Path::new(skyward_crypto::data::SDCARD),
         Place::UsbDrive => Path::new(USB_DRIVE),
+        Place::SdCard => Path::new(SD_CARD),
     };
     if path.is_empty() {
         top.to_path_buf()
@@ -464,9 +494,9 @@ fn held(m: &skyward_backup::Manifest) -> Held {
 
 /// Look for backups in the places asked, the restore page showing what is
 /// found and saying why a place could not be looked in.
-fn find_backups(app: &mut App, storage: bool, usb: bool, now: u64) {
+fn find_backups(app: &mut App, storage: bool, usb: bool, sdcard: bool, now: u64) {
     let mut found = Vec::new();
-    for (place, look) in [(Place::Storage, storage), (Place::UsbDrive, usb)] {
+    for (place, look) in [(Place::Storage, storage), (Place::UsbDrive, usb), (Place::SdCard, sdcard)] {
         if look {
             match backups_at(place) {
                 Ok(mut there) => found.append(&mut there),
@@ -522,55 +552,99 @@ fn unix_ms_now() -> Result<i64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH).context("the clock is before 1970")?.as_millis() as i64)
 }
 
-/// The USB drive plugged in, and whether it is shown at [`USB_DRIVE`] or
-/// why it could not be.
+/// A medium plugged in, and whether it is shown at its place or why it could
+/// not be.
 struct Plugged {
-    drive: Drive,
+    disk: String,
     shown: Result<(), String>,
 }
 
-/// Look for the USB drive plugged in: one gone is taken away from where it
+/// Where a removable place is shown, and what its findings are logged as.
+fn medium_at(place: Place) -> &'static Path {
+    Path::new(match place {
+        Place::UsbDrive => USB_DRIVE,
+        Place::SdCard => SD_CARD,
+        Place::Storage => unreachable!("internal storage is not a medium"),
+    })
+}
+
+fn medium_name(place: Place) -> &'static str {
+    match place {
+        Place::UsbDrive => "USB drive",
+        Place::SdCard => "SD card",
+        Place::Storage => unreachable!("internal storage is not a medium"),
+    }
+}
+
+/// The disks `place`'s medium may be, as the kernel lists them. A phone whose
+/// config names no controller for the card has no tray to look in.
+fn medium_disks(place: Place, controller: Option<&str>) -> Result<Vec<Disk>> {
+    match place {
+        Place::UsbDrive => usb::drives(),
+        Place::SdCard => match controller {
+            Some(host) => skyward_block::card::cards(host),
+            None => Ok(Vec::new()),
+        },
+        Place::Storage => unreachable!("internal storage is not a medium"),
+    }
+}
+
+/// Show `disk` at `place`: read only on a drive, read and written on the card.
+fn medium_mount(place: Place, disk: &Disk) -> Result<(String, &'static str)> {
+    match place {
+        Place::UsbDrive => usb::mount(disk, medium_at(place)),
+        Place::SdCard => skyward_block::card::mount(disk, medium_at(place)),
+        Place::Storage => unreachable!("internal storage is not a medium"),
+    }
+}
+
+/// Look for the medium at `place`: one gone is taken away from where it
 /// was shown, even with files on it still open, and one found in two looks
-/// running is shown, the kernel having listed its partitions by then.
-/// `seen` is a drive found by the look before that is not shown yet. What
-/// the pages are told comes back when it changed.
-fn look_for_drive(plugged: &mut Option<Plugged>, seen: &mut Option<String>) -> Result<Option<Option<UsbDrive>>> {
-    let found = usb::drives()?.into_iter().find(Drive::ready);
+/// running is shown, the kernel having listed its partitions by then. `seen`
+/// is a disk found by the look before that is not shown yet. What the pages
+/// are told comes back when it changed.
+fn look_for_medium(
+    place: Place,
+    controller: Option<&str>,
+    plugged: &mut Option<Plugged>,
+    seen: &mut Option<String>,
+) -> Result<Option<Option<Medium>>> {
+    let found = medium_disks(place, controller)?.into_iter().find(Disk::ready);
     if let Some(p) = plugged {
-        if found.is_some_and(|d| d.disk == p.drive.disk) {
+        if found.is_some_and(|d| d.disk == p.disk) {
             return Ok(None);
         }
         if p.shown.is_ok() {
-            skyward_block::mount::umount_detach(Path::new(USB_DRIVE))?;
+            skyward_block::mount::umount_detach(medium_at(place))?;
         }
-        skyward_sys::kmsg(&format!("USB drive {} is gone", p.drive.disk))?;
+        skyward_sys::kmsg(&format!("{} {} is gone", medium_name(place), p.disk))?;
         *plugged = None;
         *seen = None;
         return Ok(Some(None));
     }
-    let Some(drive) = found else {
+    let Some(disk) = found else {
         *seen = None;
         return Ok(None);
     };
-    if seen.as_deref() != Some(drive.disk.as_str()) {
-        *seen = Some(drive.disk.clone());
+    if seen.as_deref() != Some(disk.disk.as_str()) {
+        *seen = Some(disk.disk.clone());
         return Ok(None);
     }
-    let shown = match usb::mount(&drive, Path::new(USB_DRIVE)) {
+    let shown = match medium_mount(place, &disk) {
         Ok((part, filesystem)) => {
-            skyward_sys::kmsg(&format!("USB drive {part} shown at {USB_DRIVE} as {filesystem}"))?;
+            skyward_sys::kmsg(&format!("{} {part} shown at {} as {filesystem}", medium_name(place), medium_at(place).display()))?;
             Ok(())
         }
         Err(e) => {
-            skyward_sys::kmsg(&format!("USB drive {} not shown: {e:#}", drive.disk))?;
+            skyward_sys::kmsg(&format!("{} {} not shown: {e:#}", medium_name(place), disk.disk))?;
             Err(format!("{e:#}"))
         }
     };
     let told = match &shown {
-        Ok(()) => UsbDrive::Shown,
-        Err(why) => UsbDrive::Unreadable(why.clone()),
+        Ok(()) => Medium::Shown,
+        Err(why) => Medium::Unreadable(why.clone()),
     };
-    *plugged = Some(Plugged { drive, shown });
+    *plugged = Some(Plugged { disk: disk.disk, shown });
     *seen = None;
     Ok(Some(Some(told)))
 }
@@ -815,7 +889,9 @@ enum Incoming {
     Arrived,
     Input(Event),
     Asked(Request),
-    Drive(Option<UsbDrive>),
+    /// A removable place's medium found or gone: where it is, and what is
+    /// there now.
+    Medium(Place, Option<Medium>),
 }
 
 /// What a request on the recovery socket comes to. adbd asks for fastboot
@@ -1204,16 +1280,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // File transfer runs while its switch is on, and offers internal
     // storage while that is open; one that does not start says why on
     // screen, and the recovery carries on.
-    let mut transfer: Option<Transfer> = None;
-    if app.state.file_transfer {
-        match Transfer::start(cfg, &info, app.state.time_zone) {
-            Ok(t) => transfer = Some(t),
-            Err(e) => {
-                skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
-                app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(app.state.lang, &format!("{e:#}")), monotonic_ms());
-            }
-        }
-    }
+    let mut transfer: Option<Transfer> = if matches!(request.work, Work::Sideload { .. } | Work::Rescue) {
+        // The computer is here to send a package, not to read storage: file
+        // transfer would reconfigure the port under the install.
+        None
+    } else {
+        start_transfer(cfg, &info, &mut app, app.state.time_zone)
+    };
     // A sideload has the port, which goes back to rest once it ends.
     let mut sideloading = false;
     if fastboot {
@@ -1240,6 +1313,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
     };
     app.state.phone_logs = cfg.wipe.logs.len();
+    // The controller the card tray hangs from, on a phone whose config names
+    // one: the pages offer the card only there, and the watcher has a tray to
+    // look in.
+    let tray = cfg.sdcard.as_ref().map(|card| card.host.clone());
+    app.state.sdcard_supported = tray.is_some();
     // Skyward lives in a recovery partition of each slot where the phone
     // has them, and the install page then offers to keep it there. Such a
     // phone holds a second system where it also has boot and init_boot
@@ -1457,9 +1535,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // battery is read at once, and the phone stays awake until it is.
     let uevents = uevent::Listener::open()?;
     let mut asked: Option<Instant> = None;
-    // The USB drive plugged in, looked for each second.
+    // The USB drive plugged in and the card in the tray, looked for each
+    // second.
     let mut plugged: Option<Plugged> = None;
     let mut seen: Option<String> = None;
+    let mut card_plugged: Option<Plugged> = None;
+    let mut card_seen: Option<String> = None;
     let mut drive_at = Instant::now();
     loop {
         let now = monotonic_ms();
@@ -1718,8 +1799,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             asked = Some(Instant::now());
         }
         let mut drive_told = None;
+        let mut card_told = None;
         if drive_at.elapsed().as_secs() >= 1 {
-            drive_told = look_for_drive(&mut plugged, &mut seen)?;
+            drive_told = look_for_medium(Place::UsbDrive, None, &mut plugged, &mut seen)?;
+            card_told = look_for_medium(Place::SdCard, tray.as_deref(), &mut card_plugged, &mut card_seen)?;
             drive_at = Instant::now();
         }
         // What the installer and the eraser told comes first, so a touch
@@ -1757,6 +1840,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 if finished {
                     installer = None;
                     sideloading = false;
+                    // The port is the pages' again: file transfer comes back
+                    // where its switch is on.
+                    if transfer.is_none() {
+                        transfer = start_transfer(cfg, &info, &mut app, app.state.time_zone);
+                    }
                     // A sideload or an update the system asked for is done
                     // with however it went, and so is rescue, once its page
                     // is left or the computer asks the phone to leave. A
@@ -2430,13 +2518,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         let incoming = arriving
             .take()
             .into_iter()
-            .chain(drive_told.map(Incoming::Drive))
+            .chain(drive_told.map(|found| Incoming::Medium(Place::UsbDrive, found)))
+            .chain(card_told.map(|found| Incoming::Medium(Place::SdCard, found)))
             .chain(requests.into_iter().map(Incoming::Asked))
             .chain(inputs.read()?.into_iter().map(Incoming::Input));
         for came in incoming {
             let effects = match came {
                 Incoming::Arrived => app.arrive(),
-                Incoming::Drive(drive) => app.set_usb_drive(drive),
+                Incoming::Medium(place, found) => app.set_medium(place, found),
                 Incoming::Asked(asked) => {
                     skyward_sys::kmsg(&format!("asked on the recovery socket: {asked:?}"))?;
                     answer(asked, fastboot)
@@ -2556,6 +2645,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
+                        stop_transfer(&mut transfer)?;
                         installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
                         sideloading = true;
                     }
@@ -2992,7 +3082,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         backuper = Some(backup::Worker::start(backup::Task::Restore(task))?);
                         app.backup_started(true, place, true);
                     }
-                    Effect::FindBackups { storage, usb } => find_backups(&mut app, storage, usb, now),
+                    Effect::FindBackups { storage, usb, sdcard } => find_backups(&mut app, storage, usb, sdcard, now),
                     Effect::DeleteBackup { place, name } => {
                         let deleted = delete_backup(place, &backups_in(place).join(&name)).map_err(|e| format!("{e:#}"));
                         queue.extend(app.backup_deleted(deleted, now));

@@ -307,10 +307,19 @@ pub const DOWNLOADS: &str = "downloaded_rom";
 /// Where the USB drive plugged in is shown.
 pub const USB_DRIVE: &str = "/mnt/usb";
 
+/// Where the card in the phone's microSD tray is shown.
+pub const SD_CARD: &str = "/mnt/sdcard";
+
 /// What a USB drive plugged in that cannot be read is said to be, and what
 /// is asked for while none is plugged in.
 pub const USB_DRIVE_UNREADABLE: Text = S_THIS_USB_DRIVE_CANT_BE_READ;
 pub const USB_DRIVE_WANTED: Text = S_CONNECT_A_USB_DRIVE_THROUGH_OTG;
+
+/// What a card that cannot be read is said to be, and what is said where the
+/// tray holds none.
+pub const SD_CARD_UNREADABLE: Text = S_THIS_SD_CARD_CANT_BE_READ;
+pub const SD_CARD_WANTED: Text = S_NO_SD_CARD;
+pub const SD_CARD_WANTED_DETAIL: Text = S_INSERT_AN_SD_CARD_TO_SEE_ITS_FILES_HERE;
 
 /// The data partition's name, as the filesystem page lists it.
 pub const DATA_PARTITION: &str = "data";
@@ -395,6 +404,9 @@ pub enum Place {
     /// A USB drive plugged into the port, which the runtime shows read
     /// only.
     UsbDrive,
+    /// The card in the phone's microSD tray, which the runtime shows read
+    /// and written.
+    SdCard,
 }
 
 impl Place {
@@ -402,6 +414,8 @@ impl Place {
     pub fn of_path(path: &str) -> Place {
         if path == USB_DRIVE || path.starts_with(&format!("{USB_DRIVE}/")) {
             Place::UsbDrive
+        } else if path == SD_CARD || path.starts_with(&format!("{SD_CARD}/")) {
+            Place::SdCard
         } else {
             Place::Storage
         }
@@ -432,10 +446,11 @@ pub struct PackageState {
 /// names a package gives them.
 pub const FLASHABLE: [&str; 8] = ["vendor_boot", "vendor_boot", "vendor_boot", "recovery", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor"];
 
-/// The USB drive plugged in, as the runtime found it.
+/// A medium plugged into the phone, the USB drive or the card in its tray,
+/// as the runtime found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UsbDrive {
-    /// Shown, for a file on it to be chosen.
+pub enum Medium {
+    /// Shown, for its files to be read and written.
     Shown,
     /// Nothing on it could be read: why.
     Unreadable(String),
@@ -2093,8 +2108,14 @@ pub struct State {
     /// The USB drive plugged in, as the runtime last found it, and the
     /// folder of it a file to install is chosen in, its path from the top
     /// of the drive.
-    pub usb_drive: Option<UsbDrive>,
+    pub usb_drive: Option<Medium>,
     pub drive: Folder,
+    /// The card in the phone's microSD tray, as the runtime last found it,
+    /// and the folder of it a file to install is chosen in. A phone whose
+    /// config names no tray offers neither.
+    pub sdcard: Option<Medium>,
+    pub card: Folder,
+    pub sdcard_supported: bool,
     /// The entry the file page describes.
     pub file: Option<FileRow>,
     pub fastboot: Fastboot,
@@ -2228,6 +2249,9 @@ impl Default for State {
             choose_package: false,
             usb_drive: None,
             drive: Folder::new(""),
+            sdcard: None,
+            card: Folder::new(""),
+            sdcard_supported: false,
             file: None,
             fastboot: Fastboot { running: false, link: UsbLink::Unplugged },
             erase: Erase::default(),
@@ -2283,6 +2307,7 @@ impl State {
             Screen::Files => &self.files,
             Screen::Choose(Place::Storage) => &self.storage,
             Screen::Choose(Place::UsbDrive) => &self.drive,
+            Screen::Choose(Place::SdCard) => &self.card,
             other => unreachable!("{other:?} lists no folder"),
         }
     }
@@ -2292,6 +2317,7 @@ impl State {
             Screen::Files => &mut self.files,
             Screen::Choose(Place::Storage) => &mut self.storage,
             Screen::Choose(Place::UsbDrive) => &mut self.drive,
+            Screen::Choose(Place::SdCard) => &mut self.card,
             other => unreachable!("{other:?} lists no folder"),
         }
     }
@@ -2301,7 +2327,8 @@ impl State {
     pub fn place_open(&self, place: Place) -> bool {
         match place {
             Place::Storage => self.data.storage_open(),
-            Place::UsbDrive => self.usb_drive == Some(UsbDrive::Shown),
+            Place::UsbDrive => self.usb_drive == Some(Medium::Shown),
+            Place::SdCard => self.sdcard == Some(Medium::Shown),
         }
     }
 
@@ -2525,7 +2552,7 @@ pub enum Effect {
     Restore { place: Place, name: String, parts: [bool; 4] },
     /// Look for backups in the places that can be read, telling what is
     /// found with [`App::set_backups`].
-    FindBackups { storage: bool, usb: bool },
+    FindBackups { storage: bool, usb: bool, sdcard: bool },
     /// Delete the backup in the folder `name` of `place`, telling how it
     /// went with [`App::backup_deleted`].
     DeleteBackup { place: Place, name: String },
@@ -4671,6 +4698,7 @@ impl App {
         Effect::FindBackups {
             storage: self.state.place_open(Place::Storage),
             usb: self.state.place_open(Place::UsbDrive),
+            sdcard: self.state.place_open(Place::SdCard),
         }
     }
 
@@ -4751,22 +4779,32 @@ impl App {
         self.show_folder(Screen::Choose(place), folder, files, listed);
     }
 
-    /// The runtime found the USB drive plugged in, shown or not, or found
-    /// none. Another drive, or none, starts its folders over from the top,
-    /// and one shown while its page is up is read at once. The backups
-    /// listed are looked for again, and a backup on a drive gone leaves its
-    /// page.
-    pub fn set_usb_drive(&mut self, drive: Option<UsbDrive>) -> Vec<Effect> {
-        if drive == self.state.usb_drive {
+    /// The runtime found the medium `place` shows, or found none: a USB drive
+    /// plugged in, or the card in the phone's tray. Another medium, or none,
+    /// starts its folders over from the top, and one shown while its page is
+    /// up is read at once. The backups listed are looked for again, and a
+    /// backup on a medium gone leaves its page.
+    pub fn set_medium(&mut self, place: Place, found: Option<Medium>) -> Vec<Effect> {
+        let held = match place {
+            Place::UsbDrive => &mut self.state.usb_drive,
+            Place::SdCard => &mut self.state.sdcard,
+            Place::Storage => unreachable!("internal storage is not a medium"),
+        };
+        if *held == found {
             return Vec::new();
         }
-        self.state.usb_drive = drive;
-        self.state.drive = Folder::new("");
-        // A row held on the drive that left is not the row that takes its
+        *held = found;
+        let folder = match place {
+            Place::UsbDrive => &mut self.state.drive,
+            Place::SdCard => &mut self.state.card,
+            Place::Storage => unreachable!("internal storage is not a medium"),
+        };
+        *folder = Folder::new("");
+        // A row held on the medium that left is not the row that takes its
         // place.
         self.drag = Drag::Idle;
         self.refresh();
-        let gone = !self.state.place_open(Place::UsbDrive) && self.state.restore.as_ref().is_some_and(|(e, _)| e.place == Place::UsbDrive);
+        let gone = !self.state.place_open(place) && self.state.restore.as_ref().is_some_and(|(e, _)| e.place == place);
         match self.screen() {
             Screen::RestoreBackup if gone => {
                 self.state.restore = None;
@@ -4780,7 +4818,7 @@ impl App {
             Screen::Restore => return vec![self.find_backups()],
             _ => {}
         }
-        let page = Screen::Choose(Place::UsbDrive);
+        let page = Screen::Choose(place);
         if self.screen() != page {
             return Vec::new();
         }
@@ -6451,6 +6489,7 @@ impl App {
                             let top = match place {
                                 Place::Storage => "/sdcard",
                                 Place::UsbDrive => USB_DRIVE,
+                                Place::SdCard => SD_CARD,
                             };
                             self.package_chosen(&format!("{top}/{path}"));
                             return Vec::new();
@@ -7603,8 +7642,10 @@ impl App {
                     Some(match (s.backup_to, &s.usb_drive) {
                         (Place::Storage, _) if s.data == Data::Erased => DATA_ERASED,
                         (Place::Storage, _) => DECRYPT_FIRST,
-                        (Place::UsbDrive, Some(UsbDrive::Unreadable(_))) => USB_DRIVE_UNREADABLE,
+                        (Place::UsbDrive, Some(Medium::Unreadable(_))) => USB_DRIVE_UNREADABLE,
                         (Place::UsbDrive, _) => USB_DRIVE_WANTED,
+                        (Place::SdCard, _) if s.sdcard.is_some() => SD_CARD_UNREADABLE,
+                        (Place::SdCard, _) => SD_CARD_WANTED,
                     })
                 };
                 let backup =
@@ -10544,7 +10585,7 @@ mod tests {
         tap(&mut app, &f, &i, Action::Toggle(Switch::Compress));
         tap(&mut app, &f, &i, Action::Toggle(Switch::Verify));
         assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty(), "no drive is plugged in");
-        app.set_usb_drive(Some(UsbDrive::Shown));
+        app.set_medium(Place::UsbDrive, Some(Medium::Shown));
         let second = Effect::Backup { parts: [false, true, true, true], place: Place::UsbDrive, compress: true, verify: false, sparse: true };
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![second]);
         for k in 1..4 {
@@ -10570,13 +10611,52 @@ mod tests {
     fn backups_found_are_listed_newest_first_and_those_unread_last() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false }]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false, sdcard: false }]);
         let unread = BackupEntry { place: Place::Storage, name: "20261021-150000".into(), held: Err("read backup.toml: not found".into()) };
         let (old, new) = (found(Place::UsbDrive, 1_792_000_000, [true; 4]), found(Place::Storage, 1_792_348_260, [true; 4]));
         app.set_backups(vec![unread.clone(), old.clone(), new.clone()]);
         assert_eq!(app.state.backups, [new, old, unread]);
         let opens = app.frame(&f, &i).hits.iter().filter(|h| matches!(h.action, Action::OpenBackup(_))).count();
         assert_eq!(opens, 3, "each opens, one that cannot be read to be deleted");
+    }
+
+    #[test]
+    fn the_card_is_a_place_of_its_own_to_install_from_and_to_save_to() {
+        let (f, i) = (fonts(), info());
+        // Its paths are the ones its place holds, apart from the drive's.
+        assert_eq!(Place::of_path("/mnt/sdcard/update.zip"), Place::SdCard);
+        assert_eq!(Place::of_path("/mnt/sdcard"), Place::SdCard);
+        assert_eq!(Place::of_path("/mnt/usb/update.zip"), Place::UsbDrive);
+        assert_eq!(Place::of_path("/sdcard/update.zip"), Place::Storage);
+
+        // A phone with a card in its tray opens it; one whose card cannot be
+        // read, or whose tray is empty, opens nothing.
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.sdcard_supported = true;
+        assert!(!app.state.place_open(Place::SdCard), "an empty tray opens nothing");
+        app.set_medium(Place::SdCard, Some(Medium::Shown));
+        assert!(app.state.place_open(Place::SdCard));
+        app.set_medium(Place::SdCard, Some(Medium::Unreadable("mmcblk0 holds no filesystem the kernel reads".into())));
+        assert!(!app.state.place_open(Place::SdCard), "a card that cannot be read opens nothing");
+        app.set_medium(Place::SdCard, None);
+        assert!(!app.state.place_open(Place::SdCard));
+
+        // A backup saved to the card, and one on it opened again.
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.sdcard_supported = true;
+        tap(&mut app, &f, &i, Action::Open(Screen::Backup));
+        app.state.backup_to = Place::SdCard;
+        app.set_medium(Place::SdCard, Some(Medium::Shown));
+        app.state.backup = [true; 4];
+        app.state.data = Data::Open;
+        assert!(matches!(swipe(&mut app, &f, &i, Confirm::Backup).as_slice(), [Effect::Backup { place: Place::SdCard, .. }]));
+
+        let mut app = opened(Screen::Restore, &f, &i);
+        app.state.data = Data::Open;
+        app.set_backups(vec![found(Place::SdCard, 1_792_348_260, [true; 4])]);
+        tap(&mut app, &f, &i, Action::OpenBackup(0));
+        assert!(matches!(swipe(&mut app, &f, &i, Confirm::Restore).as_slice(), [Effect::Restore { place: Place::SdCard, .. }]));
+        assert_eq!(app.state.restore.as_ref().map(|r| r.0.place), Some(Place::SdCard));
     }
 
     #[test]
@@ -10602,7 +10682,7 @@ mod tests {
             tap(&mut app, &f, &i, Action::RestorePart(k));
         }
         assert!(swipe(&mut app, &f, &i, Confirm::Restore).is_empty(), "nothing ticked, nothing restored");
-        assert_eq!(app.key(Key::Back, 0), vec![Effect::FindBackups { storage: false, usb: false }], "back on the list, it is looked for again");
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::FindBackups { storage: false, usb: false, sdcard: false }], "back on the list, it is looked for again");
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
     }
 
@@ -10648,7 +10728,7 @@ mod tests {
         assert_eq!(swipe(&mut app, &f, &i, Confirm::DeleteBackup), vec![Effect::DeleteBackup { place: Place::Storage, name: entry.name }]);
         assert!(app.backup_deleted(Err("Permission denied".into()), 0).is_empty());
         assert_eq!(app.screen(), Screen::RestoreBackup, "not deleted, the page stays and says why");
-        assert_eq!(app.backup_deleted(Ok(()), 0), vec![Effect::FindBackups { storage: true, usb: false }]);
+        assert_eq!(app.backup_deleted(Ok(()), 0), vec![Effect::FindBackups { storage: true, usb: false, sdcard: false }]);
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
     }
 
@@ -10656,13 +10736,13 @@ mod tests {
     fn a_backup_on_a_drive_pulled_out_leaves_its_page() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        app.set_usb_drive(Some(UsbDrive::Shown));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true }]);
+        app.set_medium(Place::UsbDrive, Some(Medium::Shown));
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true, sdcard: false }]);
         app.set_backups(vec![found(Place::UsbDrive, 1_792_348_260, [true; 4])]);
         tap(&mut app, &f, &i, Action::OpenBackup(0));
-        assert_eq!(app.set_usb_drive(None), vec![Effect::FindBackups { storage: false, usb: false }]);
+        assert_eq!(app.set_medium(Place::UsbDrive, None), vec![Effect::FindBackups { storage: false, usb: false, sdcard: false }]);
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
-        assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::FindBackups { storage: false, usb: true }], "one plugged in is looked in");
+        assert_eq!(app.set_medium(Place::UsbDrive, Some(Medium::Shown)), vec![Effect::FindBackups { storage: false, usb: true, sdcard: false }], "one plugged in is looked in");
     }
 
     #[test]
@@ -11139,7 +11219,7 @@ mod tests {
         assert!(tap(&mut app, &f, &i, Action::Open(page)).is_empty(), "with no drive, nothing to read");
         assert_eq!(app.screen(), page);
         assert!(app.frame(&f, &i).rows.is_none(), "the page waits for one");
-        assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::ReadPlace(Place::UsbDrive, String::new())], "read once shown");
+        assert_eq!(app.set_medium(Place::UsbDrive, Some(Medium::Shown)), vec![Effect::ReadPlace(Place::UsbDrive, String::new())], "read once shown");
         app.set_place(Place::UsbDrive, String::new(), Ok(vec![entry("ROMs", folder(2))]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::ReadPlace(Place::UsbDrive, "ROMs".into())]);
         app.set_place(Place::UsbDrive, "ROMs".into(), Ok(vec![entry("boot.img", FileKind::File)]), LISTED);
@@ -11148,13 +11228,13 @@ mod tests {
         app.install(Event::Finished(Outcome::Failed(Failure::Unreadable("read /mnt/usb/ROMs/boot.img: Input/output error".into()))), 0);
         tap_at(&mut app, &f, &i, Action::Back, 1000);
         assert_eq!(app.screen(), page, "back to choose another");
-        assert!(app.set_usb_drive(None).is_empty());
+        assert!(app.set_medium(Place::UsbDrive, None).is_empty());
         assert_eq!(app.state.drive.path, "", "a drive pulled out leaves nothing of its folders");
         assert!(app.frame(&f, &i).rows.is_none(), "the page waits for another");
         assert!(app.key(Key::Back, 1000).is_empty());
         assert_eq!(app.screen(), Screen::Install);
-        let unreadable = Some(UsbDrive::Unreadable("sdg holds no filesystem the kernel reads".into()));
-        assert!(app.set_usb_drive(unreadable).is_empty(), "another page reads nothing");
+        let unreadable = Some(Medium::Unreadable("sdg holds no filesystem the kernel reads".into()));
+        assert!(app.set_medium(Place::UsbDrive, unreadable).is_empty(), "another page reads nothing");
         assert!(tap_at(&mut app, &f, &i, Action::Open(page), 1000).is_empty(), "nothing on the drive can be read");
     }
 

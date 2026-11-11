@@ -409,6 +409,29 @@ pub struct Usb {
     control: Option<JoinHandle<Result<()>>>,
 }
 
+/// Stop adbd, if it runs, and wait for it to go: the endpoints the install
+/// reads are adbd's until then.
+fn stop_adbd() -> Result<()> {
+    if !matches!(prop("init.svc.adbd").as_deref(), Some("running")) {
+        return Ok(());
+    }
+    set_prop("ctl.stop", "adbd")?;
+    let start = Instant::now();
+    while matches!(prop("init.svc.adbd").as_deref(), Some("running")) {
+        ensure!(start.elapsed() < SWITCH, "adbd still runs {} ms after it was told to stop", SWITCH.as_millis());
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// Start adbd again, where the port is to serve adb and nothing started it.
+fn start_adbd() -> Result<()> {
+    if matches!(prop("init.svc.adbd").as_deref(), Some("running")) {
+        return Ok(());
+    }
+    set_prop("ctl.start", "adbd")
+}
+
 impl Usb {
     /// Take USB over from adbd and offer the adb function for sideload;
     /// `shared` is how the endpoints' users are told to stop waiting. If
@@ -416,6 +439,11 @@ impl Usb {
     /// error is returned.
     pub fn open(shared: Arc<Shared>) -> Result<(Usb, Endpoints)> {
         set("none", SWITCH)?;
+        // The endpoints are adbd's until adbd stops: one left running takes
+        // the computer's packets for itself, and the install sees the stream
+        // end. A recovery whose own init rules stop adbd with the port has
+        // already stopped it.
+        stop_adbd()?;
         Usb::take(shared).or_else(|e| {
             set(resting(), SWITCH).with_context(|| format!("after {e:#}"))?;
             Err(e)
@@ -451,6 +479,10 @@ impl Usb {
 
         set_prop("sys.usb.ffs.ready", "1")?;
         set("sideload", SWITCH)?;
+        // Setting the port up for the configuration that carries adb starts
+        // adbd on a recovery whose rules say so; it must not read what the
+        // install is to read.
+        stop_adbd()?;
         Ok((usb, Endpoints { out, inn, shared }))
     }
 
@@ -463,6 +495,9 @@ impl Usb {
         let answered = self.stop_control();
         drop(self);
         set(resting(), SWITCH)?;
+        // The port is adb's again, and adbd serves it: a recovery whose rules
+        // do not start it with the configuration is given it back here.
+        start_adbd()?;
         answered
     }
 

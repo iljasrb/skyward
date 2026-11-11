@@ -12,7 +12,7 @@ use skyward_ui::app::{
     Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, Damage,
     Data, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Held, Install, ItemEnd,
     JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, SkywardEnd, SkywardJob, SkywardStage,
-    Source, SystemChoice, SystemsWork, TermEnd, Touch, UsbDrive, UsbLink, SCREEN_OFF,
+    Source, SystemChoice, SystemsWork, TermEnd, Touch, Medium, UsbLink, SCREEN_OFF,
 };
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
 use skyward_ui::{editor, fmt, pages, Canvas, Ctx, Fonts, Lang, Theme};
@@ -385,15 +385,15 @@ fn main() -> Result<()> {
         }),
         ("11-install-light-dual-boot", Screen::Install, false, &|app| app.state.dual_boot = true),
         ("11-install-dark-usb", Screen::Install, true, &|app| {
-            app.set_usb_drive(Some(UsbDrive::Shown));
+            app.set_medium(Place::UsbDrive, Some(Medium::Shown));
         }),
         ("19-choose-usb-light-absent", usb_page, false, &|_| {}),
         ("19-choose-usb-dark-unreadable", usb_page, true, &|app| {
             let why = "sdg holds no filesystem the kernel reads: sdg1 as vfat: Invalid argument (os error 22); sdg1 as exfat: Invalid argument (os error 22); sdg1 as ntfs3: No such device (os error 19); sdg1 as ext4: Invalid argument (os error 22); sdg1 as f2fs: Invalid argument (os error 22)";
-            app.set_usb_drive(Some(UsbDrive::Unreadable(why.into())));
+            app.set_medium(Place::UsbDrive, Some(Medium::Unreadable(why.into())));
         }),
         ("19-choose-usb-light", usb_page, false, &|app| {
-            app.set_usb_drive(Some(UsbDrive::Shown));
+            app.set_medium(Place::UsbDrive, Some(Medium::Shown));
             let made = 1_790_380_800;
             let rows = vec![folder("ROMs", 4, made), file("boot.img", 100_663_296, made), file("ishtar-ota-OS3.0.306.0.WMACNXM.zip", 7_103_043_868, made)];
             app.set_place(Place::UsbDrive, String::new(), Ok(rows), LISTED);
@@ -476,7 +476,7 @@ fn main() -> Result<()> {
         ("43-search-dark-pinyin", Screen::Search, true, &|app| app.state.search = "zd".into()),
         ("44-backup-light", Screen::Backup, false, &|_| {}),
         ("45-backup-dark", Screen::Backup, true, &|app| {
-            app.set_usb_drive(Some(UsbDrive::Shown));
+            app.set_medium(Place::UsbDrive, Some(Medium::Shown));
             app.state.backup_to = Place::UsbDrive;
         }),
         ("46-restore-light-none", Screen::Restore, false, &|_| {}),

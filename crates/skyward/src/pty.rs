@@ -15,6 +15,13 @@ const SHELL: &str = "/system/bin/sh";
 /// How long a write waits for the shell to make room for what was typed.
 const WRITE_TIMEOUT_MS: i32 = 1000;
 
+/// Where the linker looks for the libraries of what the shell runs: the
+/// recovery's own folders first, then the ones of each partition the pages
+/// mount beside it, which is where the installed system's programs keep
+/// theirs. The recovery's own linker configuration names only its own, so a
+/// program of the system, such as `htop`, finds no curses without it.
+const LIBRARIES: &str = "/system/lib64:/system_ext/lib64:/product/lib64:/vendor/lib64:/odm/lib64";
+
 pub struct Shell {
     /// The screen's side of the terminal.
     master: File,
@@ -53,6 +60,7 @@ impl Shell {
             .env("HOME", "/")
             .env("HOSTNAME", codename)
             .env("PS1", "${HOSTNAME}:${PWD:-?} # ")
+            .env("LD_LIBRARY_PATH", LIBRARIES)
             // The socket init made for the recovery service means nothing to
             // what the shell runs.
             .env_remove("ANDROID_SOCKET_recovery")
