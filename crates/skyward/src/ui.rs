@@ -245,6 +245,34 @@ impl Transfer {
     }
 }
 
+/// Start file transfer where its switch is on, saying on the page why where
+/// it does not.
+fn start_transfer(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo, app: &mut App, zone: usize) -> Option<Transfer> {
+    if !app.state.file_transfer {
+        return None;
+    }
+    match Transfer::start(cfg, info, zone) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"));
+            app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(app.state.lang, &format!("{e:#}")), monotonic_ms());
+            None
+        }
+    }
+}
+
+/// Give the port up for work that takes it for itself: file transfer stops,
+/// rather than only letting internal storage go, because a service left
+/// running binds the function it serves and the port reconfigures under the
+/// work that took it -- a package on its way to an install ends with the
+/// computer's stream cut.
+fn stop_transfer(transfer: &mut Option<Transfer>) -> Result<()> {
+    match transfer.take() {
+        Some(t) => t.stop(false),
+        None => Ok(()),
+    }
+}
+
 /// Take internal storage back from file transfer, if it is on, before work
 /// that erases or rewrites the data partition, or installs; whether that
 /// work can start, which the page is told otherwise.
@@ -1252,16 +1280,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // File transfer runs while its switch is on, and offers internal
     // storage while that is open; one that does not start says why on
     // screen, and the recovery carries on.
-    let mut transfer: Option<Transfer> = None;
-    if app.state.file_transfer {
-        match Transfer::start(cfg, &info, app.state.time_zone) {
-            Ok(t) => transfer = Some(t),
-            Err(e) => {
-                skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
-                app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(app.state.lang, &format!("{e:#}")), monotonic_ms());
-            }
-        }
-    }
+    let mut transfer: Option<Transfer> = if matches!(request.work, Work::Sideload { .. } | Work::Rescue) {
+        // The computer is here to send a package, not to read storage: file
+        // transfer would reconfigure the port under the install.
+        None
+    } else {
+        start_transfer(cfg, &info, &mut app, app.state.time_zone)
+    };
     // A sideload has the port, which goes back to rest once it ends.
     let mut sideloading = false;
     if fastboot {
@@ -1818,6 +1843,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 if finished {
                     installer = None;
                     sideloading = false;
+                    // The port is the pages' again: file transfer comes back
+                    // where its switch is on.
+                    if transfer.is_none() {
+                        transfer = start_transfer(cfg, &info, &mut app, app.state.time_zone);
+                    }
                     // A sideload or an update the system asked for is done
                     // with however it went, and so is rescue, once its page
                     // is left or the computer asks the phone to leave. A
@@ -2618,6 +2648,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
+                        stop_transfer(&mut transfer)?;
                         installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
                         sideloading = true;
                     }
