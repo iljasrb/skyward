@@ -89,6 +89,14 @@ With Heimdall:
 heimdall flash --RECOVERY out/skyward-r8q.img
 ```
 
+or, on Linux, hand the tar to `scripts/odin-flash.sh`, which reads the phone's
+PIT and does what Odin does with it: matches each file inside the tar to the
+partition whose `Flash Filename` names it, checks it fits, then flashes it.
+
+```sh
+./scripts/odin-flash.sh out/skyward-r8q.tar
+```
+
 From a recovery that is already installed, which is also what the update page
 does, push the image and write it to the partition:
 
