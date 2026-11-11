@@ -383,7 +383,7 @@ impl Link for Endpoints {
         // Nothing to read is not the end of the stream: the port reports the
         // one between packets the same way as the other, and a function that
         // really went away says so through `ready`.
-        let mut silent = Instant::now();
+        let silent = Instant::now();
         loop {
             self.shared.ready()?;
             match (&self.out).read(buf) {
