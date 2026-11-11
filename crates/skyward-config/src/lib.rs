@@ -74,6 +74,9 @@ pub struct DeviceConfig {
     pub wipe: Wipe,
     #[serde(default)]
     pub backup: Backup,
+    /// The card in the phone's microSD tray, on phones that have one.
+    #[serde(default)]
+    pub sdcard: Option<Sdcard>,
     /// The phone's WLAN, on phones whose driver the recovery brings up.
     #[serde(default)]
     pub wlan: Option<Wlan>,
@@ -227,6 +230,15 @@ pub struct Firmware {
     /// read-only while the file is read.
     #[serde(default)]
     pub partition: Option<String>,
+}
+
+/// The card in the phone's microSD tray, on phones that have one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Sdcard {
+    /// The controller the tray hangs from, as the kernel's device tree names
+    /// it: `8804000.sdhci`, the name the vendor's own table lists the tray
+    /// under.
+    pub host: String,
 }
 
 /// Where this phone's recovery images are published, which the update page
@@ -623,6 +635,9 @@ impl DeviceConfig {
         if let Some(firmware) = &cfg.firmware {
             let name = &firmware.partition;
             ensure!(!name.is_empty() && !name.contains('/'), "[firmware] partition: {name} is not a partition's name");
+        }
+        if let Some(card) = &cfg.sdcard {
+            ensure!(!card.host.is_empty() && !card.host.contains('/'), "[sdcard] host: {} is not a controller's name", card.host);
         }
         for name in &cfg.partitions.mounted {
             ensure!(!name.is_empty() && !name.contains('/'), "[partitions] mounted: {name} is not a partition's name");

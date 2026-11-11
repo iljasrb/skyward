@@ -933,6 +933,9 @@ pub fn failure(l: Lang, f: &Failure, source: Source) -> (String, Option<String>)
                 (Trouble::Transfer, Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive }) => {
                     said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN)
                 }
+                (Trouble::Transfer, Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard }) => {
+                    said(S_COULDNT_READ_THE_PACKAGE_CHECK_THE_SD_CARD_THEN_TRY_AGAIN)
+                }
                 (Trouble::Write, _) => said(S_COULDNT_WRITE_A_PARTITION),
                 (Trouble::Verify, _) => said(S_A_PARTITION_DIDNT_VERIFY),
                 (Trouble::PostInstall, _) => said(S_COULDNT_FINISH_INSTALLING),
@@ -951,6 +954,10 @@ pub fn failure(l: Lang, f: &Failure, source: Source) -> (String, Option<String>)
         Failure::Unreadable(why) => match source {
             Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => (
                 said(S_COULDNT_READ_THE_FILE_CHECK_THE_USB_DRIVE_THEN_TRY_AGAIN),
+                Some(why.clone()),
+            ),
+            Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard } => (
+                said(S_COULDNT_READ_THE_FILE_CHECK_THE_SD_CARD_THEN_TRY_AGAIN),
                 Some(why.clone()),
             ),
             _ => (said(S_COULDNT_READ_THE_FILE), Some(why.clone())),

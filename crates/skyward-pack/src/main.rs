@@ -27,11 +27,16 @@ enum Cmd {
     /// Unpack and pack an image's ramdisk unchanged, to check that a rebuilt
     /// archive keeps every entry.
     Repack { image: PathBuf, out: PathBuf },
-    /// Join a kernel and another image's ramdisk into one boot image.
+    /// Join a kernel and another image's ramdisk into one boot image, and
+    /// take the kernel's own device tree from another image where one is
+    /// given.
     Boot {
         /// Image holding the kernel (the device's boot partition).
+        #[arg(long, conflicts_with = "kernel_file")]
+        kernel: Option<PathBuf>,
+        /// The kernel itself, where it is a file rather than a boot image.
         #[arg(long)]
-        kernel: PathBuf,
+        kernel_file: Option<PathBuf>,
         /// Image holding the ramdisk.
         #[arg(long)]
         ramdisk: PathBuf,
@@ -103,9 +108,13 @@ fn main() -> Result<()> {
             img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode()?;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Boot { kernel, ramdisk, out } => {
+        Cmd::Boot { kernel, kernel_file, ramdisk, out } => {
             let mut img = BootImage::read(&ramdisk)?;
-            img.kernel = BootImage::read(&kernel)?.kernel;
+            img.kernel = match (kernel, kernel_file) {
+                (Some(image), _) => BootImage::read(&image)?.kernel,
+                (None, Some(file)) => std::fs::read(&file).with_context(|| format!("read {}", file.display()))?,
+                (None, None) => anyhow::bail!("a kernel is needed: --kernel or --kernel-file"),
+            };
             write(&out, &img, &img.to_bytes()?)
         }
         Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, tools, out } => {

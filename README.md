@@ -31,7 +31,8 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Install a second system beside the installed one, and switch between them
 - Online system updates
 - Skyward's own updates, from its newest release on GitHub
-- Backup and restore
+- Backup and restore, to internal storage, a USB drive or the card in the
+  microSD tray, held read and written at `/mnt/sdcard`
 - Wipe data and factory reset
 - Mount partitions, repair and format filesystems
 - File manager and terminal

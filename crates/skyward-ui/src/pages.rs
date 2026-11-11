@@ -2,8 +2,9 @@ use crate::app::{
     Action, AdbWifi, BackupAt, BackupEnd, BackupJob, ClashChoice, Confirm, Damage, Data, Dock,
     DownloadEnd, DownloadJob, EraseStop, Field, FileKind, FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit,
     Install, JobEnd, Keys, Pick, Place, Rows, RomCheck, Screen, SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State,
-    Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION,
-    FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs, starting,
+    Switch, SystemsWork, Target, Medium, UsbLink, Wipe, ADDABLE, ADB_WIFI_PORT, BACKUP_PARTS, DATA_ERASED, DATA_PARTITION,
+    FASTBOOT_CHOICES, SCREEN_OFF, SD_CARD_UNREADABLE, SD_CARD_WANTED, SD_CARD_WANTED_DETAIL, TARGETS, TIME_ZONES,
+    USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs, starting,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -36,6 +37,8 @@ const PURPLE: Rgba = Rgba::rgb(0x77, 0x67, 0xf9);
 const SLATE: Rgba = Rgba::rgb(0x8c, 0x9d, 0xb0);
 const ORANGE: Rgba = Rgba::rgb(0xff, 0x69, 0x00);
 const RED: Rgba = Rgba::rgb(0xfa, 0x38, 0x2e);
+// The stock Settings' own tile for removable storage.
+const TEAL: Rgba = Rgba::rgb(0x00, 0xa3, 0x9c);
 
 /// What every page draws from: style, typefaces, the device readings, and
 /// what the pages hold, from the choices made on them to where the data
@@ -978,12 +981,17 @@ pub fn install(cx: &Ctx) -> Frame {
     // The drive's page waits for one to be plugged in, and says why one
     // that is cannot be read.
     let usb = match &cx.state.usb_drive {
-        Some(UsbDrive::Shown) => S_CHOOSE_A_PACKAGE_OR_IMAGE_ON_THE_USB_DRIVE,
-        Some(UsbDrive::Unreadable(_)) => USB_DRIVE_UNREADABLE,
+        Some(Medium::Shown) => S_CHOOSE_A_PACKAGE_OR_IMAGE_ON_THE_USB_DRIVE,
+        Some(Medium::Unreadable(_)) => USB_DRIVE_UNREADABLE,
         None => USB_DRIVE_WANTED,
     };
     rows.push(Row::new(install_title(l, Source::File(Place::Storage))).icon(BLUE, Icon::Phone).subtitle(storage));
     rows.push(Row::new(install_title(l, Source::File(Place::UsbDrive))).icon(PURPLE, Icon::UsbDrive).subtitle(usb));
+    // The card in the tray, on a phone whose config names one.
+    if s.sdcard_supported {
+        let card = medium_said(&s.sdcard, S_CHOOSE_A_PACKAGE_OR_IMAGE_ON_THE_SD_CARD, SD_CARD_UNREADABLE, SD_CARD_WANTED);
+        rows.push(Row::new(install_title(l, Source::File(Place::SdCard))).icon(TEAL, Icon::SdCard).subtitle(card));
+    }
     let sideload = S_RUN_ADB_SIDELOAD_ON_THE_COMPUTER;
     rows.push(Row::new(install_title(l, Source::Computer)).icon(GREEN, Icon::Usb).subtitle(sideload));
     // A whole system package taken apart: each image it holds comes out,
@@ -995,7 +1003,17 @@ pub fn install(cx: &Ctx) -> Frame {
     );
     let methods = widgets::list(&mut c, t, f, y, &rows);
     let from_usb = Action::Open(Screen::Choose(Place::UsbDrive));
-    out.extend(hits(&methods.rows, &[from_storage, from_usb, Action::Sideload, Action::OpenPackageImages]));
+    let from_card = Action::Open(Screen::Choose(Place::SdCard));
+    // The rows are the ways in the order they are listed: internal storage,
+    // the drive, the card where there is one, sideloading, and the package's
+    // images.
+    let mut ways = vec![from_storage, from_usb];
+    if s.sdcard_supported {
+        ways.push(from_card);
+    }
+    ways.push(Action::Sideload);
+    ways.push(Action::OpenPackageImages);
+    out.extend(hits(&methods.rows, &ways));
     // A phone that can hold a second system installs one from here too.
     let what = match cx.state.dual_boot {
         true => S_INSTALLS_A_B_FULL_OTA_PACKAGES_FLASHABLE_ZIPS_AND_A_SECOND_SYSTEMS_PACKAGE,
@@ -1079,10 +1097,21 @@ fn install_title(_l: Lang, source: Source) -> &'static str {
         Source::Computer => S_INSTALL_FROM_A_COMPUTER,
         Source::File(Place::Storage) => S_INSTALL_FROM_INTERNAL_STORAGE,
         Source::File(Place::UsbDrive) => S_INSTALL_FROM_A_USB_DRIVE,
+        Source::File(Place::SdCard) => S_INSTALL_FROM_AN_SD_CARD,
         Source::Opened { .. } => S_INSTALL_FROM_FILE_MANAGER,
         Source::Asked { security: false } => S_INSTALL_A_SYSTEM_UPDATE,
         Source::Asked { security: true } => S_INSTALL_A_SECURITY_UPDATE,
         Source::Rescue => S_RESCUE_MODE,
+    }
+}
+
+/// What a removable place's own line says of it: the medium found, said as
+/// `shown`, or why it is not, or what to put in.
+fn medium_said(medium: &Option<Medium>, shown: Text, unreadable: Text, wanted: Text) -> Text {
+    match medium {
+        Some(Medium::Shown) => shown,
+        Some(Medium::Unreadable(_)) => unreadable,
+        None => wanted,
     }
 }
 
@@ -1091,6 +1120,7 @@ fn place_name(_l: Lang, place: Place) -> &'static str {
     match place {
         Place::Storage => S_INTERNAL_STORAGE,
         Place::UsbDrive => S_USB_DRIVE,
+        Place::SdCard => S_SD_CARD,
     }
 }
 
@@ -1221,6 +1251,7 @@ const CONNECT: Text = S_CONNECT_A_COMPUTER_WITH_A_CABLE_AND_RUN_THESE_COMMANDS_O
 const RUN_ON_COMPUTER: Text = S_RUN_ON_THE_COMPUTER;
 const KEEP_CABLE: Text = S_KEEP_THE_CABLE_IN_UNTIL_ITS_READ;
 const KEEP_DRIVE: Text = S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_READ;
+const KEEP_CARD: Text = S_KEEP_THE_SD_CARD_IN_UNTIL_ITS_READ;
 const GETTING_READY: Text = S_GETTING_READY;
 
 /// Installing a package step by step: receiving what the computer sends
@@ -1298,6 +1329,9 @@ pub fn installing(cx: &Ctx) -> Frame {
                 Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
                     S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL
                 }
+                Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard } => {
+                    S_KEEP_THE_SD_CARD_IN_UNTIL_ITS_READ_GOING_BACK_CANCELS_THE_INSTALL
+                }
             };
             widgets::footnote(&mut c, t, f, y, note)
         }
@@ -1309,6 +1343,7 @@ pub fn installing(cx: &Ctx) -> Frame {
                 Source::Computer | Source::Rescue => widgets::footnote(&mut c, t, f, y, KEEP_CABLE),
                 Source::File(Place::Storage) | Source::Opened { place: Place::Storage } | Source::Asked { .. } => y,
                 Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => widgets::footnote(&mut c, t, f, y, KEEP_DRIVE),
+                Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard } => widgets::footnote(&mut c, t, f, y, KEEP_CARD),
             }
         }
         Install::Choosing(choice) => {
@@ -1410,6 +1445,9 @@ pub fn installing(cx: &Ctx) -> Frame {
                 }
                 Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
                     S_KEEP_THE_USB_DRIVE_IN_UNTIL_ITS_FLASHED
+                }
+                Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard } => {
+                    S_KEEP_THE_SD_CARD_IN_UNTIL_ITS_FLASHED
                 }
             };
             widgets::footnote(&mut c, t, f, y, keep)
@@ -1520,6 +1558,9 @@ fn until_installed(_l: Lang, source: Source) -> &'static str {
         }
         Source::File(Place::UsbDrive) | Source::Opened { place: Place::UsbDrive } => {
             S_KEEP_THE_USB_DRIVE_IN_AND_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
+        }
+        Source::File(Place::SdCard) | Source::Opened { place: Place::SdCard } => {
+            S_KEEP_THE_SD_CARD_IN_AND_DONT_POWER_OFF_UNTIL_ITS_INSTALLED
         }
     }
 }
@@ -1851,19 +1892,20 @@ pub fn backup(cx: &Ctx) -> Frame {
         (false, _) if s.data == Data::Erased => DATA_ERASED.to_string(),
         (false, _) => DECRYPT_NEEDED.to_string(),
     };
-    let usb = match &s.usb_drive {
-        Some(UsbDrive::Shown) => S_CONNECTED,
-        Some(UsbDrive::Unreadable(_)) => USB_DRIVE_UNREADABLE,
-        None => USB_DRIVE_WANTED,
-    };
-    let places = widgets::list(&mut c, t, f, y, &[
+    let usb = medium_said(&s.usb_drive, S_CONNECTED, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED);
+    let mut rows = vec![
         Row::new(place_name(l, Place::Storage)).subtitle(&storage).trail(Trail::Check(s.backup_to == Place::Storage)),
         Row::new(place_name(l, Place::UsbDrive)).subtitle(usb).trail(Trail::Check(s.backup_to == Place::UsbDrive)),
-    ]);
-    out.extend(hits(
-        &places.rows,
-        &[Action::BackupTo(Place::Storage), Action::BackupTo(Place::UsbDrive)],
-    ));
+    ];
+    let mut ways = vec![Action::BackupTo(Place::Storage), Action::BackupTo(Place::UsbDrive)];
+    // The card in the tray, on a phone whose config names one.
+    if s.sdcard_supported {
+        let card = medium_said(&s.sdcard, S_CONNECTED, SD_CARD_UNREADABLE, SD_CARD_WANTED);
+        rows.push(Row::new(place_name(l, Place::SdCard)).subtitle(card).trail(Trail::Check(s.backup_to == Place::SdCard)));
+        ways.push(Action::BackupTo(Place::SdCard));
+    }
+    let places = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&places.rows, &ways));
     let y = widgets::section(&mut c, t, f, places.bottom, S_OPTIONS);
     let options = widgets::list(&mut c, t, f, y, &[
         Row::new(S_COMPRESS).subtitle(S_SMALLER_AND_SLOWER_TO_MAKE).trail(Trail::Switch(s.compress)),
@@ -2094,6 +2136,7 @@ pub fn backup_job(cx: &Ctx) -> Frame {
                     let saved = match job.place {
                         Place::Storage => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_IN_INTERNAL_STORAGE, name = name),
                         Place::UsbDrive => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_ON_THE_USB_DRIVE, name = name),
+                        Place::SdCard => crate::t!(S_SAVED_TO_SKYWARD_BACKUPS_ON_THE_SD_CARD, name = name),
                     };
                     (BACKUP_COMPLETE, GREEN, saved)
                 }
@@ -2117,6 +2160,7 @@ pub fn backup_job(cx: &Ctx) -> Frame {
     let keep = match job.place {
         Place::Storage => S_DONT_POWER_OFF,
         Place::UsbDrive => S_KEEP_THE_USB_DRIVE_IN_AND_DONT_POWER_OFF,
+        Place::SdCard => S_KEEP_THE_SD_CARD_IN_AND_DONT_POWER_OFF,
     };
     match &job.outcome {
         None => {
@@ -3037,17 +3081,33 @@ const CANCEL: Text = S_CANCEL;
 /// drive's files show as soon as it is.
 pub fn choose(cx: &Ctx, place: Place) -> Frame {
     let (s, l) = (cx.state, cx.state.lang);
-    let unreadable;
-    let absent = match (place, &s.usb_drive) {
-        (Place::UsbDrive, None) => Some((
+    let medium = match place {
+        Place::UsbDrive => &s.usb_drive,
+        Place::SdCard => &s.sdcard,
+        Place::Storage => &None,
+    };
+    // What the page says in place of the files: what to put in, or why the
+    // medium there cannot be read.
+    let (wanted, detail, unreadable_name, hint) = match place {
+        Place::UsbDrive => (
             S_NO_USB_DRIVE,
             S_CONNECT_A_USB_DRIVE_THROUGH_OTG_TO_SEE_ITS_FILES_HERE,
-        )),
-        (Place::UsbDrive, Some(UsbDrive::Unreadable(why))) => {
-            unreadable = crate::t!(S_USE_A_USB_DRIVE_FORMATTED_AS_FAT32_OR_EXFAT, why = why);
-            Some((USB_DRIVE_UNREADABLE, unreadable.as_str()))
+            USB_DRIVE_UNREADABLE,
+            S_USE_A_USB_DRIVE_FORMATTED_AS_FAT32_OR_EXFAT,
+        ),
+        _ => (SD_CARD_WANTED, SD_CARD_WANTED_DETAIL, SD_CARD_UNREADABLE, S_USE_AN_SD_CARD_FORMATTED_AS_FAT32_OR_EXFAT),
+    };
+    let unreadable;
+    // Internal storage's page says nothing of a medium: it has its files or
+    // none.
+    let absent = match (place, medium) {
+        (Place::Storage, _) => None,
+        (_, None) => Some((wanted, detail)),
+        (_, Some(Medium::Unreadable(why))) => {
+            unreadable = crate::t!(hint, why = why);
+            Some((unreadable_name, unreadable.as_str()))
         }
-        _ => None,
+        (_, Some(Medium::Shown)) => None,
     };
     let empty = S_NOTHING_HERE_TO_INSTALL;
     listing(cx, s.folder(Screen::Choose(place)), place_name(l, place), absent, empty, Action::ChooseEntry, S_CHOOSE_A_FILE)

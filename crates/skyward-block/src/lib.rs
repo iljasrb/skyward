@@ -4,6 +4,8 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub mod area;
+pub mod card;
+pub mod disk;
 pub mod dm;
 pub mod erase;
 pub mod fsck;

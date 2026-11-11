@@ -44,6 +44,9 @@ pub enum Icon {
     /// A flash drive: its metal end with two holes, and its body with a
     /// light.
     UsbDrive,
+    /// An SD card: its body with the corner cut off, its contacts along the
+    /// cut.
+    SdCard,
     /// Two layers, one over the other, as the stock Settings' service
     /// assistant shows them.
     Layers,
@@ -248,6 +251,18 @@ const USB_DRIVE: &[Part] = &[
     cut(Shape::Fill("M14,17.05A1.25,1.25 0 1 1 14,19.55A1.25,1.25 0 1 1 14,17.05Z")),
 ];
 
+const SD_CARD: &[Part] = &[
+    // The card's body, its top left corner cut off the way a card's is.
+    add(Shape::Fill(
+        "M9.4,5.8H16L20.2,10V20.6A1.6,1.6 0 0 1 18.6,22.2H9.4A1.6,1.6 0 0 1 7.8,20.6V7.4A1.6,1.6 0 0 1 9.4,5.8Z",
+    )),
+    // The contacts, three short bars along the cut corner's edge.
+    cut(Shape::Fill("M10.8,7.3H11.7V10.6H10.8Z")),
+    cut(Shape::Fill("M12.9,7.3H13.8V10.6H12.9Z")),
+    cut(Shape::Fill("M15,7.3H15.9V10.6H15Z")),
+    cut(Shape::Fill("M10.8,13.6H16.8V18.4H10.8Z")),
+];
+
 const LAYERS: &[Part] = &[add(Shape::Fill(
     "M21.176,15.189C22.106,15.728 22.572,15.997 22.728,16.349C22.864,16.655 22.864,17.005 22.728,17.312C22.572,17.663 22.106,17.933 21.176,18.472\
      L16.215,21.341C15.409,21.808 15.005,22.042 14.576,22.133C14.196,22.214 13.804,22.214 13.425,22.133C12.995,22.041 12.592,21.808 11.785,21.341\
@@ -369,6 +384,7 @@ fn outline(icon: Icon) -> (&'static [Part], f32) {
         Icon::Terminal => (TERMINAL, 1.0),
         Icon::Usb => (USB, 1.0),
         Icon::UsbDrive => (USB_DRIVE, 1.0),
+        Icon::SdCard => (SD_CARD, 1.0),
         Icon::Layers => (LAYERS, 1.0),
         Icon::Phone => (PHONE, 1.0),
         Icon::Lock => (LOCK, 1.0),
@@ -508,7 +524,7 @@ fn path(d: &str) -> tiny_skia::Path {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 23] = [
+    const ALL: [Icon; 24] = [
         Icon::Install,
         Icon::Backup,
         Icon::Restore,
@@ -522,6 +538,7 @@ mod tests {
         Icon::Terminal,
         Icon::Usb,
         Icon::UsbDrive,
+        Icon::SdCard,
         Icon::Layers,
         Icon::Phone,
         Icon::Lock,
