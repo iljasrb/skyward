@@ -239,6 +239,12 @@ pub struct Sdcard {
     /// it: `8804000.sdhci`, the name the vendor's own table lists the tray
     /// under.
     pub host: String,
+    /// The line a card's coming and going is read on, on phones whose stock
+    /// tree names it active high and leaves it floating: the build puts the
+    /// polarity and the pull right in the recovery's own tree, leaving the
+    /// installed system's alone.
+    #[serde(default)]
+    pub detect_pin: Option<u32>,
 }
 
 /// Where this phone's recovery images are published, which the update page
@@ -645,6 +651,7 @@ impl DeviceConfig {
         }
         if let Some(card) = &cfg.sdcard {
             ensure!(!card.host.is_empty() && !card.host.contains('/'), "[sdcard] host: {} is not a controller's name", card.host);
+            ensure!(card.detect_pin != Some(0), "[sdcard] detect_pin: 0 is no line's number");
         }
         for name in &cfg.partitions.mounted {
             ensure!(!name.is_empty() && !name.contains('/'), "[partitions] mounted: {name} is not a partition's name");

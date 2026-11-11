@@ -7,6 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 mod avb;
+mod tree;
 
 use skyward_bootimg::{BootImage, Compression, Ramdisk};
 
@@ -141,7 +142,19 @@ fn main() -> Result<()> {
                 anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
             }
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
-            skyward_config::DeviceConfig::load(&config)?;
+            let device = skyward_config::DeviceConfig::load(&config)?;
+            // The recovery carries its own overlays and device tree, apart
+            // from the installed system's: a phone whose stock ones read the
+            // card tray's detect line the wrong way round has both words put
+            // right here, and nothing else on the phone is any the wiser.
+            if let Some(pin) = device.sdcard.as_ref().and_then(|card| card.detect_pin) {
+                let (overlays, named) = tree::detect_active_low(&img.recovery_dtbo, pin)
+                    .context("read the stock recovery's overlays")?;
+                let (trees, pulled) = tree::detect_pull_up(&img.dtb, pin).context("read the stock recovery's device tree")?;
+                img.recovery_dtbo = overlays;
+                img.dtb = trees;
+                println!("the card tray's detect line is {pin}, active low and pulled up: {named} overlays named it, {pulled} groups pulled");
+            }
             rd.replace(paths::RECOVERY, read(&binary)?)?;
             // Install scripts look for the commands a stock recovery lacks
             // among its programs, and its unzip there too, a link to ziptool

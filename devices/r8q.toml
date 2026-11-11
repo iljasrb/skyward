@@ -38,6 +38,19 @@ load = []
 [partitions]
 mounted = ["persist", "metadata", "efs", "sec_efs", "apnhlos", "modem", "spu"]
 
+# The microSD tray hangs on a controller of its own, which the vendor's table
+# lists for the installed system: /devices/platform/soc/8804000.sdhci/mmc_host*.
+# The card shows there, read and written, for files to be installed from it and
+# backups and logs to be saved to it.
+[sdcard]
+host = "8804000.sdhci"
+# The stock tree calls the tray's detect line active high and leaves it with
+# no pull, while the board pulls the line up and grounds it as a card goes in.
+# The build puts both right in the recovery's own tree, as the vendor's tree
+# for the reference boards of this chip has them; the installed system keeps
+# its own.
+detect_pin = 77
+
 # The recovery ramdisk carries no logd, so the phone's own programs have
 # nowhere to say what they are doing. The installed system's logd runs on its
 # own bootstrap libraries, and then adb logcat works from a computer.
