@@ -100,5 +100,15 @@ target/release/skyward-pack recovery \
     --out "$out"
 
 ( cd "$(dirname "$out")" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256" )
+
+# Odin takes a tar, and picks the partition from the name of the file inside
+# it: an image called skyward-r8q.img leaves it nowhere to write. The tar
+# carries the same bytes named recovery.img, which is all "AP" needs.
+tar_out="${out%.img}.tar"
+stage=$(mktemp -d)
+cp "$out" "$stage/recovery.img"
+tar -H ustar --owner=0 --group=0 --numeric-owner -cf "$tar_out" -C "$stage" recovery.img
+rm -rf "$stage"
+( cd "$(dirname "$out")" && sha256sum "$(basename "$tar_out")" >"$(basename "$tar_out").sha256" )
 echo "built $out for build $SKYWARD_BUILD"
-echo "flash it with: fastboot flash recovery $out  (or Odin/Heimdall)"
+echo "flash $tar_out with Odin in the AP slot, or $out with heimdall flash --RECOVERY"

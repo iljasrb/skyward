@@ -70,12 +70,32 @@ are left out, and the UI typeface is a Latin subset of MiSans.
 
 ## Flash
 
-The recovery partition is `recovery`; there is no slot suffix. Use Odin or
-Heimdall with the phone in download mode (Volume Up + Volume Down, then the
-USB cable), or:
+The recovery partition is `recovery`; there is no slot suffix. The phone's
+bootloader speaks Odin's protocol, not fastboot: `fastboot flash recovery`
+only ever reaches the fastboot daemon that runs *inside* a recovery, so it
+cannot install the first one — it answers `Failed`.
+
+With Odin, put the phone in download mode (Volume Up + Volume Down, then the
+USB cable), load `skyward-r8q.tar` into **AP** and press Start. Odin chooses
+the partition from the file name inside the tar, which is why the release
+carries the same bytes twice: `skyward-r8q.tar` holds `recovery.img`. Load
+nothing into the other slots; in particular not into Userdata, which is the
+data partition: once the bootloader is unlocked, no vbmeta image is needed at
+all.
+
+With Heimdall:
 
 ```sh
 heimdall flash --RECOVERY out/skyward-r8q.img
+```
+
+From a recovery that is already installed, which is also what the update page
+does, push the image and write it to the partition:
+
+```sh
+adb push out/skyward-r8q.img /tmp/recovery.img
+adb shell dd if=/tmp/recovery.img of=/dev/block/by-name/recovery bs=1M
+adb shell sync
 ```
 
 To start the recovery, hold Volume Up + Power while the phone is connected to a
