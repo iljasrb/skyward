@@ -47,5 +47,5 @@ jobs:
           # page, which reads published releases, sees the image.
           gh release edit "$TAG" --draft=false
           tar -H ustar --owner=0 --group=0 --numeric-owner -cf out/skyward-r8q.tar -C out --transform 's,^skyward-r8q.img$,recovery.img,' skyward-r8q.img
-          sha256sum out/skyward-r8q.tar >> SHA256SUMS
+          ( cd out && sha256sum skyward-r8q.tar >> ../SHA256SUMS )
           gh release upload "$TAG" out/skyward-r8q.tar out/skyward-r8q.img SHA256SUMS --clobber
