@@ -1280,12 +1280,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // File transfer runs while its switch is on, and offers internal
     // storage while that is open; one that does not start says why on
     // screen, and the recovery carries on.
+    let zone_now = app.state.time_zone;
     let mut transfer: Option<Transfer> = if matches!(request.work, Work::Sideload { .. } | Work::Rescue) {
         // The computer is here to send a package, not to read storage: file
         // transfer would reconfigure the port under the install.
         None
     } else {
-        start_transfer(cfg, &info, &mut app, app.state.time_zone)
+        start_transfer(cfg, &info, &mut app, zone_now)
     };
     // A sideload has the port, which goes back to rest once it ends.
     let mut sideloading = false;
@@ -1843,7 +1844,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // The port is the pages' again: file transfer comes back
                     // where its switch is on.
                     if transfer.is_none() {
-                        transfer = start_transfer(cfg, &info, &mut app, app.state.time_zone);
+                        let zone = app.state.time_zone;
+                        transfer = start_transfer(cfg, &info, &mut app, zone);
                     }
                     // A sideload or an update the system asked for is done
                     // with however it went, and so is rescue, once its page
