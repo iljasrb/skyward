@@ -27,6 +27,12 @@ const EP_IN: &str = "/dev/usb-ffs/adb/ep2";
 /// How long init gets to carry out a change of USB configuration.
 const SWITCH: Duration = Duration::from_secs(10);
 
+/// How long a transferring port may stay silent before what it reads is taken
+/// for the end of the transfer. A port with nothing to hand over says so by
+/// reading nothing rather than by waiting, so silence is normal between
+/// packets; only a long one means the computer is gone.
+const SILENT_MAX: Duration = Duration::from_secs(30);
+
 // From linux/usb/functionfs.h and linux/usb/ch9.h.
 const DESCRIPTORS_MAGIC_V2: u32 = 3;
 const STRINGS_MAGIC: u32 = 2;
@@ -374,9 +380,15 @@ fn aborted(e: &io::Error) -> bool {
 
 impl Link for Endpoints {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Nothing to read is not the end of the stream: the port reports the
+        // one between packets the same way as the other, and a function that
+        // really went away says so through `ready`.
+        let mut silent = Instant::now();
         loop {
             self.shared.ready()?;
             match (&self.out).read(buf) {
+                Ok(0) if silent.elapsed() >= SILENT_MAX => return Ok(0),
+                Ok(0) => self.shared.settle(),
                 Ok(n) => return Ok(n),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => self.shared.settle(),
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -390,7 +402,8 @@ impl Link for Endpoints {
         while !data.is_empty() {
             self.shared.ready()?;
             match (&self.inn).write(data) {
-                Ok(0) => return Err(io::Error::from(ErrorKind::WriteZero)),
+                // The same as a full endpoint: no room yet, not a failure.
+                Ok(0) => self.shared.settle(),
                 Ok(n) => data = &data[n..],
                 Err(e) if e.kind() == ErrorKind::WouldBlock => self.shared.settle(),
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
