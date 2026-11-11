@@ -5,7 +5,7 @@
 
 use crate::adb::Link;
 use anyhow::{bail, ensure, Context, Result};
-use skyward_sys::set_prop;
+use skyward_sys::{prop, set_prop};
 use skyward_sys::usb::{resting, set};
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
@@ -14,7 +14,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
