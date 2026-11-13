@@ -3,8 +3,9 @@
 # Skyward for the Galaxy S20 FE 5G (r8q)
 
 A fork of [Skyward](https://github.com/kirklin/skyward), a recovery written in
-Rust, for the Samsung Galaxy S20 FE 5G (`r8q`, SM-G781B). The pages are English;
-their texts live in `locales/en.json`.
+Rust, for the Samsung Galaxy S20 FE 5G (`r8q`, SM-G781B), based on the fork's
+generic `main` branch. The pages are English; their texts live in
+`locales/en.json`.
 
 This branch builds **without the root methods**: no `--features roots`, no root
 page, and no `[[root]]` or `[ksu]` in the device configuration.
