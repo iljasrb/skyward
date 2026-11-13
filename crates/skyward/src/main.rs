@@ -626,12 +626,24 @@ fn bring_up(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>, found: Result<k
         skyward_sys::kmsg(&format!("the phone's own libraries are at {}", dir.display()))?;
     }
     services::start(&services, libraries.as_deref())?;
-    let steps = found.context("make out from the phone's partitions how its keys are used")?;
-    let steps = keys::without_config(steps, &cfg.services);
+    // The configuration's own programs may already be the whole key chain,
+    // as on a phone whose system keeps a keymaster rather than a keymint.
+    // What the partitions say is then no reason to call the devices not
+    // brought up: the pages still open, and the configuration's programs
+    // still use the keys.
+    let steps = match found {
+        Ok(steps) => keys::without_config(steps, &cfg.services),
+        Err(e) => {
+            skyward_sys::kmsg(&format!("the phone's partitions do not say how its keys are used: {e:#}"))?;
+            Vec::new()
+        }
+    };
     for line in keys::describe(&steps) {
         skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;
     }
-    keys::start(&steps, libraries.as_deref())?;
+    if let Err(e) = keys::start(&steps, libraries.as_deref()) {
+        skyward_sys::kmsg(&format!("the phone's key programs did not start: {e:#}"))?;
+    }
     agree_on_the_notes_key(&registering)
 }
 
