@@ -35,13 +35,12 @@ jobs:
       - name: Check the pages' texts are in the language file
         run: python3 scripts/locales.py check
       - name: Lint what runs on the computer
-        run: cargo clippy --locked --workspace --all-targets --features roots -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --locked --workspace --features roots
+        run: cargo test --locked --workspace
       - name: Lint what runs on the phone
         run: |
           cargo ndk -t arm64-v8a --platform 30 clippy --locked -p skyward -p skyward-install -p skyward-systems -p skyward-system-init -- -D warnings
-          cargo ndk -t arm64-v8a --platform 30 clippy --locked -p skyward --features roots -- -D warnings
 
   tools:
     name: Build the recovery service and the packer
@@ -50,7 +49,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - name: Build the recovery service for the phone
-        run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward --features roots
+        run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward
       # It runs as a second system's first program, before any library is
       # there to load.
       - name: Build the second system's first program, static

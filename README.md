@@ -11,7 +11,7 @@ branch: it carries the code, not one phone's files. Device branches add a
 ## Fork changes
 
 - Payload/OTA tooling
-- Root boot image patching
+- Root boot image patching, behind the `roots` feature and off for now
 - Recovery updates from the fork's own releases
 - Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
@@ -81,8 +81,8 @@ Tests and lints run on the computer; what runs only on the phone is linted for
 it:
 
 ```sh
-cargo test --workspace --features roots
-cargo clippy --workspace --all-targets --features roots -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo ndk -t arm64-v8a --platform 30 clippy -p skyward -p skyward-install -- -D warnings
 ```
 
