@@ -336,9 +336,30 @@ pub fn apply_while(
                     partition.name,
                     operation.data_length
                 );
-                source.seek(SeekFrom::Start(
-                    at.checked_add(operation.data_offset).ok_or_else(|| anyhow::anyhow!("{}'s data starts past the payload's end", partition.name))?,
-                ))?;
+                let data_at = at
+                    .checked_add(operation.data_offset)
+                    .ok_or_else(|| anyhow::anyhow!("{}'s data starts past the payload's end", partition.name))?;
+                // The data is checked before a byte of it is written: an
+                // offset that points somewhere else stops the install
+                // rather than writing another operation's data over the
+                // partition.
+                if operation.data_sha256.is_some() {
+                    source.seek(SeekFrom::Start(data_at))?;
+                    let mut left = operation.data_length;
+                    let mut hasher = Sha256::new();
+                    while left > 0 {
+                        if stop() {
+                            bail!(Cancelled);
+                        }
+                        let step = left.min(CHUNK as u64);
+                        let mut held = vec![0u8; step as usize];
+                        source.read_exact(&mut held)?;
+                        hasher.update(&held);
+                        left -= step;
+                    }
+                    check_hash(operation, &hasher.finalize())?;
+                }
+                source.seek(SeekFrom::Start(data_at))?;
                 let mut left = operation.data_length;
                 let mut hasher = Sha256::new();
                 for run in &operation.dst {

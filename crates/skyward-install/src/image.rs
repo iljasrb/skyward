@@ -7,7 +7,7 @@ use abootimg_oxide::binrw::BinRead;
 use abootimg_oxide::{Header, VendorHeader};
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
-use skyward_vab::Slot;
+use skyward_vab::{partition_name, Slot};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -173,21 +173,29 @@ pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
     find(ramdisk, |name| name == skyward_config::ramdisk::CONFIG, read).context("read the ramdisk")
 }
 
-/// The partition `name` of `slot` among the links in `dir`.
-pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
-    dir.join(format!("{name}{}", slot.suffix()))
+/// The partition `name` of `slot` among the links in `dir`: with the
+/// slot's suffix where the phone has slots, and as it is where it has none.
+pub fn device(dir: &Path, name: &str, slot: Option<Slot>) -> PathBuf {
+    dir.join(partition_name(name, slot))
 }
 
-/// The partitions `kind` fits that this phone has in both slots, among the
-/// links in `dir`, the likeliest first.
-pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
+/// The partitions `kind` fits that this phone has, among the links in
+/// `dir`, the likeliest first. A phone with slots has each of them in both;
+/// a phone without has one of each.
+pub fn partitions(kind: ImageKind, dir: &Path, slot: Option<Slot>) -> Result<Vec<&'static str>> {
     let mut found = Vec::new();
     for name in kind.partitions() {
-        let mut has = true;
-        for slot in [Slot::A, Slot::B] {
-            let path = device(dir, name, slot);
-            has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
-        }
+        let has = match slot {
+            Some(_) => {
+                let mut has = true;
+                for slot in [Slot::A, Slot::B] {
+                    let path = device(dir, name, Some(slot));
+                    has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
+                }
+                has
+            }
+            None => device(dir, name, None).try_exists().with_context(|| format!("look for {}", device(dir, name, None).display()))?,
+        };
         if has {
             found.push(*name);
         }
@@ -272,19 +280,48 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
 /// the files the tests write on a computer -- keeps whatever it had.
 pub(crate) fn writable(f: &File) -> Result<()> {
     use std::os::fd::AsRawFd;
+    match read_only(f)? {
+        // Not a block device, as the files a test writes to are, or one that
+        // is writable already.
+        None | Some(false) => return Ok(()),
+        Some(true) => {}
+    }
     let clear: libc::c_int = 0;
     if unsafe { libc::ioctl(f.as_raw_fd(), BLKROSET as _, &clear) } != 0 {
         let e = io::Error::last_os_error();
         if e.raw_os_error() != Some(libc::ENOTTY) {
             return Err(e).context("clear the device's read-only flag");
         }
+        return Ok(());
     }
-    Ok(())
+    match read_only(f)? {
+        Some(false) => Ok(()),
+        // The phone took the request and did not clear it: the write that
+        // follows would fail with EPERM, so say why here instead.
+        _ => anyhow::bail!("the partition is still read-only after asking the phone to clear it"),
+    }
 }
 
-/// The ioctl that sets a block device read-only, or lets it be written: its
-/// number is the same everywhere, and its type is the libc's of the phone.
+/// Whether the block device behind `f` carries the read-only flag: `None`
+/// for anything that is not a block device, which has no flag to report.
+fn read_only(f: &File) -> Result<Option<bool>> {
+    use std::os::fd::AsRawFd;
+    let mut flag: libc::c_int = 0;
+    if unsafe { libc::ioctl(f.as_raw_fd(), BLKROGET as _, &mut flag) } != 0 {
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOTTY) => Ok(None),
+            _ => Err(e).context("ask the device whether it is read-only"),
+        };
+    }
+    Ok(Some(flag != 0))
+}
+
+/// The ioctls that set a block device read-only, or let it be written, and
+/// that ask which it is: their numbers are the same everywhere, and their
+/// type is the libc's of the phone.
 const BLKROSET: libc::c_int = 0x125d;
+const BLKROGET: libc::c_int = 0x125e;
 
 pub(crate) use skyward_block::drop_cache;
 
@@ -439,9 +476,9 @@ mod tests {
             std::fs::File::create(dir.path().join(name)).unwrap();
         }
         let both = ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery };
-        assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
-        assert_eq!(partitions(ImageKind::Vbmeta, dir.path()).unwrap(), ["vbmeta"]);
-        assert!(partitions(ImageKind::Dtbo, dir.path()).unwrap().is_empty());
+        assert_eq!(partitions(both, dir.path(), Some(Slot::A)).unwrap(), ["recovery", "boot"]);
+        assert_eq!(partitions(ImageKind::Vbmeta, dir.path(), Some(Slot::A)).unwrap(), ["vbmeta"]);
+        assert!(partitions(ImageKind::Dtbo, dir.path(), Some(Slot::A)).unwrap().is_empty());
     }
 
     /// A partition of `size` bytes filled with 0xAA, so untouched bytes

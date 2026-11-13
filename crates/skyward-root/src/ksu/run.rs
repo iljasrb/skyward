@@ -241,12 +241,12 @@ impl<'a> Run<'a> {
     /// it, as the manager itself does, and `boot` otherwise. Android 12
     /// phones with an `init_boot` still patch `boot`.
     fn target(&self, slot: Slot) -> (&'static str, PathBuf) {
-        let init = image::device(&self.options.partition_dir, "init_boot", slot);
+        let init = image::device(&self.options.partition_dir, "init_boot", Some(slot));
         let skip_init = self.kmi.as_deref().is_some_and(|kmi| kmi.starts_with("android12-"));
         if init.exists() && !skip_init {
             ("init_boot", init)
         } else {
-            ("boot", image::device(&self.options.partition_dir, "boot", slot))
+            ("boot", image::device(&self.options.partition_dir, "boot", Some(slot)))
         }
     }
 

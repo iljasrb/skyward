@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use skyward_config::DeviceConfig;
 use skyward_info::{Battery, Boot, Charge, Cpu, DeviceInfo, PatchLevel, Storage};
-use skyward_install::{Failure, ImageKind, Outcome, Ramdisk, Reflash, Refusal, Stage};
+use skyward_install::{Downgrade, Failure, ImageKind, Outcome, Ramdisk, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
 use skyward_net::github::{Build, Newest, Unanswered};
 use skyward_net::reach::Reach;
@@ -127,7 +127,17 @@ fn main() -> Result<()> {
         eprintln!("axis {tag}: {min}..{max} (default {def})");
     }
 
-    let cfg = DeviceConfig::load(root.join("devices/bronco.toml"))?;
+    // The device the pages are drawn for: the one named by SKYWARD_DEVICE,
+    // or the only one the branch carries.
+    let devices = root.join("devices");
+    let named = match std::env::var("SKYWARD_DEVICE") {
+        Ok(name) => devices.join(name).with_extension("toml"),
+        Err(_) => std::fs::read_dir(&devices)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|e| e == "toml"))
+            .ok_or_else(|| anyhow!("no device in {}", devices.display()))?,
+    };
+    let cfg = DeviceConfig::load(&named)?;
     let (w, h) = (cfg.display.width, cfg.display.height);
     let ppd = cfg.display.density as f32 / 160.0;
     let light = Theme::light(w, h, ppd);
@@ -219,8 +229,8 @@ fn main() -> Result<()> {
         ),
         ("35-sideload-flashing", false, Install::Flashing { partition: "vendor_boot", stage: Some(Stage::Flashing { done: 300, total: 800 }) }),
         ("36-sideload-installed", false, Install::Finished { outcome: Outcome::Installed { slot: Slot::A, wipe: false }, damage: None }),
-        ("96-sideload-light-wipes", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true }),
-        ("18-install-ready", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: false }),
+        ("96-sideload-light-wipes", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true, downgrade: Downgrade::default() }),
+        ("18-install-ready", false, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: false, downgrade: Downgrade::default() }),
         (
             "37-sideload-flashed-recovery-dark",
             true,

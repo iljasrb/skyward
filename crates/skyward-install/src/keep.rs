@@ -35,8 +35,8 @@ impl Kept {
     /// slot does not hold Skyward, as when it was started without being
     /// flashed.
     pub fn hold(dir: &Path, current: Slot) -> Result<Option<Kept>> {
-        let (a, image_a) = read(&image::device(dir, PARTITION, Slot::A))?;
-        let (b, image_b) = read(&image::device(dir, PARTITION, Slot::B))?;
+        let (a, image_a) = read(&image::device(dir, PARTITION, Some(Slot::A)))?;
+        let (b, image_b) = read(&image::device(dir, PARTITION, Some(Slot::B)))?;
         let (held, image) = match current {
             Slot::A => (a, image_a),
             Slot::B => (b, image_b),
@@ -48,16 +48,48 @@ impl Kept {
     /// the partitions hold once the install is done; `next` is the slot
     /// that starts next.
     pub fn wanted(&self, next: Slot) -> Result<Vec<Slot>> {
-        let (a, _) = read(&image::device(&self.dir, PARTITION, Slot::A))?;
-        let (b, _) = read(&image::device(&self.dir, PARTITION, Slot::B))?;
+        let (a, _) = read(&image::device(&self.dir, PARTITION, Some(Slot::A)))?;
+        let (b, _) = read(&image::device(&self.dir, PARTITION, Some(Slot::B)))?;
         Ok(restore(self.before, [a, b], self.own, next))
     }
 
     /// Write this recovery into the recovery partitions of `slots` and read
     /// each back; `progress` hears the bytes so far, of all.
     pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
+        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, Some(slot))).collect();
         image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress)
+    }
+}
+
+/// This recovery as a phone without slots keeps it: one recovery partition
+/// holds it, and an install that writes over that partition takes it away, so
+/// it is read out before the install and written back after.
+pub struct One {
+    dir: PathBuf,
+    image: Vec<u8>,
+    own: [u8; 32],
+}
+
+impl One {
+    /// Hold this recovery from the one recovery partition, before an install;
+    /// none when that partition does not hold Skyward, as when it was started
+    /// without being flashed.
+    pub fn hold(dir: &Path) -> Result<Option<One>> {
+        let (held, image) = read(&image::device(dir, PARTITION, None))?;
+        Ok(held.skyward.then(|| One { dir: dir.to_path_buf(), image, own: held.digest }))
+    }
+
+    /// Write this recovery back when the install left the partition holding
+    /// something else; `progress` hears the bytes so far, of all. Whether it
+    /// had to.
+    pub fn restore(&self, progress: &mut dyn FnMut(u64, u64)) -> Result<bool> {
+        let device = image::device(&self.dir, PARTITION, None);
+        let (held, _) = read(&device)?;
+        if held.digest == self.own {
+            return Ok(false);
+        }
+        image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &[device], progress)?;
+        Ok(true)
     }
 }
 
@@ -127,6 +159,35 @@ mod tests {
             std::fs::write(dir.path().join(name), bytes).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn a_phone_without_slots_gets_its_one_recovery_partition_back() {
+        let (skyward, stock) = (recovery(true), recovery(false));
+        let size = skyward.len().max(stock.len()) + 4096;
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = skyward.clone();
+        bytes.resize(size, 0);
+        std::fs::write(dir.path().join(PARTITION), &bytes).unwrap();
+        let kept = One::hold(dir.path()).unwrap().expect("the partition holds Skyward");
+        let read = || std::fs::read(dir.path().join(PARTITION)).unwrap();
+        let gone = |kept: &One| {
+            let mut written = stock.clone();
+            written.resize(size, 0);
+            std::fs::write(dir.path().join(PARTITION), &written).unwrap();
+            let mut told = 0;
+            let wrote = kept.restore(&mut |_, _| told += 1).unwrap();
+            (wrote, read(), told)
+        };
+        assert!(!kept.restore(&mut |_, _| {}).unwrap(), "nothing written over");
+        assert_eq!(read(), bytes, "left as it was");
+        let (wrote, back, _) = gone(&kept);
+        assert!(wrote, "the install wrote the stock recovery over it");
+        assert_eq!(back, bytes, "this recovery is back in the partition");
+
+        // A partition that never held Skyward holds none to keep.
+        std::fs::write(dir.path().join(PARTITION), stock.clone()).unwrap();
+        assert!(One::hold(dir.path()).unwrap().is_none(), "no Skyward there to keep");
     }
 
     #[test]

@@ -152,6 +152,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::DeleteEntry | Confirm::DeleteBackup => (S_SLIDE_TO_DELETE, true),
         Confirm::Install => (INSTALL, false),
         Confirm::InstallWipe => (S_SLIDE_TO_INSTALL_AND_WIPE, true),
+        Confirm::InstallOlder => (S_SLIDE_TO_INSTALL_IT_ANYWAY, true),
         Confirm::RunScript => (INSTALL, true),
         Confirm::Merge => (S_SLIDE_TO_MERGE, true),
         Confirm::Relabel => (S_SLIDE_TO_FIX, true),
@@ -1015,9 +1016,10 @@ pub fn install(cx: &Ctx) -> Frame {
     ways.push(Action::OpenPackageImages);
     out.extend(hits(&methods.rows, &ways));
     // A phone that can hold a second system installs one from here too.
-    let what = match cx.state.dual_boot {
-        true => S_INSTALLS_A_B_FULL_OTA_PACKAGES_FLASHABLE_ZIPS_AND_A_SECOND_SYSTEMS_PACKAGE,
-        false => S_INSTALLS_A_B_FULL_OTA_PACKAGES_AND_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_A_SYSTEM_UPDATE_INSTALLS_TO_THE_OTHER_SLOT_WHICH_STARTS_AFTER_A_REBOOT_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES,
+    let what = match (i.slot.is_some(), cx.state.dual_boot) {
+        (false, _) => S_INSTALLS_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES,
+        (true, true) => S_INSTALLS_A_B_FULL_OTA_PACKAGES_FLASHABLE_ZIPS_AND_A_SECOND_SYSTEMS_PACKAGE,
+        (true, false) => S_INSTALLS_A_B_FULL_OTA_PACKAGES_AND_FLASHABLE_ZIPS_WITH_AN_INSTALL_SCRIPT_AND_FLASHES_BOOT_INIT_BOOT_VENDOR_BOOT_RECOVERY_DTBO_AND_VBMETA_PARTITION_IMAGES_A_SYSTEM_UPDATE_INSTALLS_TO_THE_OTHER_SLOT_WHICH_STARTS_AFTER_A_REBOOT_CHOOSING_A_FILE_LISTS_ONLY_FOLDERS_AND_ZIP_AND_IMG_FILES,
     };
     let y = widgets::footnote(&mut c, t, f, methods.bottom, what);
     let y = widgets::section(&mut c, t, f, y, S_OPTIONS);
@@ -1210,6 +1212,9 @@ fn reflashed(c: &mut Canvas, cx: &Ctx, y: f32) -> f32 {
             let slots = fmt::slots(l, written);
             let said = match (l, written.len()) {
                 (Lang::En, 1) => format!("Skyward went back into {slots}'s recovery partition."),
+                // A phone without slots has one recovery partition, and no
+                // slot was named: the recovery's own is where it went.
+                (Lang::En, 0) => "Skyward went back into the recovery partition.".to_string(),
                 _ => crate::t!(S_SKYWARD_WENT_BACK_INTO_THE_RECOVERY_PARTITIONS_OF, slots = slots),
             };
             widgets::footnote(c, t, f, y, &said)
@@ -1361,14 +1366,22 @@ pub fn installing(cx: &Ctx) -> Frame {
             let parts = widgets::list(&mut c, t, f, y, &rows);
             let choose: Vec<Action> = (0..choice.partitions.len()).map(Action::FlashPartition).collect();
             out.extend(hits(&parts.rows, &choose));
-            let y = widgets::section(&mut c, t, f, parts.bottom, S_SLOT_2);
-            let titles = Pick::ALL.map(|p| pick_title(l, p, i.slot));
-            let rows: Vec<Row> =
-                Pick::ALL.iter().zip(&titles).map(|(p, title)| Row::new(title).trail(Trail::Check(*p == choice.pick))).collect();
-            let picks = widgets::list(&mut c, t, f, y, &rows);
-            out.extend(hits(&picks.rows, &Pick::ALL.map(Action::FlashSlots)));
+            // A phone without slots has one of each partition, so there is
+            // one place an image can go and nothing to choose between.
+            let below = match i.slot.is_some() {
+                true => {
+                    let y = widgets::section(&mut c, t, f, parts.bottom, S_SLOT_2);
+                    let titles = Pick::ALL.map(|p| pick_title(l, p, i.slot));
+                    let rows: Vec<Row> =
+                        Pick::ALL.iter().zip(&titles).map(|(p, title)| Row::new(title).trail(Trail::Check(*p == choice.pick))).collect();
+                    let picks = widgets::list(&mut c, t, f, y, &rows);
+                    out.extend(hits(&picks.rows, &Pick::ALL.map(Action::FlashSlots)));
+                    picks.bottom
+                }
+                false => parts.bottom,
+            };
             let (label, danger) = confirm_label(Confirm::Flash, cx.state);
-            let track = widgets::confirm(&mut c, t, f, picks.bottom + t.m.dp(28.0), label, danger, s.confirm);
+            let track = widgets::confirm(&mut c, t, f, below + t.m.dp(28.0), label, danger, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::Flash) });
             let note = match s.source {
                 Source::Computer => S_FLASHING_WRITES_OVER_WHAT_THE_PARTITION_HOLDS_GOING_BACK_CANCELS_IT_AND_ENDS_ADB_SIDELOAD_ON_THE_COMPUTER,
@@ -1377,24 +1390,37 @@ pub fn installing(cx: &Ctx) -> Frame {
             };
             widgets::footnote(&mut c, t, f, track.y + track.h, note)
         }
-        Install::Confirming { version, wipe } => {
+        Install::Confirming { version, wipe, downgrade } => {
+            let warning = (!downgrade.is_none()).then(|| fmt::downgrade(l, downgrade, s.time_zone));
             let (title, color, icon, detail, which) = if *wipe {
                 let reset = factory_reset(s);
-                let detail = match version {
+                let mut detail = match version {
                     Some(v) => crate::t!(S_INSTALLING_THEN, v = v, reset = reset),
                     None => crate::t!(S_INSTALLING_THIS_UPDATE_THEN, reset = reset),
                 };
+                if let Some(warning) = &warning {
+                    detail.push(' ');
+                    detail.push_str(warning);
+                }
                 (S_ALL_DATA_HAS_TO_BE_WIPED.to_string(), ORANGE, Icon::Wipe, detail, Confirm::InstallWipe)
             } else {
                 let title = match version {
                     Some(v) => crate::t!(S_INSTALL, v = v),
                     None => S_INSTALL_THE_SYSTEM_UPDATE.into(),
                 };
-                let detail = match i.slot.map(|s| s.other().letter()) {
+                let mut detail = match i.slot.map(|s| s.other().letter()) {
                     Some(slot) => crate::t!(S_THE_NEW_SYSTEM_INSTALLS_TO_SLOT_WHICH_STARTS_AFTER_A_REBOOT, slot = slot),
                     None => S_THE_NEW_SYSTEM_STARTS_AFTER_A_REBOOT.into(),
                 };
-                (title, GREEN, Icon::Install, detail, Confirm::Install)
+                if let Some(warning) = &warning {
+                    detail.push(' ');
+                    detail.push_str(warning);
+                }
+                let (color, which) = match warning.is_some() {
+                    true => (ORANGE, Confirm::InstallOlder),
+                    false => (GREEN, Confirm::Install),
+                };
+                (title, color, Icon::Install, detail, which)
             };
             let y = widgets::list(&mut c, t, f, top, &[standing(&title, color, icon, &detail)]).bottom;
             let (label, danger) = confirm_label(which, cx.state);
@@ -2232,22 +2258,27 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let mut c = page(cx);
     let top = t.m.content_top;
     let build = update_value(cx);
-    let tools = widgets::list(&mut c, t, f, top, &[
+    let mut rows = vec![
         Row::new(FILES).icon(BLUE, Icon::Folder),
         Row::new(TERMINAL).icon(SLATE, Icon::Terminal),
         Row::new(RELABEL).icon(PURPLE, Icon::Shield),
         Row::new(FILESYSTEMS).icon(RED, Icon::Mount),
         Row::new(LOGS).icon(ORANGE, Icon::Log),
-        Row::new(UPDATE).icon(GREEN, Icon::Layers).trail(Trail::Value(&build)),
-    ]);
-    let out = hits(&tools.rows, &[
+    ];
+    let mut acts = vec![
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
         Action::Open(Screen::Relabel),
         Action::Open(Screen::Filesystems),
         Action::Open(Screen::Logs),
-        Action::Open(Screen::Update),
-    ]);
+    ];
+    // A phone whose ROM publishes no feed has no system update to offer.
+    if cx.state.offers(Screen::Update) {
+        rows.push(Row::new(UPDATE).icon(GREEN, Icon::Layers).trail(Trail::Value(&build)));
+        acts.push(Action::Open(Screen::Update));
+    }
+    let tools = widgets::list(&mut c, t, f, top, &rows);
+    let out = hits(&tools.rows, &acts);
     Frame::new(t, c, out, ADVANCED, top)
 }
 

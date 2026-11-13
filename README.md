@@ -5,7 +5,7 @@
 Skyward is a recovery written in Rust, from scratch. This is a fork's generic
 branch: it carries the code, not one phone's files. Device branches add a
 `devices/<codename>.toml`, a build script and a release workflow; the ThinkPhone
-(`bronco`) branch is `bronco`.
+(`bronco`) branch is `bronco`, and the Galaxy S20 FE 5G (`r8q`) branch is `r8q`.
 
 
 ## Fork changes
@@ -18,6 +18,16 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Safety fixes
 - Separated locales, with `scripts/locales.py` to take a merge of upstream's
   three-language texts into `locales/en.json` (see `locales/README.md`)
+- An older build or security patch is agreed to by a swipe, not refused
+- Payload data is checked before it is written, and an install waits on
+  update_engine itself rather than on helpers that keep its pipes open
+- Install scripts run where a package cannot clear them, and a partition that
+  stays read-only says why
+- A build.prop that cannot be read is left out instead of stopping the recovery
+- Programs another system keeps elsewhere are looked for, and a missing one no
+  longer stops the recovery
+- Pages a phone cannot use are left out: the ROM update page without a feed,
+  the charge limit without its switch, and A/B updates without slots
 
 
 ## Features
@@ -64,8 +74,8 @@ RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 b
 
 The service is built for the phone and the packer for the computer. Packing an
 image needs the phone's stock recovery and a device configuration; a device
-branch supplies both. See `scripts/build-bronco.sh` on the `bronco` branch for
-an example.
+branch supplies both. See `scripts/build-bronco.sh` on the `bronco` branch and
+`scripts/build-r8q.sh` on the `r8q` branch for examples.
 
 Tests and lints run on the computer; what runs only on the phone is linted for
 it:

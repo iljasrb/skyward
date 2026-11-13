@@ -36,6 +36,16 @@ const S_IFSOCK: u32 = 0o140000;
 /// in system/bin that stand for toybox.
 const LINK_MODE: u32 = 0o755;
 
+/// How a ramdisk is packed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compression {
+    /// LZ4's legacy framing, which AOSP's boot ramdisks use.
+    Lz4,
+    /// gzip, which some stock recoveries use and which compresses a large
+    /// typeface better.
+    Gzip,
+}
+
 impl Entry {
     pub fn is_dir(&self) -> bool {
         self.mode & S_IFMT == S_IFDIR
@@ -49,11 +59,16 @@ pub struct Ramdisk {
 }
 
 impl Ramdisk {
-    /// Unpack an LZ4 (legacy framing) compressed newc archive, as Android
-    /// boot images carry.
+    /// Unpack a newc archive compressed the ways Android boot images carry
+    /// one: LZ4 in the legacy framing, or gzip, which the stock recovery of
+    /// some phones uses.
     pub fn decode(compressed: &[u8]) -> Result<Self> {
         let mut cpio = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        if compressed.starts_with(&[0x1f, 0x8b]) {
+            flate2::read::MultiGzDecoder::new(compressed).read_to_end(&mut cpio).context("gzip decode")?;
+        } else {
+            lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        }
         let mut entries = Vec::new();
         let mut rest = Cursor::new(cpio.as_slice());
         loop {
@@ -84,7 +99,18 @@ impl Ramdisk {
     /// with the reference `lz4` tool in legacy framing (the kernel's initramfs
     /// unpacker reads no other LZ4 framing) at its highest compression.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        lz4_tool(&self.archive()?)
+        self.encode_as(Compression::Lz4)
+    }
+
+    /// Pack as a newc archive compressed as asked: LZ4's legacy framing, or
+    /// gzip, which compresses a large typeface better and is what some stock
+    /// recoveries use.
+    pub fn encode_as(&self, compression: Compression) -> Result<Vec<u8>> {
+        let archive = self.archive()?;
+        match compression {
+            Compression::Lz4 => lz4_tool(&archive),
+            Compression::Gzip => gzip(&archive),
+        }
     }
 
     /// Pack as a newc archive, uncompressed.
@@ -144,6 +170,14 @@ impl Ramdisk {
             Some(_) => bail!("{name} is not a regular file"),
             None => bail!("{name} is not in the ramdisk"),
         }
+    }
+
+    /// Take `name` and everything under it out of the ramdisk, as a
+    /// recovery that brings its own programs leaves out the stock one's
+    /// screen and resources.
+    pub fn remove_tree(&mut self, name: &str) {
+        let prefix = format!("{name}/");
+        self.entries.retain(|e| e.name != name && !e.name.starts_with(&prefix));
     }
 
     /// Add a root-owned regular file, creating missing parent directories.
@@ -273,6 +307,14 @@ pub fn lz4_legacy(input: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&block);
     }
     out
+}
+
+fn gzip(input: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = flate2::write::GzEncoder::new(&mut out, flate2::Compression::best());
+    encoder.write_all(input).context("gzip the ramdisk")?;
+    encoder.finish().context("finish the gzip stream")?;
+    Ok(out)
 }
 
 fn lz4_tool(input: &[u8]) -> Result<Vec<u8>> {

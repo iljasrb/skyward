@@ -40,12 +40,9 @@ const HOLDING_OFF: i32 = -2;
 /// ones. It does not say for how long.
 const RETRY_TIMEOUT: i32 = -2;
 
-/// How long the older kind's answer itself is: what it says, how long the
-/// caller must wait, and the frame for the note.
+/// How long the older kind's answer about the credential is: what it says,
+/// how long the caller must wait, and the structure of the note it wrote.
 const ANSWER_BYTES: usize = 24;
-
-/// Where the note's frame says how long the note is.
-const NOTE_LENGTH: std::ops::Range<usize> = 16..20;
 
 /// The call that has the newer kind check `password` against what it
 /// recognises in `slot`. Nothing asked for the note, so it answers no
@@ -110,22 +107,18 @@ fn ask_hardware(slot: u32, enrolled: &[u8], password: &[u8]) -> Message {
 /// What the older kind answered: the note it wrote for a right answer.
 fn hardware_note(read: &mut Answer) -> Result<Token> {
     read.status().context("have the secure world check the credential")?;
-    let answer = read.pointed().context("read what the secure world said about the credential")?;
+    let answer = read.whole().context("read what the secure world said about the credential")?;
     if answer.len() < ANSWER_BYTES {
         bail!("the secure world answered {} bytes about the credential", answer.len());
     }
     let said = i32::from_le_bytes(answer[0..4].try_into().expect("four bytes"));
     let wait = i32::from_le_bytes(answer[4..8].try_into().expect("four bytes"));
-    let length = u32::from_le_bytes(answer[NOTE_LENGTH].try_into().expect("four bytes"));
     match said {
         RIGHT | RIGHT_BUT_RENEW => {}
         HOLDING_OFF => bail!("the phone is holding off further tries for another {} seconds", (wait + 999) / 1000),
         _ => bail!("the secure world does not recognise that credential ({said})"),
     }
-    if length == 0 {
-        bail!("the secure world took the credential but wrote no note for the key service");
-    }
-    let note = read.pointed().context("read the note the secure world wrote")?;
+    let note = read.part()?.context("the secure world took the credential but wrote no note for the key service")?;
     Token::of(note)
 }
 

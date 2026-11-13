@@ -785,7 +785,7 @@ struct Pending {
 }
 
 /// Start installing the package the system asked for.
-fn install_asked(cfg: &DeviceConfig, app: &App, pending: Pending) -> Result<Installer> {
+fn install_asked(programs: &[Service], app: &App, pending: Pending) -> Result<Installer> {
     if pending.needs == Needs::Cache {
         let cache = wipe::cache()?.context("the phone has no cache partition")?;
         let at = Path::new(&cache.mount_point);
@@ -794,7 +794,7 @@ fn install_asked(cfg: &DeviceConfig, app: &App, pending: Pending) -> Result<Inst
             mount::mount_ro(Path::new(&fstab::device(&cache)?), at)?;
         }
     }
-    Installer::asked(pending.package, pending.retry, detach(cfg.services.clone()), install_options(app))
+    Installer::asked(pending.package, pending.retry, detach(programs.to_vec()), install_options(app))
 }
 
 /// Where a reboot rescue asked for goes: the target, and whether it is
@@ -907,6 +907,20 @@ fn answer(request: Request, fastboot: bool) -> Vec<Effect> {
     }
 }
 
+/// Where fastbootd asked the phone to go, from what it left in the
+/// bootloader message: the recovery it runs in for a `reboot recovery`, and
+/// the bootloader or fastboot itself for the other two. A message that asks
+/// for none of them -- an empty one, or whatever the phone booted with --
+/// leaves the phone where it is.
+fn left_for(asked: &bcb::Bcb) -> Option<Target> {
+    match asked.command.as_str() {
+        "" => None,
+        "bootonce-bootloader" => Some(Target::Bootloader),
+        "boot-fastboot" => Some(Target::Fastboot),
+        _ => Some(Target::Recovery),
+    }
+}
+
 /// The time of day for the status bar, in the zone the settings chose.
 fn clock(zone: usize) -> Result<String> {
     Ok(skyward_ui::fmt::clock(unix_now()?, zone))
@@ -1002,7 +1016,7 @@ fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
 /// are started again from there whenever they end.
 fn read_mounts(services: &[Service]) -> Result<Vec<skyward_ui::app::MountRow>> {
     use skyward_ui::app::MountRow;
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    let slot = skyward_vab::current_slot()?;
     let shown = skyward_vab::mounted_partitions(slot)?;
     let holders = skyward_block::mount::holders()?;
     let props = skyward_info::installed_props(slot)?;
@@ -1010,7 +1024,7 @@ fn read_mounts(services: &[Service]) -> Result<Vec<skyward_ui::app::MountRow>> {
     let mut rows = Vec::new();
     for base in skyward_vab::slot_bases(slot)? {
         let point = skyward_vab::mount_point(&base);
-        let name = format!("{base}{}", slot.suffix());
+        let name = skyward_vab::partition_name(&base, slot);
         let mounted = shown.iter().find(|m| m.partition == name);
         let mut using = BTreeSet::new();
         if let Some(m) = mounted {
@@ -1065,7 +1079,7 @@ fn set_slot(slot: skyward_vab::Slot) -> Result<skyward_vab::BootSlots, String> {
 /// and the booted slot's partitions come off.
 fn detach(services: Vec<Service>) -> Detach {
     Box::new(move || {
-        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+        let slot = skyward_vab::current_slot()?;
         let mounted = skyward_vab::mounted_partitions(slot)?;
         let busy = services::pin(&services, &mounted)?;
         skyward_vab::release_partitions(slot, &busy)
@@ -1136,8 +1150,10 @@ fn wait(fds: &[i32], timeout_ms: i32) -> Result<()> {
 }
 
 /// Run the pages. What `request`, read from misc, asks for decides the
-/// first of them; asking for nothing, they start at `start`.
-pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&Path>) -> Result<()> {
+/// first of them; asking for nothing, they start at `start`. `programs`
+/// are the phone's own that the recovery keeps running: the
+/// configuration's, and those the phone's partitions name for its keys.
+pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&Path>) -> Result<()> {
     if cfg.display.density == 0 {
         return Err(anyhow!("{}: [display] density is required to lay out the UI", cfg.device.codename));
     }
@@ -1145,6 +1161,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let fonts = Fonts::load(font, 0, mono)?;
     let mut surface = KmsSurface::open("/dev/dri/card0")?;
     let (w, h) = surface.size();
+    // A touch controller that follows the panel wakes as the panel goes
+    // from rest to running, and at no other time. The recovery service
+    // running again finds it as the earlier run left it, at rest where the
+    // panel rested then, so the panel is put to rest and woken with a dark
+    // frame, as every later wake wakes it, before the touchscreen is taken
+    // in and told its settings: a controller at rest answers none of them.
+    if skyward_sys::runs_again() {
+        surface.rest()?;
+        surface.present(&Canvas::new(w, h))?;
+        surface.settle()?;
+    }
     eprintln!("display {}", surface.describe());
     let mut inputs = Inputs::open(w, h, cfg.touch.writes.clone())?;
     let started = Instant::now();
@@ -1174,7 +1201,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // The switch the phone's kernel takes for charging, and the database the
     // phone's own system keeps its limit in, where the configuration names
     // them.
-    let mut charging = cfg.charging.as_ref().map(|c| charging::Switch::new(&c.switch));
+    let mut charging = cfg.charging.as_ref().map(|c| charging::Switch::new(&c.switch)).filter(charging::Switch::exists);
     app.state.charging_available = charging.is_some();
     let charge_db = cfg.charging.as_ref().and_then(|c| c.system.clone());
     let charge_cache = cfg.charging.as_ref().and_then(|c| c.cache.clone());
@@ -1213,7 +1240,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut arriving = Some(Incoming::Arrived);
     // The mount page shows the partitions as they are when it opens and
     // after each change; why they cannot be read is the page's to say.
-    let mounts = || read_mounts(&cfg.services).map_err(|e| format!("{e:#}"));
+    let mounts = || read_mounts(programs).map_err(|e| format!("{e:#}"));
 
     let mut screen = Canvas::new(w, h);
     // A page sliding over another draws on three screens' worth of canvas
@@ -1302,6 +1329,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // so a restart halfway comes back to it, until it is done or the user
     // leaves it for somewhere else.
     let misc = bcb::misc();
+    // The bootloader message as the fastboot page found it. fastbootd cannot
+    // reboot the phone itself: for the computer's `reboot recovery`,
+    // `bootloader` and `fastboot` it writes the request there and hands the
+    // port back, and init stops it as the port goes through "none". What it
+    // wrote while the page showed is therefore still in misc, and is carried
+    // out as the page ends.
+    let mut fastboot_found = match fastboot {
+        true => Some(bcb::read(&misc)?),
+        false => None,
+    };
     let mut kept = request.work.lasts();
     // The wipe page offers the cache partition where the phone's table has
     // one; a table that does not read leaves it out, and the page still
@@ -1319,13 +1356,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // look in.
     let tray = cfg.sdcard.as_ref().map(|card| card.host.clone());
     app.state.sdcard_supported = tray.is_some();
-    // Skyward lives in a recovery partition of each slot where the phone
-    // has them, and the install page then offers to keep it there. Such a
-    // phone holds a second system where it also has boot and init_boot
+    // Skyward lives in the phone's recovery partition, one of each where the
+    // phone has slots, and the install page then offers to keep it there.
+    // Such a phone holds a second system where it also has boot and init_boot
     // partitions in both slots, which a switch writes.
     let by_name = Path::new(skyward_block::BY_NAME);
     let both = |base: &str| -> Result<bool> { Ok(by_name.join(format!("{base}_a")).try_exists()? && by_name.join(format!("{base}_b")).try_exists()?) };
-    app.state.recovery_partitions = both("recovery")?;
+    let one = |base: &str| -> Result<bool> { Ok(both(base)? || by_name.join(base).try_exists()?) };
+    app.state.recovery_partitions = one("recovery")?;
     app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
     // The second system's work; the systems are read at once, for the home
     // page to name the one that starts, once a switch cut off before is
@@ -1382,12 +1420,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         Work::Sideload { .. } => {
             app.start_sideload();
-            installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
+            installer = Some(Installer::start(detach(programs.to_vec()), install_options(&app))?);
             sideloading = true;
         }
         Work::Rescue => {
             app.start_rescue();
-            installer = Some(Installer::rescue(detach(cfg.services.clone()), install_options(&app))?);
+            installer = Some(Installer::rescue(detach(programs.to_vec()), install_options(&app))?);
             sideloading = true;
         }
         Work::Update(update) => {
@@ -1408,7 +1446,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         decryptor = Some(Decryptor::start(decrypt::Job::Open)?);
                         pending = Some(wanted);
                     }
-                    Needs::Nothing | Needs::Cache => installer = Some(install_asked(cfg, &app, wanted)?),
+                    Needs::Nothing | Needs::Cache => installer = Some(install_asked(programs, &app, wanted)?),
                 }
             }
         }
@@ -1477,6 +1515,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut relabeler: Option<filework::Worker> = None;
     // Backing up or restoring under way.
     let mut backuper: Option<backup::Worker> = None;
+    // Whether a restore of the system's partitions is under way: it takes
+    // them off to write over them, and they are brought back once it ends.
+    let mut reattach = false;
     // Taking an image out of a system package under way.
     let mut extractor: Option<extract::Worker> = None;
     // An update's merge followed: one the recovery found under way, which
@@ -1663,17 +1704,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             // refresh.
             surface.speed_up()?;
             rested_at = None;
-        } else if surface.is_on() {
-            // With the backlight off, the panel rests, and the touch
-            // controller following it stops drawing power.
-            surface.rest()?;
-            rested_at = Some(Instant::now());
-        } else if rested_at.is_some_and(|at| at.elapsed() >= REST) {
-            // Rested long enough, the display goes off: the panel and the
-            // display processor feeding it stop drawing power.
-            surface.turn_off()?;
-            rested_at = None;
         }
+        // The panel is left on with the backlight off, which is how the
+        // fork has always turned the screen off. Upstream rests it in its
+        // low-power mode and then turns the display off; bronco's panel goes
+        // into that mode and does not come back from it, the display
+        // scanning out again with the backlight lit and the panel dark, so
+        // neither is done here. `Surface::rest` and `Surface::turn_off` stay
+        // for a panel whose low-power mode is known to come back.
         // A page at rest draws the rows it has yet to while nothing else
         // is to be done, a band at a time, looking for input between bands.
         let ahead = panel.is_some() && !shown && app.draw_ahead(&fonts, &info);
@@ -2133,6 +2171,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     backup::Event::Ended(end) => {
                         app.backup_ended(backup_end(end), now);
                         backed = true;
+                        if reattach {
+                            reattach = false;
+                            crate::prepare(cfg, skyward_vab::current_slot()?)?;
+                            read_at = Instant::now();
+                            info = skyward_info::collect(cfg)?;
+                            app.set_mounts(mounts());
+                            app.refresh();
+                        }
                     }
                 }
             }
@@ -2324,13 +2370,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             // as it is whole.
                             updates::End::Downloaded => {
                                 let build = app.state.skyward_newest().and_then(|n| n.build.clone());
-                                match (build, info.slot) {
-                                    (Some(build), Some(active)) => {
+                                match build {
+                                    Some(build) => {
                                         app.skyward_progress(SkywardStage::Write { done: 0, total: build.size }, 0);
-                                        let task = updates::Task::Install { path: downloaded_build(&build), active };
+                                        let task = updates::Task::Install { path: downloaded_build(&build), active: info.slot };
                                         writer = Some(updates::Worker::start(task, servers.clone())?);
                                     }
-                                    _ => app.skyward_ended(SkywardEnd::NotWritten("the build could not be written".into()), now),
+                                    None => app.skyward_ended(SkywardEnd::NotWritten("the build could not be written".into()), now),
                                 }
                             }
                             updates::End::Stopped => app.skyward_ended(SkywardEnd::Stopped, now),
@@ -2495,7 +2541,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.asked_locked(user, now);
                         pending = Some(wanted);
                     }
-                    _ => installer = Some(install_asked(cfg, &app, wanted)?),
+                    _ => installer = Some(install_asked(programs, &app, wanted)?),
                 }
             }
         }
@@ -2651,7 +2697,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             continue;
                         }
                         stop_transfer(&mut transfer)?;
-                        installer = Some(Installer::start(detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::start(detach(programs.to_vec()), install_options(&app))?);
                         sideloading = true;
                     }
                     Effect::InstallFile(place, path) => {
@@ -2659,14 +2705,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
-                        installer = Some(Installer::open(in_place(place, &path), detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::open(in_place(place, &path), detach(programs.to_vec()), install_options(&app))?);
                     }
                     Effect::InstallPath(path) => {
                         ensure!(installer.is_none(), "an installer is running already");
                         if !withhold(&mut transfer, &mut app, now)? {
                             continue;
                         }
-                        installer = Some(Installer::open(PathBuf::from(path), detach(cfg.services.clone()), install_options(&app))?);
+                        installer = Some(Installer::open(PathBuf::from(path), detach(programs.to_vec()), install_options(&app))?);
                     }
                     Effect::Extract { package, partition, out } => {
                         ensure!(extractor.is_none(), "an extraction is running already");
@@ -2684,7 +2730,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         }
                     }
                     Effect::Flash { partition, pick } => {
-                        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                        let slot = skyward_vab::current_slot()?;
                         installer.as_ref().context("no installer holds an image")?.flash(partition, pick.slots(slot));
                     }
                     // The run carries its own key, and writes nothing but
@@ -2991,7 +3037,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // page's to report, with what to do first.
                     Effect::Relabel => {
                         ensure!(relabeler.is_none(), "relabeling is under way already");
-                        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                        let slot = skyward_vab::current_slot()?;
                         match relabel::rule_files(slot) {
                             Ok(rules) => {
                                 relabeler = Some(filework::Worker::start(filework::Task::Relabel { rules })?);
@@ -3072,6 +3118,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     Effect::Restore { place, name, parts } => {
                         ensure!(backuper.is_none(), "a backup or restore is under way already");
+                        // A restore of the system's partitions takes them off
+                        // to write over them, and what runs from them with
+                        // it: they are brought back once it ends, so the
+                        // recovery goes on working with what it restored.
+                        reattach = parts[1];
                         if installer.is_some() {
                             app.report(INSTALL_UNFINISHED, now);
                             continue;
@@ -3082,7 +3133,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             device: cfg.device.codename.clone(),
                             efs: cfg.backup.efs.clone(),
                             skipped: backup::data_skipped(&cfg.backup.data_skipped),
-                            detach: detach(cfg.services.clone()),
+                            detach: detach(programs.to_vec()),
                         };
                         backuper = Some(backup::Worker::start(backup::Task::Restore(task))?);
                         app.backup_started(true, place, true);
@@ -3224,14 +3275,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // A partition that will not mount, or is in use, is the
                     // page's to report; the recovery carries on.
                     Effect::Mount(base) => {
-                        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                        let slot = skyward_vab::current_slot()?;
                         if let Err(e) = skyward_vab::mount_one(slot, &base) {
                             app.mount_failed(MountFailure { mounting: true, base, detail: format!("{e:#}") });
                         }
                         app.set_mounts(mounts());
                     }
                     Effect::Unmount(base) => {
-                        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                        let slot = skyward_vab::current_slot()?;
                         if let Err(e) = skyward_vab::unmount_one(slot, &base) {
                             app.mount_failed(MountFailure { mounting: false, base, detail: format!("{e:#}") });
                         }
@@ -3241,7 +3292,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // then the slot's partitions come up as at boot.
                     Effect::EnterRecovery => {
                         skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
-                        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                        if let Some(found) = fastboot_found.take() {
+                            let asked = bcb::read(&misc)?;
+                            if asked != found {
+                                if let Some(target) = left_for(&asked) {
+                                    skyward_sys::kmsg(&format!("fastbootd asked the phone to leave for {target:?}"))?;
+                                    power(target)?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        let slot = skyward_vab::current_slot()?;
                         crate::prepare(cfg, slot)?;
                         read_at = Instant::now();
                         info = skyward_info::collect(cfg)?;

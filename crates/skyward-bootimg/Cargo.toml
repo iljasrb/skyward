@@ -10,6 +10,7 @@ anyhow = { workspace = true }
 cpio = "0.4.1"
 libc = { workspace = true }
 lz4_flex = "0.14.0"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

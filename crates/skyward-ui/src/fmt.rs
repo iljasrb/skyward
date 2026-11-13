@@ -9,7 +9,7 @@ use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use skyward_info::{Battery, Charge, Cpu, PatchLevel, Storage};
 use skyward_install::ota::Trouble;
-use skyward_install::{Failure, ImageKind, Ramdisk, Refusal};
+use skyward_install::{Downgrade, Failure, ImageKind, Ramdisk, Refusal};
 use skyward_net::download::Failure as DownloadFailure;
 use skyward_net::reach::Reach;
 use skyward_net::github::Unanswered;
@@ -802,6 +802,9 @@ pub fn partition_role(_l: Lang, name: &str) -> &'static str {
 
 /// `slot B`, `slots A and B`, `slot B`, `slots A and B`
 pub fn slots(_l: Lang, slots: &[Slot]) -> String {
+    if slots.is_empty() {
+        return "the phone".into();
+    }
     let letters: Vec<&str> = slots.iter().map(|s| s.letter()).collect();
     let joined = letters.join(S_AND);
     if slots.len() == 1 {
@@ -846,6 +849,20 @@ fn give(_l: Lang, source: Source) -> &'static str {
     }
 }
 
+/// Why a package that goes back to an older build or security patch is
+/// offered anyway, in the zone at `zone` in [`TIME_ZONES`].
+pub fn downgrade(l: Lang, d: &Downgrade, zone: usize) -> String {
+    let mut said = Vec::new();
+    if let Some((package, installed)) = d.build {
+        let (package, installed) = (date(l, package, zone), date(l, installed, zone));
+        said.push(crate::t!(S_THIS_PACKAGE_IS_OLDER_THAN_THE_CURRENT_SYSTEM_INSTALL_IT_ANYWAY, package = package, installed = installed));
+    }
+    if let Some((package, installed)) = &d.patch {
+        said.push(crate::t!(S_THIS_PACKAGES_SECURITY_PATCH_IS_OLDER_THAN_THE_CURRENT_SYSTEMS_INSTALL_IT_ANYWAY, package = package, installed = installed));
+    }
+    said.join(" ")
+}
+
 /// Why a package from `source` was not installed, for a phone with this
 /// codename, its dates in the zone at `zone` in [`TIME_ZONES`].
 pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize) -> String {
@@ -855,6 +872,7 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
         Refusal::Image => crate::t!(S_A_PARTITION_IMAGE_CANT_BE_INSTALLED_THIS_WAY_AN_A_B_FULL_OTA_PACKAGE_OR_A_FLASHABLE_ZIP, give = give),
         Refusal::NotAb(kind) if kind.is_empty() => crate::t!(S_THIS_PACKAGE_DOESNT_SAY_ITS_TYPE_AN_A_B_FULL_OTA_PACKAGE, give = give),
         Refusal::NotAb(kind) => crate::t!(S_THIS_PACKAGES_TYPE_IS_AN_A_B_FULL_OTA_PACKAGE, kind = kind, give = give),
+        Refusal::NoSlots => S_AN_A_B_FULL_OTA_PACKAGE_CANT_BE_INSTALLED_ON_A_PHONE_WITHOUT_SLOTS.into(),
         Refusal::OtherDevice(devices) => crate::t!(S_THIS_PACKAGE_IS_FOR_AND_THIS_PHONE_IS, devices = devices, codename = codename),
         Refusal::OtherSerial => S_THIS_PACKAGE_IS_ONLY_FOR_DEVICES_WITH_CERTAIN_SERIAL_NUMBERS_AND_THIS_PHONE_ISNT_ONE_OF_THEM
             .into(),

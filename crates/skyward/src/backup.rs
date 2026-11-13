@@ -37,7 +37,7 @@ const ENTRY_BYTES: u64 = 2048;
 
 /// The slot's partitions that start the phone and check what it starts, in
 /// the order a backup takes them: those the phone has.
-const BOOT: [&str; 8] = ["vendor_boot", "vendor_boot", "vendor_boot", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor", "recovery"];
+const BOOT: [&str; 9] = ["boot", "init_boot", "vendor_boot", "dtbo", "vbmeta", "vbmeta_system", "vbmeta_vendor", "vbmeta_samsung", "recovery"];
 
 /// The order a restore writes the parts in: what starts the phone and what
 /// it starts, then the baseband's, then the data partition's files, which
@@ -243,12 +243,12 @@ fn partition(name: &str) -> PathBuf {
 /// The partition `name` as this phone has it: as it is named, or, for what
 /// a phone keeps one of per slot, that of the slot it runs from. None while
 /// it has neither.
-fn efs_partition(name: &str, slot: Slot) -> Option<PathBuf> {
+fn efs_partition(name: &str, slot: Option<Slot>) -> Option<PathBuf> {
     let plain = partition(name);
     if plain.exists() {
         return Some(plain);
     }
-    let slotted = partition(&format!("{name}{}", slot.suffix()));
+    let slotted = partition(&format!("{name}{}", slot?.suffix()));
     slotted.exists().then_some(slotted)
 }
 
@@ -382,7 +382,7 @@ fn no_update() -> Result<()> {
 }
 
 fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<PathBuf> {
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    let slot = skyward_vab::current_slot()?;
     let [boot, system, data, efs] = t.parts;
     if system {
         no_update()?;
@@ -394,7 +394,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
         // whose boot set goes back into them first.
         skyward_systems::install::ensure_installed()?;
         for name in BOOT {
-            let device = partition(&format!("{name}{}", slot.suffix()));
+            let device = partition(&skyward_vab::partition_name(name, slot));
             if device.exists() {
                 let size = skyward_block::size_bytes(&device)?;
                 plan.push((Part::Boot, name.to_string(), Source::Block(device), size));
@@ -455,7 +455,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
                     copy(&mut from, &mut writer, *size, cancel, &mut telling).with_context(|| format!("back up {name}"))?;
                 }
                 Source::Logical(base) => {
-                    let whole = skyward_vab::map_whole(slot, base, &format!("skyward-backup-{base}{}", slot.suffix()), true)?;
+                    let whole = skyward_vab::map_whole(slot, base, &format!("skyward-backup-{base}{}", slot.map_or("", Slot::suffix)), true)?;
                     let copied = File::open(&whole.device)
                         .with_context(|| format!("open {}", whole.device.display()))
                         .and_then(|mut from| copy(&mut from, &mut writer, whole.size, cancel, &mut telling));
@@ -477,7 +477,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
         }
         let data_key = if data { Some(data_key()?) } else { None };
         let manifest =
-            Manifest { format: FORMAT, device: t.device.clone(), made: t.made, slot: slot.suffix().into(), system: t.system.clone(), data_key, items };
+            Manifest { format: FORMAT, device: t.device.clone(), made: t.made, slot: slot.map_or("", Slot::suffix).into(), system: t.system.clone(), data_key, items };
         manifest.write(&folder, t.ownership)?;
         unsafe { libc::sync() };
         Ok(())
@@ -537,7 +537,7 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     if manifest.device != t.device {
         return Err(Refusal::OtherPhone(manifest.device).into());
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    let slot = skyward_vab::current_slot()?;
     let mut items: Vec<&Item> = manifest.items.iter().filter(|i| t.parts[index(i.part)]).collect();
     ensure!(!items.is_empty(), "nothing chosen to restore is in the backup");
     items.sort_by_key(|i| RESTORE_ORDER.iter().position(|&p| p == i.part));
@@ -554,6 +554,35 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
             ensure!(safe_file_name(name), "the backup keeps a file outside its folder: {name:?}");
         }
     }
+    // A partition the phone keeps read-only -- vbmeta, on this one -- keeps
+    // what it holds: the backup's copy of it cannot be written, and with the
+    // bootloader unlocked it is not what decides whether the phone starts. It
+    // is left as it is, and said so, rather than taking the rest of the
+    // restore with it.
+    let mut writable = Vec::with_capacity(items.len());
+    let mut kept = Vec::new();
+    for item in items {
+        let device = match item.part {
+            Part::Boot | Part::Efs => Some(target(item, slot)),
+            Part::System | Part::Data => None,
+        };
+        match device {
+            Some(device) if read_only(&device).unwrap_or(false) => kept.push(item.name.clone()),
+            _ => writable.push(item),
+        }
+    }
+    ensure!(
+        !writable.is_empty(),
+        "this phone keeps {} read-only, so nothing chosen can be written",
+        kept.join(", ")
+    );
+    if !kept.is_empty() {
+        let _ = skyward_sys::kmsg(&format!(
+            "restore: this phone keeps {} read-only, so the backup's are left as they are",
+            kept.join(", ")
+        ));
+    }
+    let items = writable;
     // All that can be seen before anything is written.
     let system = items.iter().any(|i| i.part == Part::System);
     if system || items.iter().any(|i| i.part == Part::Boot) {
@@ -614,7 +643,7 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
             }
             Part::System => {
                 let mut telling = Telling::new(tell, k, item.stored.size * 2, false);
-                let whole = skyward_vab::map_whole(slot, &item.name, &format!("skyward-restore-{}{}", item.name, slot.suffix()), false)?;
+                let whole = skyward_vab::map_whole(slot, &item.name, &format!("skyward-restore-{}{}", item.name, slot.map_or("", Slot::suffix)), false)?;
                 let written = write_image(&whole.device, &t.folder, &item.stored, &mut telling);
                 skyward_vab::unmap_whole(&whole)?;
                 written?;
@@ -637,6 +666,15 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     Ok(unmade)
 }
 
+/// Whether the phone keeps the partition at `device` read-only, as its kernel
+/// does for vbmeta on this one: a write to it is answered with EROFS rather
+/// than changing anything.
+fn read_only(device: &Path) -> Result<bool> {
+    let (major, minor) = skyward_block::devnum(device)?;
+    let at = Path::new("/sys/dev/block").join(format!("{major}:{minor}")).join("ro");
+    Ok(fs::read_to_string(at).is_ok_and(|ro| ro.trim() == "1"))
+}
+
 /// Whether `name` is one plain file or partition name, not a path.
 fn safe_file_name(name: &str) -> bool {
     let path = Path::new(name);
@@ -656,13 +694,13 @@ fn valid_item(item: &Item, efs: &[String]) -> bool {
 }
 
 /// The partition a part of a backup goes back to.
-fn target(item: &Item, slot: Slot) -> PathBuf {
+fn target(item: &Item, slot: Option<Slot>) -> PathBuf {
     match item.part {
         // Written back where this phone keeps it now, which is not always
         // where the backup found it: a phone with one baseband partition per
         // slot restores into the slot it runs from.
         Part::Efs => efs_partition(&item.name, slot).unwrap_or_else(|| partition(&item.name)),
-        _ => partition(&format!("{}{}", item.name, slot.suffix())),
+        _ => partition(&skyward_vab::partition_name(&item.name, slot)),
     }
 }
 

@@ -40,7 +40,7 @@ pub enum Task {
     Download { build: Build, path: PathBuf },
     /// Write the image at `path` over the recovery partitions: the one the
     /// phone runs `active` from, and the other when it holds this recovery.
-    Install { path: PathBuf, active: Slot },
+    Install { path: PathBuf, active: Option<Slot> },
     /// Ask the phone's ROM for its newest system, and say whether it is newer
     /// than the installed one. `flavor` is the prefix the installed system's
     /// `ro.build.flavor` must have, where the update is one ROM's alone.
@@ -132,7 +132,7 @@ impl Worker {
                         .map_err(|e| format!("{e:#}")),
                         Err(e) => Err(format!("{e:#}")),
                     };
-                    let slots = slots.unwrap_or_default();
+                    let slots: Vec<Slot> = slots.unwrap_or_default().into_iter().flatten().collect();
                     let _ = skyward_sys::kmsg(&format!("writing {}: {result:?}", path.display()));
                     say(Event::Installed { slots, result });
                 }

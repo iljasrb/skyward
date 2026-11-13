@@ -84,10 +84,12 @@ pub enum Event {
     Checking { size: u64 },
     /// An update package passed the checks and waits for
     /// [`Command::Install`] before anything is written: the version it
-    /// brings, and whether all user data is to be erased before that
-    /// system starts. One that erases always waits, and so does one from a
-    /// file on the phone, which a single tap picks.
-    Ready { version: Option<String>, wipe: bool },
+    /// brings, whether all user data is to be erased before that system
+    /// starts, and how it is older than the installed system, where it is.
+    /// One that erases always waits, and so does one from a file on the
+    /// phone, which a single tap picks, and one that goes back to an
+    /// older build or security patch, which the user agrees to by a swipe.
+    Ready { version: Option<String>, wipe: bool, downgrade: Downgrade },
     /// An update package passed the checks and is being installed; the
     /// version it brings.
     Installing { version: Option<String> },
@@ -185,6 +187,34 @@ pub enum Outcome {
     Failed(Failure),
 }
 
+/// How an update package is older than the installed system, where it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Downgrade {
+    /// The build time it was made at, and the installed one's, where its
+    /// own is older.
+    pub build: Option<(i64, i64)>,
+    /// The security patch it carries, and the installed one's, where its
+    /// own is older.
+    pub patch: Option<(String, String)>,
+}
+
+impl Downgrade {
+    /// Whether the package is older in no way.
+    pub fn is_none(&self) -> bool {
+        self.build.is_none() && self.patch.is_none()
+    }
+
+    /// The refusal that says the same, where the package is older: the
+    /// build time first, as Android's recovery checks it.
+    pub fn refusal(&self) -> Option<Refusal> {
+        match (self.build, &self.patch) {
+            (Some((package, installed)), _) => Some(Refusal::Older { package, installed }),
+            (None, Some((package, installed))) => Some(Refusal::OlderPatch { package: package.clone(), installed: installed.clone() }),
+            (None, None) => None,
+        }
+    }
+}
+
 /// Why a package is not installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -195,6 +225,9 @@ pub enum Refusal {
     Image,
     /// An update package that is not for A/B phones; the type it names.
     NotAb(String),
+    /// An A/B update package on a phone without slots, which has nowhere
+    /// to put the new system beside the running one.
+    NoSlots,
     /// A package in misc that does not say it erases the phone for good;
     /// the type it names.
     NotBrick(String),

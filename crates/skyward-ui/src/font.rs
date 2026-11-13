@@ -74,19 +74,55 @@ impl Face {
             return ink.clone();
         }
         let at = ab_glyph::point(qx as f32 / SUBPIXELS, qy as f32 / SUBPIXELS);
-        let ink = self.font.outline_glyph(id.with_scale_and_position(scale, at)).map(|og| {
-            let b = og.px_bounds();
-            let (w, h) = (b.width() as u32, b.height() as u32);
-            let mut cov = vec![0u8; (w * h) as usize];
-            og.draw(|gx, gy, c| cov[(gy * w + gx) as usize] = (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-            Rc::new(Ink { x: b.min.x as i32, y: b.min.y as i32, w, h, cov })
-        });
+        let ink = self.draw(id, scale, at).map(Rc::new);
         let mut known = self.known.borrow_mut();
         if known.glyphs.len() >= GLYPHS_KEPT {
             known.glyphs.clear();
         }
         known.glyphs.insert(key, ink.clone());
         ink
+    }
+
+    /// The ink of glyph `id` at `scale`, its pen `at` a fraction of a pixel
+    /// right of and below a whole pixel.
+    ///
+    /// ab_glyph is not asked to draw it. It sizes the rasterizer to the ink's
+    /// box exactly — the floor of the left and top edges to the ceiling of
+    /// the right and bottom — so an edge that lands on a whole pixel
+    /// coordinate lies on the rasterizer's last column, where its delta is
+    /// dropped. Coverage is a running sum along the rasterizer's rows, so the
+    /// leftover of a dropped delta carries to the end of that row and on into
+    /// the next, and reads as a band of grey across the glyph. Placing the
+    /// pen on quarters of a pixel lands an edge there often, so a pixel of
+    /// margin on each side: every edge then falls strictly inside the
+    /// rasterizer, and nothing is dropped.
+    fn draw(&self, id: GlyphId, scale: PxScale, at: ab_glyph::Point) -> Option<Ink> {
+        use ab_glyph::{OutlineCurve, Point};
+        use ab_glyph_rasterizer::Rasterizer;
+
+        let outline = self.font.outline(id)?;
+        let factor = self.font.as_scaled(scale).scale_factor();
+        let b = outline.px_bounds(factor, at);
+        let (w, h) = (b.width() as u32, b.height() as u32);
+        let (pw, ph) = (w as usize + 2, h as usize + 2);
+        let corner = at - b.min + ab_glyph::point(1.0, 1.0);
+        let place = |p: Point| Point { x: p.x * factor.horizontal, y: p.y * -factor.vertical } + corner;
+        let mut raster = Rasterizer::new(pw, ph);
+        for curve in &outline.curves {
+            match *curve {
+                OutlineCurve::Line(a, b) => raster.draw_line(place(a), place(b)),
+                OutlineCurve::Quad(a, b, c) => raster.draw_quad(place(a), place(b), place(c)),
+                OutlineCurve::Cubic(a, b, c, d) => raster.draw_cubic(place(a), place(b), place(c), place(d)),
+            }
+        }
+        let mut cov = vec![0u8; (w * h) as usize];
+        raster.for_each_pixel(|idx, a| {
+            let (px, py) = (idx % pw, idx / pw);
+            if (1..=w as usize).contains(&px) && (1..=h as usize).contains(&py) {
+                cov[(py - 1) * w as usize + px - 1] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        });
+        Some(Ink { x: b.min.x as i32, y: b.min.y as i32, w, h, cov })
     }
 
     /// ab_glyph scales by ascent-minus-descent; the UI sizes text by the em,
@@ -168,7 +204,10 @@ impl Face {
 
     fn bounds(&self, ch: char, em_px: f32) -> (f32, f32) {
         let glyph = self.font.glyph_id(ch).with_scale_and_position(self.scale(em_px), ab_glyph::point(0.0, 0.0));
-        let og = self.font.outline_glyph(glyph).unwrap_or_else(|| panic!("font has no outline for {ch:?}"));
+        // A typeface that does not carry a character draws nothing for it,
+        // rather than taking the recovery down: a file name or a network's
+        // name may hold anything.
+        let Some(og) = self.font.outline_glyph(glyph) else { return (0.0, 0.0) };
         let b = og.px_bounds();
         (b.min.y, b.max.y)
     }
@@ -334,5 +373,31 @@ mod tests {
         let (top, bottom) = f.heading.line(em);
         assert!((ink_bottom - ink_top - 47.0).abs() <= 2.0, "ink {ink_top}..{ink_bottom}");
         assert!((bottom - top - 69.0).abs() <= 2.0, "line {top}..{bottom}");
+    }
+
+    /// A glyph's ink holds as much of itself whichever quarter of a pixel
+    /// the pen sits on: the shift moves its edges by a fraction of a pixel,
+    /// not its mass. It used to gain far more: ab_glyph sizes its rasterizer
+    /// to the ink's box exactly, so an edge landing on the last column has
+    /// its delta dropped and coverage, a running sum along the rows, takes
+    /// the leftover across the rest of the row. Every fourth pen position
+    /// landed one there, which on the phone read as a band of grey behind the
+    /// `y` of the about page's wordmark.
+    #[test]
+    fn the_ink_of_a_glyph_holds_its_mass_at_every_quarter() {
+        let f = bundled();
+        let scale = f.display.scale(132.3);
+        for ch in "Skyward 0123456789".chars().filter(|&ch| ch != ' ') {
+            let (id, _) = f.display.glyph(ch, scale);
+            let masses: Vec<f32> = (0..SUBPIXELS as u8)
+                .flat_map(|qy| (0..SUBPIXELS as u8).map(move |qx| (qx, qy)))
+                .map(|(qx, qy)| {
+                    let ink = f.display.ink_of(id, scale, qx, qy).expect("every bundled glyph is outlined");
+                    ink.cov.iter().map(|&c| f32::from(c)).sum::<f32>()
+                })
+                .collect();
+            let (least, most) = masses.iter().fold((f32::MAX, 0.0f32), |(l, m), &v| (l.min(v), m.max(v)));
+            assert!(most <= least * 1.1, "{ch}: ink of {least} at one quarter of a pixel, {most} at another");
+        }
     }
 }

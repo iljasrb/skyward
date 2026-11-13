@@ -158,7 +158,12 @@ impl Power {
     }
 }
 
+/// Ask the phone to leave the recovery for `target`. Whichever page asks,
+/// the request is written down first: what follows is a reboot, and the
+/// phone's own logs stop where the recovery does, so without this a reboot
+/// asked for on purpose looks like the recovery having gone away.
 pub fn power(target: Power) -> Result<()> {
+    kmsg(&format!("leaving the recovery: {}", target.command()))?;
     set_prop("sys.powerctl", target.command())
 }
 
@@ -177,11 +182,24 @@ pub const LOG: &str = "/skyward/run/recovery.log";
 /// it.
 static KEPT: OnceLock<Mutex<File>> = OnceLock::new();
 
+/// Whether the file [`keep_log`] opened was there already, an earlier run
+/// of the recovery service having kept its log in it.
+static RUNS_AGAIN: OnceLock<bool> = OnceLock::new();
+
 /// Keep every line [`kmsg`] writes from now on in the file at `path` as
 /// well, after what an earlier run left there.
 pub fn keep_log(path: &Path) -> Result<()> {
+    let again = path.exists();
     let file = OpenOptions::new().create(true).append(true).open(path).with_context(|| format!("open {}", path.display()))?;
-    KEPT.set(Mutex::new(file)).map_err(|_| anyhow!("the log is kept in a file already"))
+    KEPT.set(Mutex::new(file)).map_err(|_| anyhow!("the log is kept in a file already"))?;
+    RUNS_AGAIN.set(again).map_err(|_| anyhow!("the log is kept in a file already"))
+}
+
+/// Whether the recovery service runs again since the phone started, as the
+/// log an earlier run of it kept tells. What that run set up in the phone's
+/// drivers is as it left it, a touch controller at rest among it.
+pub fn runs_again() -> bool {
+    RUNS_AGAIN.get().copied().unwrap_or(false)
 }
 
 /// How long a line the kernel log takes. The driver refuses anything longer,

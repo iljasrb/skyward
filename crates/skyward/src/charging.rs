@@ -15,16 +15,25 @@ use std::path::{Path, PathBuf};
 /// so that it does not stop and start at every percent.
 const HYSTERESIS: u8 = 3;
 
+/// The limit the phone's charging page shows and keeps until the slider on it
+/// is moved, which is the only time the settings database gets a limit of its
+/// own: 80, as the page shows it.
+const DEFAULT_LIMIT: u8 = 80;
+
 /// The kernel switch that stops and starts charging: 0 stops it, 1 starts it.
 pub struct Switch {
     path: PathBuf,
-    /// Charging is stopped by this.
-    stopped: bool,
 }
 
 impl Switch {
     pub fn new(path: impl Into<PathBuf>) -> Switch {
-        Switch { path: path.into(), stopped: false }
+        Switch { path: path.into() }
+    }
+
+    /// Whether the kernel takes the switch here: a phone whose kernel does
+    /// not is offered no charge limit, as nothing would keep it.
+    pub fn exists(&self) -> bool {
+        self.path.exists()
     }
 
     /// Keep to `limit`: stop charging at it, and start again a few percent
@@ -38,20 +47,26 @@ impl Switch {
         }
     }
 
+    /// Write the switch unless it already says so. What the node says now is
+    /// what counts: it can be written by the phone's own programs too, and a
+    /// switch remembered as set is not a battery that is not charging.
     fn write(&mut self, stop: bool) -> Result<()> {
-        if stop == self.stopped {
+        let wanted = if stop { "0" } else { "1" };
+        if fs::read_to_string(&self.path).is_ok_and(|now| now.trim() == wanted) {
             return Ok(());
         }
-        fs::write(&self.path, if stop { "0" } else { "1" })
-            .with_context(|| format!("write {}", self.path.display()))?;
-        self.stopped = stop;
-        Ok(())
+        fs::write(&self.path, wanted).with_context(|| format!("write {}", self.path.display()))
     }
 }
 
 /// The limit the phone's own system keeps, where it has one: a LineageOS
 /// settings database, whose `system` table holds `charging_control_enabled`
 /// and `charging_control_charging_limit`.
+///
+/// The limit row is only written once the slider on the phone's charging
+/// page is moved: until then the page shows [`DEFAULT_LIMIT`] and the phone
+/// keeps to that, so a phone with charging control on and no limit written
+/// down keeps the default rather than none.
 pub fn system_limit(db: &Path) -> Option<u8> {
     let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let value = |name: &str| -> Option<String> {
@@ -60,7 +75,10 @@ pub fn system_limit(db: &Path) -> Option<u8> {
     if value("charging_control_enabled").as_deref() != Some("1") {
         return None;
     }
-    value("charging_control_charging_limit")?.parse().ok()
+    match value("charging_control_charging_limit") {
+        Some(text) => text.parse().ok(),
+        None => Some(DEFAULT_LIMIT),
+    }
 }
 
 /// The limit kept from the last time the data partition was open, where the
@@ -103,6 +121,19 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_changed_behind_its_back_is_set_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("charging_enabled");
+        fs::write(&path, "1").unwrap();
+        let mut switch = Switch::new(&path);
+        switch.keep(90, Some(80)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "0", "at the limit");
+        fs::write(&path, "1").unwrap();
+        switch.keep(90, Some(80)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "0", "written back where the limit holds");
+    }
+
+    #[test]
     fn the_limit_kept_is_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skyward/charge-limit");
@@ -111,6 +142,22 @@ mod tests {
         assert_eq!(cached(&path), Some(78));
         cache(&path, None).unwrap();
         assert_eq!(cached(&path), None, "the system keeps none");
+    }
+
+    #[test]
+    fn a_limit_never_moved_keeps_the_pages_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lineagesettings.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "create table system (name text, value text);
+             insert into system values ('charging_control_enabled', '1');
+             insert into system values ('charging_control_mode', '3');",
+        )
+        .unwrap();
+        assert_eq!(system_limit(&db), Some(DEFAULT_LIMIT), "as the page shows it");
+        conn.execute("update system set value = '0' where name = 'charging_control_enabled'", []).unwrap();
+        assert_eq!(system_limit(&db), None, "the limit is off");
     }
 
     #[test]

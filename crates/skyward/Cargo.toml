@@ -26,6 +26,8 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
+# Held open, for the one-recovery-at-a-time lock.
+libc = { workspace = true }
 # Reading the phone own system's charge limit, which it keeps in SQLite.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # The root methods, on a build that carries them.
@@ -43,10 +45,11 @@ skyward-binder = { path = "../skyward-binder" }
 skyward-crypto = { path = "../skyward-crypto" }
 skyward-files = { path = "../skyward-files" }
 zip = { version = "8.6.0", default-features = false }
-libc = { workspace = true }
 procfs = { version = "0.18.0", default-features = false }
 skyward-ui = { path = "../skyward-ui" }
 skyward-mtp = { path = "../skyward-mtp" }
+skyward-omapi = { path = "../skyward-omapi" }
+skyward-programs = { path = "../skyward-programs" }
 skyward-systems = { path = "../skyward-systems" }
 skyward-net = { path = "../skyward-net" }
 ureq = { version = "=3.5.0", default-features = false }

@@ -195,10 +195,7 @@ impl SystemProps {
         if !skyward_config::ramdisk::in_recovery() {
             return Ok(SystemProps::Running);
         }
-        let props = match skyward_vab::current_slot()? {
-            Some(slot) => installed_props(slot)?,
-            None => HashMap::new(),
-        };
+        let props = installed_props(skyward_vab::current_slot()?)?;
         Ok(SystemProps::Installed(props))
     }
 
@@ -229,9 +226,12 @@ const BOOT_PROPS: &str = "ro.boot.";
 /// passes before it reads any of these, and a file may import another named
 /// after them, as Xiaomi's odm imports what each hardware version sets; so
 /// they come first here too, the same in a recovery as in the system.
-pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
+pub fn installed_props(slot: Option<Slot>) -> Result<HashMap<String, String>> {
     let base = |m: &skyward_vab::Mounted| -> String {
-        m.partition.strip_suffix(slot.suffix()).expect("mounted partitions carry the slot suffix").to_string()
+        match slot {
+            Some(slot) => m.partition.strip_suffix(slot.suffix()).expect("mounted partitions carry the slot suffix").to_string(),
+            None => m.partition.clone(),
+        }
     };
     let mut parts = skyward_vab::mounted_partitions(slot)?;
     parts.sort_by_key(|m| PROP_ORDER.iter().position(|b| *b == base(m)).unwrap_or(PROP_ORDER.len()));
@@ -246,11 +246,34 @@ pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
             let path = m.mount_point.join(f);
             match fs::metadata(&path) {
                 Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
+                Err(e) => {
+                    // A partition that mounts but cannot be looked into must
+                    // not take the recovery down with it: these properties
+                    // are what the pages show, not what runs.
+                    let _ = skyward_sys::kmsg(&format!("{} is unreadable, left out: {e}", path.display()));
+                    continue;
+                }
                 Ok(_) => {}
             }
-            rsproperties::load_properties_from_file(&path, None, "u:r:init:s0", &mut props)
-                .with_context(|| format!("read {}", path.display()))?;
+            // A bad page or a timeout may pass on its own, so the file is
+            // asked for once more; one that still fails is left out and
+            // named in the kernel log, where a phone stuck at a boot logo
+            // can be read.
+            let mut asked = 0;
+            loop {
+                asked += 1;
+                match rsproperties::load_properties_from_file(&path, None, "u:r:init:s0", &mut props) {
+                    Ok(()) => break,
+                    Err(e) if asked == 1 => {
+                        let _ = skyward_sys::kmsg(&format!("{} is unreadable, asking again: {e:#}", path.display()));
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    Err(e) => {
+                        let _ = skyward_sys::kmsg(&format!("{} is unreadable, left out: {e:#}", path.display()));
+                        break;
+                    }
+                }
+            }
         }
     }
     Ok(props)
@@ -442,7 +465,7 @@ fn online(dir: &Path) -> Result<bool> {
 fn said_online(read: std::io::Result<String>) -> std::io::Result<bool> {
     match read {
         Ok(s) => Ok(s.trim() == "1"),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::WouldBlock) => Ok(false),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::WouldBlock | ErrorKind::InvalidInput) => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -550,6 +573,7 @@ mod tests {
         assert!(!said_online(Ok("0\n".into())).unwrap());
         assert!(!said_online(Err(Error::from(ErrorKind::WouldBlock))).unwrap(), "Qualcomm's USB-C connector early in a boot");
         assert!(!said_online(Err(Error::from(ErrorKind::NotFound))).unwrap(), "a supply without the file");
+        assert!(!said_online(Err(Error::from(ErrorKind::InvalidInput))).unwrap(), "a driver that has no answer for it");
         assert!(said_online(Err(Error::from(ErrorKind::PermissionDenied))).is_err(), "anything else is an error");
     }
 }

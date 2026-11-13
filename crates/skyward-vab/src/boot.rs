@@ -182,15 +182,15 @@ impl<'a> BootControl<'a> {
         match self {
             BootControl::Newer(c) => newer(c, SET_ACTIVE_SLOT, |p| p.i32(slot.number() as i32), |_| Ok(())).with_context(what),
             BootControl::Older(c) => {
-                // The answer is whether it worked, and why not in text it
-                // points at.
+                // The answer is whether it worked, and, where it did not,
+                // why not in the text that follows.
                 let why = older(c, FIRST, SET_ACTIVE, |m| m.u32(slot.number()), |r| {
-                    let done = r.pointed()?;
-                    if done.first().is_some_and(|&b| b != 0) {
+                    let answer = r.whole()?;
+                    if answer.first().is_some_and(|&b| b != 0) {
                         return Ok(None);
                     }
-                    let why = r.pointed()?;
-                    Ok(Some(String::from_utf8_lossy(why.split(|&b| b == 0).next().unwrap_or_default()).into_owned()))
+                    let why = r.part()?.unwrap_or(&[]);
+                    Ok(Some(String::from_utf8_lossy(why).into_owned()))
                 })
                 .with_context(what)?;
                 match why {

@@ -20,7 +20,7 @@ use crate::term::{self, Term, TermKey};
 use crate::theme::Theme;
 use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
 use skyward_info::DeviceInfo;
-use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
+use skyward_install::{Downgrade, Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
 use skyward_net::github::{Build, Newest, Unanswered};
 use skyward_net::rom;
@@ -1220,6 +1220,9 @@ pub enum Confirm {
     Install,
     /// Install an update that erases all user data after it.
     InstallWipe,
+    /// Install an update that goes back to an older build or security
+    /// patch, which the user agrees to on purpose.
+    InstallOlder,
     /// Run the install script of the zip that waits to be agreed to.
     RunScript,
     /// Merge the update that waits in the slot the phone runs from.
@@ -1367,12 +1370,16 @@ pub enum Pick {
 impl Pick {
     pub const ALL: [Pick; 3] = [Pick::Current, Pick::Other, Pick::Both];
 
-    /// The slots this means on a phone running from `current`.
-    pub fn slots(self, current: Slot) -> Vec<Slot> {
-        match self {
-            Pick::Current => vec![current],
-            Pick::Other => vec![current.other()],
-            Pick::Both => vec![Slot::A, Slot::B],
+    /// The slots this means on a phone running from `current`. A phone
+    /// without slots has one of each partition, and the pick means it.
+    pub fn slots(self, current: Option<Slot>) -> Vec<Slot> {
+        match current {
+            Some(current) => match self {
+                Pick::Current => vec![current],
+                Pick::Other => vec![current.other()],
+                Pick::Both => vec![Slot::A, Slot::B],
+            },
+            None => vec![Slot::A],
         }
     }
 }
@@ -1398,9 +1405,10 @@ pub enum Install {
     Checking { size: u64, stage: Option<Stage> },
     /// An image waits to be told where it goes.
     Choosing(Choice),
-    /// An update waits for the user to agree: the version it brings, and
-    /// whether all user data is erased after it.
-    Confirming { version: Option<String>, wipe: bool },
+    /// An update waits for the user to agree: the version it brings,
+    /// whether all user data is erased after it, and how it is older than
+    /// the installed system, where it is.
+    Confirming { version: Option<String>, wipe: bool, downgrade: Downgrade },
     /// `overwriting` says whether the update writes over the running
     /// system.
     Updating { version: Option<String>, stage: Option<Stage>, overwriting: bool },
@@ -2368,6 +2376,9 @@ impl State {
             Screen::Wlan => self.wlan.is_some(),
             Screen::SkywardUpdate => self.wlan.is_some() && self.recovery_partitions,
             Screen::Systems => self.dual_boot,
+            // The Update page is the ROM's own feed; a phone whose ROM keeps
+            // none has nothing to show there.
+            Screen::Update => self.rom.is_some(),
             _ => true,
         }
     }
@@ -5852,7 +5863,7 @@ impl App {
         match ev {
             Event::Waiting => *install = Install::Waiting,
             Event::Checking { size } => *install = Install::Checking { size, stage: None },
-            Event::Ready { version, wipe } => *install = Install::Confirming { version, wipe },
+            Event::Ready { version, wipe, downgrade } => *install = Install::Confirming { version, wipe, downgrade },
             Event::Installing { version } => *install = Install::Updating { version, stage: None, overwriting: false },
             Event::Overwriting => {
                 if let Install::Updating { overwriting, .. } = install {
@@ -7616,7 +7627,7 @@ impl App {
                     false => fx.push(Effect::Wipe(chosen)),
                 }
             }
-            Confirm::Install | Confirm::InstallWipe => {
+            Confirm::Install | Confirm::InstallWipe | Confirm::InstallOlder => {
                 if let Install::Confirming { version, .. } = &self.state.install {
                     self.state.install = Install::Updating { version: version.clone(), stage: None, overwriting: false };
                     fx.push(Effect::Install);
@@ -8292,7 +8303,7 @@ mod tests {
     use crate::color::over;
     use crate::fmt;
     use skyward_info::{Boot, Charge, Cpu, Storage};
-    use skyward_install::{Failure, Refusal};
+    use skyward_install::{Downgrade, Failure, Refusal};
     use skyward_net::reach::Reach;
     use skyward_vab::SnapshotState;
 
@@ -9705,12 +9716,11 @@ mod tests {
         // The image lit the panel, so the user looks and taps past the wake
         // guard.
         tap_at(&mut app, &f, &i, Action::FlashPartition(1), 1000);
-        tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Both), 1000);
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Flash)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
         app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
-        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "vendor_boot", pick: Pick::Both }]);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "vendor_boot", pick: Pick::Current }]);
         assert_eq!(app.state.install, Install::Flashing { partition: "vendor_boot", stage: None });
         app.install(Event::Progress(Stage::Flashing { done: 10, total: 40 }), 1000);
         assert_eq!(app.state.install, Install::Flashing { partition: "vendor_boot", stage: Some(Stage::Flashing { done: 10, total: 40 }) });
@@ -9722,6 +9732,34 @@ mod tests {
         app.key(Key::Back, 2000);
         assert_eq!(app.screen(), Screen::Install);
         assert_eq!(app.state.install, Install::Idle);
+    }
+
+    #[test]
+    fn a_phone_with_one_of_each_partition_offers_no_slot() {
+        let (f, i) = (fonts(), info());
+        assert_eq!(i.slot, None, "the fixture is a phone without slots");
+        let mut app = sideloading(&f, &i);
+        app.install(Event::Checking { size: 4096 }, 0);
+        let kind = ImageKind::Boot { kernel: true, ramdisk: skyward_install::Ramdisk::Recovery };
+        app.install(Event::Image { kind, size: 4096, partitions: vec!["boot", "recovery"] }, 0);
+        let choices = app.frame(&f, &i).hits.iter().filter(|h| matches!(h.action, Action::FlashSlots(_))).count();
+        assert_eq!(choices, 0, "a phone without slots has nothing to choose between");
+    }
+
+    #[test]
+    fn a_phone_with_slots_chooses_where_the_image_goes() {
+        let (f, i) = (fonts(), DeviceInfo { slot: Some(Slot::B), ..info() });
+        let mut app = sideloading(&f, &i);
+        app.install(Event::Checking { size: 4096 }, 0);
+        let kind = ImageKind::Boot { kernel: true, ramdisk: skyward_install::Ramdisk::Recovery };
+        app.install(Event::Image { kind, size: 4096, partitions: vec!["boot", "recovery"] }, 0);
+        tap_at(&mut app, &f, &i, Action::FlashPartition(0), 1000);
+        tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Other), 1000);
+        let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Flash)).unwrap().rect;
+        let y = track.centre().1 - app.top().1;
+        app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
+        app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "boot", pick: Pick::Other }]);
     }
 
     #[test]
@@ -10307,8 +10345,8 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
         app.install(Event::Checking { size: 7_103_043_868 }, 0);
-        app.install(Event::Ready { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true }, 0);
-        assert_eq!(app.state.install, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true });
+        app.install(Event::Ready { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true, downgrade: Downgrade::default() }, 0);
+        assert_eq!(app.state.install, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true, downgrade: Downgrade::default() });
         // The question lit the panel, so the user swipes past the wake guard.
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::InstallWipe)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
@@ -10320,10 +10358,39 @@ mod tests {
         assert_eq!(app.screen(), Screen::Installing, "an update being written keeps the page");
 
         let mut app = sideloading(&f, &i);
-        app.install(Event::Ready { version: None, wipe: true }, 0);
+        app.install(Event::Ready { version: None, wipe: true, downgrade: Downgrade::default() }, 0);
         assert_eq!(app.key(Key::Back, 1000), vec![Effect::Cancel], "turning it down cancels before anything is written");
         assert_eq!(app.state.install, Install::Ending);
         assert_eq!(app.screen(), Screen::Install);
+    }
+
+    #[test]
+    fn an_older_build_or_security_patch_waits_for_a_swipe_of_its_own() {
+        let (f, i) = (fonts(), info());
+        let mut app = sideloading(&f, &i);
+        app.install(Event::Checking { size: 7_103_043_868 }, 0);
+        let downgrade = Downgrade { build: Some((1_770_000_000, 1_778_243_655)), patch: None };
+        app.install(Event::Ready { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: false, downgrade: downgrade.clone() }, 0);
+        assert_eq!(
+            app.state.install,
+            Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: false, downgrade }
+        );
+        // The page says why it is older and asks for a swipe of its own.
+        let frame = app.frame(&f, &i);
+        let track = frame.hits.iter().find(|h| h.action == Action::Confirm(Confirm::InstallOlder)).expect("the older package's swipe").rect;
+        let y = track.centre().1 - app.top().1;
+        app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
+        app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Install]);
+        assert_eq!(app.state.install, Install::Updating { version: Some("OS3.0.306.0.WMACNXM".into()), stage: None, overwriting: false });
+    }
+
+    #[test]
+    fn the_update_page_is_offered_only_where_the_rom_publishes_a_feed() {
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        assert!(!app.state.offers(Screen::Update), "a phone whose ROM keeps no feed has nothing to show there");
+        app.state.rom = Some(RomState::new("Infinity X".into()));
+        assert!(app.state.offers(Screen::Update));
     }
 
     #[test]

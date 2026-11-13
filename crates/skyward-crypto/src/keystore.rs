@@ -25,6 +25,22 @@ const FN_KEY_BLOB: &str = "keymaster_key_blob";
 const FN_SECDISCARDABLE: &str = "secdiscardable";
 const FN_STRETCHING: &str = "stretching";
 
+/// What the phone puts in front of a key blob it keeps: a name, and then a
+/// byte saying whether the key belongs to the phone's own key hardware or to
+/// a stand-in kept in software. The service underneath reads what follows,
+/// and a blob kept before the phone wrote the name has none.
+const KEPT: &[u8] = b"pKMblob";
+const KEPT_HEAD: usize = 8;
+
+/// A key blob as the key service reads it, out of what the phone keeps.
+pub(crate) fn bare(kept: &[u8]) -> &[u8] {
+    let named = kept.len() > KEPT_HEAD && kept.starts_with(KEPT) && kept[KEPT_HEAD - 1] <= 1;
+    match named {
+        true => &kept[KEPT_HEAD..],
+        false => kept,
+    }
+}
+
 /// SHA-512 of `data` behind a fixed prefix.
 pub fn hash_with_prefix(prefix: &[u8], data: &[u8]) -> Vec<u8> {
     let mut padded = prefix.to_vec();
@@ -77,7 +93,7 @@ impl StoredKey {
             false => Vec::new(),
         };
         let key_blob = match dir.join(FN_KEY_BLOB).exists() {
-            true => Some(read(FN_KEY_BLOB)?),
+            true => Some(bare(&read(FN_KEY_BLOB)?).to_vec()),
             false => None,
         };
         Ok(StoredKey { encrypted: read(FN_ENCRYPTED_KEY)?, key_blob, secdiscardable_hash })
@@ -243,6 +259,17 @@ mod tests {
         let s = StoredKey::load(&dir).unwrap();
         assert!(s.secdiscardable_hash.is_empty());
         assert_eq!(s.unwrap(Unwrap::<NoService>::Secret(b"only the secret")).unwrap(), key.to_vec());
+    }
+
+    #[test]
+    fn a_key_blob_tells_apart_the_phones_own_keeping_from_the_key_services() {
+        let inner = [0x30u8, 0x82, 0x01, 0xf6, 0x02, 0x01, 0x28];
+        let mut held = b"pKMblob\x00".to_vec();
+        held.extend_from_slice(&inner);
+        held.extend_from_slice(&[0xAA; 32]);
+        assert_eq!(bare(&held), [inner.as_slice(), &[0xAAu8; 32][..]].concat(), "only the name is the phone's own");
+        assert_eq!(bare(&inner), inner, "a blob kept before there was a name is handed on as it is");
+        assert_eq!(bare(b"pKMblob"), b"pKMblob", "one too short to hold a key is handed on as it is");
     }
 
     /// Why loading the directory was turned down.

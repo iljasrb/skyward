@@ -379,8 +379,8 @@ mod remembered_tests {
 
     #[test]
     fn the_first_network_listed_is_the_one_remembered() {
-        let list = "network id / ssid / bssid / flags\n0\tmarie 5G\tany\t[ENABLED,CURRENT]\n1\tlab\tany\t[DISABLED]\n";
-        assert_eq!(remembered(list), Some(Remembered { id: 0, ssid: b"marie 5G".to_vec() }));
+        let list = "network id / ssid / bssid / flags\n0\thome\tany\t[ENABLED,CURRENT]\n1\tlab\tany\t[DISABLED]\n";
+        assert_eq!(remembered(list), Some(Remembered { id: 0, ssid: b"home".to_vec() }));
         assert_eq!(remembered("network id / ssid / bssid / flags\n"), None, "nothing kept");
         assert_eq!(remembered(""), None);
         assert_eq!(remembered("not a line the supplicant writes"), None);

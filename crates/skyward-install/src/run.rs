@@ -10,7 +10,7 @@ use crate::blockmap::BlockMap;
 use crate::ffs::{Endpoints, Shared, Usb};
 use crate::fuse::{self, Fault, LocalFile, Mount};
 use crate::image::{self, ImageKind};
-use crate::keep::Kept;
+use crate::keep::{Kept, One};
 use crate::ota::{self, Log, Status};
 use crate::package::{self, Build, Package, Phone, Update};
 use crate::script::{self, Bar, Request};
@@ -27,6 +27,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -40,13 +41,21 @@ pub type Detach = Box<dyn FnOnce() -> Result<()> + Send>;
 const METADATA: &str = "/metadata";
 const DATA: &str = "/data";
 
-/// Where a zip's install script is put to run, as Android's recovery puts
-/// it, and the version of the interface the script is told it runs under.
-const BINARY: &str = "/tmp/update-binary";
+/// Where a zip's install script is put to run, and the version of the
+/// interface the script is told it runs under. Android's recovery puts it in
+/// /tmp, which is where a script goes looking for what it copied there; but a
+/// script that clears /tmp before it starts would take the binary running it
+/// down with the rest, so it is kept beside the recovery's own logs, which
+/// nothing a package runs is told about.
+const BINARY: &str = "/skyward/run/update-binary";
 /// The most an install script may take; a real one is far smaller.
 const SCRIPT_MAX: u64 = 16 << 20;
 const API_VERSION: &str = "3";
 const RETRY: &str = "retry";
+
+/// How long the engine's output is still read after it has exited, so that
+/// a line it wrote just before going is not lost.
+const ENGINE_LINGER: Duration = Duration::from_secs(1);
 
 /// Scripts written for other recoveries start with the shell they find
 /// here, and look for programs where those recoveries keep them.
@@ -557,9 +566,17 @@ fn describe(package: &Package) -> String {
 }
 
 fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Result<Done> {
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
-    if let Err(refusal) = package::check(update, &phone(slot)?) {
-        return Ok(Done::Decided(Outcome::Refused(refusal)));
+    let Some(slot) = skyward_vab::current_slot()? else {
+        return Ok(Done::Decided(Outcome::Refused(Refusal::NoSlots)));
+    };
+    let phone = phone(slot)?;
+    // Going back to an older build or security patch is the user's to
+    // agree to, by a swipe, rather than a reason to refuse the package.
+    let downgrade = package::downgrade(update, &phone);
+    if let Err(refusal) = package::check(update, &phone) {
+        if !matches!(refusal, Refusal::Older { .. } | Refusal::OlderPatch { .. }) {
+            return Ok(Done::Decided(Outcome::Refused(refusal)));
+        }
     }
     if let Some(refusal) = short_of_charge(ctx.origin)? {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
@@ -574,8 +591,8 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     }
     let version = update.version().map(str::to_string);
     let wipe = update.wipes();
-    if waits(ctx.origin, wipe) {
-        ctx.send(Event::Ready { version: version.clone(), wipe });
+    if waits(ctx.origin, wipe) || !downgrade.is_none() {
+        ctx.send(Event::Ready { version: version.clone(), wipe, downgrade });
         match ctx.commands.recv() {
             Ok(Command::Install) => {}
             Ok(Command::Cancel) | Err(_) => return Ok(Done::Decided(Outcome::Cancelled)),
@@ -583,7 +600,7 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
         }
     }
     ctx.send(Event::Installing { version });
-    let kept = hold(ctx, slot)?;
+    let kept = hold(ctx, Some(slot))?;
     installed_boot_set()?;
     detach_once(ctx)?;
     // update_engine mounts /metadata itself, as in the stock recovery, keeps
@@ -600,7 +617,7 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     Ok(match code? {
         0 => {
             if let Some(kept) = &kept {
-                reflash(ctx, kept, Ok(slot.other()));
+                reflash(ctx, kept, Some(slot.other()));
             }
             Done::Decided(Outcome::Installed { slot: slot.other(), wipe })
         }
@@ -611,21 +628,66 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
 /// This recovery, held before an install writes, when the screen asked to
 /// keep it in the recovery partitions; none when it was started without
 /// being flashed.
-fn hold(ctx: &Context, current: Slot) -> Result<Option<Kept>> {
+fn hold(ctx: &Context, current: Option<Slot>) -> Result<Option<Keeping>> {
     if !ctx.options.keep {
         return Ok(None);
     }
-    let kept = Kept::hold(Path::new(skyward_block::BY_NAME), current).context("hold this recovery from its partition")?;
+    let dir = Path::new(skyward_block::BY_NAME);
+    let kept = match current {
+        Some(current) => Kept::hold(dir, current).context("hold this recovery from its partition")?.map(Keeping::Slot),
+        None => One::hold(dir).context("hold this recovery from its partition")?.map(Keeping::One),
+    };
     if kept.is_none() {
         let _ = kmsg("install: the recovery partition does not hold Skyward, so there is none to keep");
     }
     Ok(kept)
 }
 
-/// Write this recovery back into the recovery partitions the install wrote
-/// over and into that of `next`, the slot that starts next, telling the
-/// screen how far it is and then how it went.
-fn reflash(ctx: &Context, kept: &Kept, next: Result<Slot>) {
+/// This recovery, held from the partition an install may write over: the
+/// phone's one recovery partition, or the slot's where it has slots.
+enum Keeping {
+    Slot(Kept),
+    One(One),
+}
+
+/// Write this recovery back where an install left something else in the
+/// recovery partitions it wrote over, telling the screen how far it is and
+/// then how it went.
+fn reflash(ctx: &Context, kept: &Keeping, next: Option<Slot>) {
+    match kept {
+        Keeping::Slot(kept) => {
+            let next = match next {
+                Some(next) => Ok(next),
+                None => skyward_vab::boot::next_slot().context("ask which slot starts next"),
+            };
+            reflash_slots(ctx, kept, next);
+        }
+        Keeping::One(kept) => refill(ctx, kept),
+    }
+}
+
+/// Write this recovery back into the one recovery partition where an install
+/// left it holding something else.
+fn refill(ctx: &Context, kept: &One) {
+    let mut told: Option<Instant> = None;
+    let written = kept.restore(&mut |done, total| {
+        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+            ctx.send(Event::Progress(Stage::Reflashing { done, total }));
+            told = Some(Instant::now());
+        }
+    });
+    match written {
+        Ok(false) => {}
+        Ok(true) => {
+            let _ = kmsg("install: this recovery written back into the recovery partition");
+            // No slot was written to, and the page says so in as many words.
+            ctx.send(Event::Reflashed(Reflash::Written(Vec::new())));
+        }
+        Err(e) => ctx.send(Event::Reflashed(Reflash::Failed(format!("{e:#}")))),
+    }
+}
+
+fn reflash_slots(ctx: &Context, kept: &Kept, next: Result<Slot>) {
     let slots = match next.and_then(|next| kept.wanted(next)) {
         Ok(slots) if slots.is_empty() => return,
         Ok(slots) => slots,
@@ -655,7 +717,7 @@ fn remount_metadata() -> Result<()> {
 
 /// The phone, and the system on it as its mounted partitions tell.
 fn phone(slot: Slot) -> Result<Phone> {
-    let props = skyward_info::installed_props(slot)?;
+    let props = skyward_info::installed_props(Some(slot))?;
     let installed = match (props.get("ro.build.date.utc"), props.get("ro.build.version.security_patch")) {
         (Some(time), Some(patch)) => Some(Build {
             timestamp: time.parse().with_context(|| format!("ro.build.date.utc {time:?}"))?,
@@ -709,17 +771,20 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     let stderr = child.stderr.take().expect("stderr is piped");
 
     let (tx, rx) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
     let status_tx = tx.clone();
+    let status_stop = stop.clone();
     let status = thread::spawn(move || {
-        lines(File::from(status_read), |line| {
+        lines_until(File::from(status_read), &status_stop, |line| {
             if let Some(s) = ota::status(line) {
                 let _ = status_tx.send(Line::Status(s));
             }
             Ok(())
         })
     });
+    let logged_stop = stop.clone();
     let logged = thread::spawn(move || {
-        lines(stderr, |line| {
+        lines_until(stderr, &logged_stop, |line| {
             if let Some(l) = ota::log(line) {
                 let _ = tx.send(Line::Log(l));
             }
@@ -732,7 +797,19 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     ctx.send(Event::Progress(stage.clone()));
     let mut told = Instant::now();
     let (mut partitions, mut verifying, mut finishing, mut error) = (0, None, false, None);
+    // The engine's exit is looked at separately from its pipes closing:
+    // update_engine starts helpers of its own, such as snapuserd serving the
+    // snapshots of the slot it writes, and they inherit its pipes. A helper
+    // that outlives the engine keeps both pipes open, so waiting for them to
+    // close would leave the install spinning for ever. The helper is not
+    // ended: it may be serving live snapshots.
+    let mut ended = None;
     loop {
+        if ended.is_none() {
+            if let Some(status) = child.try_wait().context("check whether update_engine has exited")? {
+                ended = Some((status, Instant::now()));
+            }
+        }
         match rx.recv_timeout(PROGRESS_EVERY) {
             Ok(Line::Status(Status::Step(step))) => finishing = step == 2,
             Ok(Line::Status(Status::Error(code))) => error = Some(code),
@@ -740,8 +817,11 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             Ok(Line::Log(Log::Overwriting)) => ctx.send(Event::Overwriting),
             Ok(Line::Log(Log::Hashing { index, partition })) => verifying = Some((index, partition)),
             Err(RecvTimeoutError::Timeout) => {}
-            // Both outputs closed: the program has ended.
-            Err(RecvTimeoutError::Disconnected) => break,
+            // Both outputs closed. That is not proof that the engine has
+            // ended: it may have handed them on and kept working.
+            Err(RecvTimeoutError::Disconnected) => {
+                ended = Some((child.wait().context("wait for update_engine")?, Instant::now()));
+            }
         }
         let now = if finishing {
             Stage::Finishing
@@ -756,8 +836,17 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             ctx.send(Event::Progress(stage.clone()));
             told = Instant::now();
         }
+        if let Some((_, at)) = ended {
+            if at.elapsed() >= ENGINE_LINGER {
+                break;
+            }
+        }
     }
-    let ended = child.wait().context("wait for update_engine")?;
+    stop.store(true, Ordering::Relaxed);
+    let ended = match ended {
+        Some((status, _)) => status,
+        None => child.wait().context("wait for update_engine")?,
+    };
     status.join().expect("the status reader does not panic").context("read update_engine's status")?;
     logged.join().expect("the log reader does not panic").context("read update_engine's log")?;
     match (ended.code(), error) {
@@ -781,9 +870,54 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
     }
 }
 
+/// [`lines`], but reading with a deadline so that it can always be let go,
+/// including the line it is holding without a newline: a pipe kept open by a
+/// helper that outlives the engine would otherwise strand the thread for as
+/// long as the phone runs.
+fn lines_until(mut from: impl Read + AsRawFd, stop: &AtomicBool, mut each: impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
+    let mut pending = Vec::new();
+    let mut buf = [0; 4096];
+    while !stop.load(Ordering::Relaxed) {
+        let mut waiting = libc::pollfd { fd: from.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let ready = unsafe { libc::poll(&mut waiting, 1, 100) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if ready == 0 {
+            continue;
+        }
+        let read = match from.read(&mut buf) {
+            Ok(read) => read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..read]);
+        let mut start = 0;
+        for end in 0..pending.len() {
+            if pending[end] == b'\n' {
+                each(String::from_utf8_lossy(&pending[start..end]).trim_end_matches('\r'))?;
+                start = end + 1;
+            }
+        }
+        pending.drain(..start);
+    }
+    if !pending.is_empty() {
+        each(String::from_utf8_lossy(&pending).trim_end_matches('\r'))?;
+    }
+    Ok(())
+}
+
 fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     let dir = Path::new(skyward_block::BY_NAME);
-    let partitions = image::partitions(kind, dir)?;
+    let current = skyward_vab::current_slot()?;
+    let partitions = image::partitions(kind, dir, current)?;
     if partitions.is_empty() {
         return Ok(Done::Decided(Outcome::Refused(Refusal::NoPartition)));
     }
@@ -798,7 +932,10 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
         installed_boot_set()?;
     }
-    let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
+    let devices: Vec<_> = match current {
+        Some(_) => slots.iter().map(|&slot| image::device(dir, partition, Some(slot))).collect(),
+        None => vec![image::device(dir, partition, None)],
+    };
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     let mut told: Option<Instant> = None;
     image::flash(&mut file, size, &devices, &mut |done, total| {
@@ -807,6 +944,9 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
             told = Some(Instant::now());
         }
     })?;
+    // A phone without slots has one partition of each name, and the
+    // screen says so rather than naming a slot.
+    let slots = if current.is_some() { slots } else { Vec::new() };
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
 }
 
@@ -842,7 +982,10 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             Ok(other) => bail!("a script waiting to be agreed to was told {other:?}"),
         }
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A phone without slots runs one system, and its recovery sits in one
+    // partition: the script gets the same room to write in either way, and
+    // this recovery is kept from that one partition as from a slot's.
+    let slot = skyward_vab::current_slot()?;
     extract_script()?;
     shell_at_sbin()?;
     let kept = hold(ctx, slot)?;
@@ -873,7 +1016,7 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     // the recovery of the slot that starts next, which a package that
     // installs to the other slot switches to.
     if let Some(kept) = &kept {
-        reflash(ctx, kept, skyward_vab::boot::next_slot().context("ask which slot starts next"));
+        reflash(ctx, kept, None);
     }
     let (code, wipe_cache) = ran?;
     Ok(Done::Script { code, wipe_cache })
@@ -903,6 +1046,7 @@ fn extract_script() -> Result<()> {
     let zip = File::open(fuse::PACKAGE).context("open the package")?;
     let mut zip = zip::ZipArchive::new(BufReader::new(zip)).context("read the zip directory")?;
     let mut script = zip.by_name(package::UPDATE_BINARY).context("open the install script")?;
+    fs::create_dir_all(skyward_sys::RUN).with_context(|| format!("make {}", skyward_sys::RUN))?;
     ensure!(script.size() <= SCRIPT_MAX, "the install script is {} bytes, larger than this recovery runs", script.size());
     match fs::remove_file(BINARY) {
         Ok(()) => {}

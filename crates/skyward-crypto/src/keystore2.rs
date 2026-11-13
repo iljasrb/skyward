@@ -11,9 +11,10 @@ pub const DATABASE: &str = "/data/misc/keystore/persistent.sqlite";
 /// The kind of thing a row holds: the key itself rather than a certificate.
 const KEY_BLOB: i64 = 0;
 
-/// The handle the secure world knows the key named `alias` by. The
-/// database is opened as it lies, without being written to or waiting on
-/// anyone, since the phone it belongs to is not running.
+/// The handle the secure world knows the key named `alias` by, without the
+/// phone's own name for it. The database is opened as it lies, without
+/// being written to or waiting on anyone, since the phone it belongs to is
+/// not running.
 pub fn key_blob(database: &Path, alias: &str) -> Result<Vec<u8>> {
     let at = format!("file:{}?immutable=1", database.display());
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI;
@@ -29,5 +30,6 @@ pub fn key_blob(database: &Path, alias: &str) -> Result<Vec<u8>> {
         .next()
         .with_context(|| format!("read what {} says about {alias}", database.display()))?
         .with_context(|| format!("{} holds no key named {alias}", database.display()))?;
-    row.get(0).with_context(|| format!("read the key named {alias}"))
+    let held: Vec<u8> = row.get(0).with_context(|| format!("read the key named {alias}"))?;
+    Ok(crate::keystore::bare(&held).to_vec())
 }

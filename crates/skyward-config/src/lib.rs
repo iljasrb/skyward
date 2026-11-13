@@ -239,6 +239,12 @@ pub struct Sdcard {
     /// it: `8804000.sdhci`, the name the vendor's own table lists the tray
     /// under.
     pub host: String,
+    /// The line a card's coming and going is read on, on phones whose stock
+    /// tree names it active high and leaves it floating: the build puts the
+    /// polarity and the pull right in the recovery's own tree, leaving the
+    /// installed system's alone.
+    #[serde(default)]
+    pub detect_pin: Option<u32>,
 }
 
 /// Where this phone's recovery images are published, which the update page
@@ -295,8 +301,10 @@ pub struct Rom {
 /// keeps the same.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct Backup {
-    /// The partitions that keep the baseband's settings, with the phone's
-    /// own identity, and the sensors' calibration.
+    /// The partitions that are the phone's own rather than the build's: the
+    /// baseband's settings with the phone's own identity, the sensors' and
+    /// the camera's calibration, the vendor's configuration, and the keys the
+    /// phone's own layer keeps.
     #[serde(default)]
     pub efs: Vec<String>,
     /// Folders in the data partition, from its top, that the phone's own
@@ -478,16 +486,16 @@ pub struct Service {
     /// directory takes only when they are described to it as well.
     #[serde(default)]
     pub registers: Vec<String>,
-    /// The file that describes what the program registers, where the phone
-    /// keeps that file apart from its other descriptions, as one its init
-    /// puts in place of another on some builds of the hardware.
-    #[serde(default)]
-    pub description: Option<String>,
     /// A service the program registers with the other directory, the one
     /// the phone's hardware services of the older kind use. It is written
     /// as the interface and then which of them it is.
     #[serde(default)]
     pub ready_hardware_service: Option<String>,
+    /// Services the program registers with that other directory besides
+    /// the one it is waited for, or instead of one: named here so the
+    /// directory's description includes them, without waiting for them.
+    #[serde(default)]
+    pub hardware: Vec<String>,
     /// Where one model's hardware comes in more than one build, the
     /// installed system's own properties say which build it is: the program
     /// runs only where the property has this value.
@@ -638,6 +646,7 @@ impl DeviceConfig {
         }
         if let Some(card) = &cfg.sdcard {
             ensure!(!card.host.is_empty() && !card.host.contains('/'), "[sdcard] host: {} is not a controller's name", card.host);
+            ensure!(card.detect_pin != Some(0), "[sdcard] detect_pin: 0 is no line's number");
         }
         for name in &cfg.partitions.mounted {
             ensure!(!name.is_empty() && !name.contains('/'), "[partitions] mounted: {name} is not a partition's name");
@@ -659,7 +668,7 @@ impl DeviceConfig {
         for s in cfg.services.iter().filter(|s| s.oneshot) {
             let waits = s.ready_property.is_some() || s.ready_service.is_some() || s.ready_hardware_service.is_some();
             ensure!(
-                !waits && s.registers.is_empty() && s.description.is_none(),
+                !waits && s.registers.is_empty(),
                 "[[service]] {}: a program run once is ready when it ends, and registers nothing",
                 s.path
             );
@@ -907,7 +916,6 @@ mod tests {
         assert!(DeviceConfig::parse(&format!("{base}ready_property = \"vendor.a\"\n")).is_err());
         assert!(DeviceConfig::parse(&format!("{base}ready_service = \"a.IA/default\"\n")).is_err());
         assert!(DeviceConfig::parse(&format!("{base}registers = [\"a.IB/default\"]\n")).is_err());
-        assert!(DeviceConfig::parse(&format!("{base}description = \"/vendor/etc/a.xml\"\n")).is_err());
         let kept = DeviceConfig::parse("[device]\ncodename = \"x\"\n[[service]]\npath = \"/vendor/bin/a\"\n").unwrap();
         assert!(!kept.services[0].oneshot && kept.services[0].args.is_empty(), "a program is kept running unless it says otherwise");
     }

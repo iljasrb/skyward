@@ -5,7 +5,7 @@
 //! recovery checks it.
 
 use crate::image::{self, ImageKind};
-use crate::Refusal;
+use crate::{Downgrade, Refusal};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -169,23 +169,28 @@ pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
     if m.get("pre-build").is_some() || m.get("pre-build-incremental").is_some() {
         return Err(Refusal::Incremental);
     }
-    let Some(build) = &phone.installed else { return Ok(()) };
-    // A full package may install the version already there again; going
-    // back needs a package made for the build it leaves, an incremental
-    // one.
-    let timestamp = m.get("post-timestamp").and_then(|t| t.parse().ok()).unwrap_or(0);
-    if timestamp < build.timestamp {
-        return Err(Refusal::Older { package: timestamp, installed: build.timestamp });
-    }
-    // Patch levels are yyyy-mm-dd, so they order as text. Data that is
-    // erased before the older system starts is never read under it.
-    if let Some(patch) = m.get("post-security-patch-level") {
-        let allowed = m.get("spl-downgrade") == Some("yes") || m.get("ota-downgrade") == Some("yes") || update.wipes();
-        if patch < build.security_patch.as_str() && !allowed {
-            return Err(Refusal::OlderPatch { package: patch.to_string(), installed: build.security_patch.clone() });
-        }
+    if let Some(refusal) = downgrade(update, phone).refusal() {
+        return Err(refusal);
     }
     Ok(())
+}
+
+/// How `update` is older than the system installed on `phone`, where it is.
+/// A full package may install the version already there again; going back
+/// needs a package made for the build it leaves, an incremental one, which
+/// is refused before this is asked. Patch levels are yyyy-mm-dd, so they
+/// order as text. Data that is erased before the older system starts is
+/// never read under it, so a package that erases may go back.
+pub fn downgrade(update: &Update, phone: &Phone) -> Downgrade {
+    let Some(build) = &phone.installed else { return Downgrade::default() };
+    let m = &update.metadata;
+    let timestamp = m.get("post-timestamp").and_then(|t| t.parse().ok()).unwrap_or(0);
+    let older_build = (timestamp < build.timestamp).then_some((timestamp, build.timestamp));
+    let older_patch = m.get("post-security-patch-level").and_then(|patch| {
+        let allowed = m.get("spl-downgrade") == Some("yes") || m.get("ota-downgrade") == Some("yes") || update.wipes();
+        (patch < build.security_patch.as_str() && !allowed).then(|| (patch.to_string(), build.security_patch.clone()))
+    });
+    Downgrade { build: older_build, patch: older_patch }
 }
 
 /// Whether `name` is one of the `|`-separated names in `list`.
@@ -306,6 +311,25 @@ METADATA_SIZE=1024
         assert!(!update_with(METADATA_TEXT, &format!("{PROPERTIES_TEXT}POWERWASH=0\n")).wipes());
         let older_patch = format!("{}ota-wipe=yes\n", METADATA_TEXT.replace("2026-06-01", "2026-03-01"));
         assert_eq!(check(&update_with(&older_patch, PROPERTIES_TEXT), &phone()), Ok(()), "the data it could not read is erased");
+    }
+
+    #[test]
+    fn an_older_build_or_patch_is_known_and_left_to_the_user_to_agree_to() {
+        let older = METADATA_TEXT.replace("1781000000", "1770000000");
+        let d = downgrade(&update_with(&older, PROPERTIES_TEXT), &phone());
+        assert_eq!(d.build, Some((1_770_000_000, 1_778_243_655)));
+        assert_eq!(d.patch, None);
+        assert_eq!(d.refusal(), Some(Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }));
+        let patch = METADATA_TEXT.replace("2026-06-01", "2026-03-01");
+        let d = downgrade(&update_with(&patch, PROPERTIES_TEXT), &phone());
+        assert_eq!(d.build, None);
+        assert_eq!(d.patch, Some(("2026-03-01".into(), "2026-04-01".into())));
+        assert_eq!(d.refusal(), Some(Refusal::OlderPatch { package: "2026-03-01".into(), installed: "2026-04-01".into() }));
+        let both = older.replace("2026-06-01", "2026-03-01");
+        let d = downgrade(&update_with(&both, PROPERTIES_TEXT), &phone());
+        assert!(d.build.is_some() && d.patch.is_some(), "both are known, so the page can say both");
+        let allowed = format!("{}spl-downgrade=yes\n", patch);
+        assert!(downgrade(&update_with(&allowed, PROPERTIES_TEXT), &phone()).patch.is_none(), "the package allows it");
     }
 
     #[test]
