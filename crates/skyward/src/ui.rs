@@ -2764,7 +2764,7 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                             let options = skyward_root::folkpatch::Options {
                                 device: cfg.device.codename.clone(),
                                 current,
-                                slots: pick.slots(current),
+                                slots: pick.slots(Some(current)),
                                 battery,
                                 key,
                                 repatch,
@@ -2798,7 +2798,7 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                         let mut slots = [None, None];
                         let mut any = false;
                         if let Some(current) = info.slot {
-                            for slot in pick.slots(current) {
+                            for slot in pick.slots(Some(current)) {
                                 let patched = skyward_root::folkpatch::patched_slot(
                                     Path::new("/dev/block/by-name"),
                                     slot,
@@ -2854,7 +2854,7 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                             let task = crate::ksu::Task {
                                 device: cfg.device.codename.clone(),
                                 current,
-                                slots: pick.slots(current),
+                                slots: pick.slots(Some(current)),
                                 battery,
                                 flavor,
                                 tier,
@@ -2903,7 +2903,7 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                             let task = crate::kernel::Task {
                                 device: cfg.device.codename.clone(),
                                 current,
-                                slots: pick.slots(current),
+                                slots: pick.slots(Some(current)),
                                 battery,
                                 plugin,
                                 stamp: skyward_ui::fmt::stamp(unix_now()?, app.state.time_zone),

@@ -4950,7 +4950,7 @@ fn apatch_notes(_l: Lang, cx: &Ctx, root: &crate::app::ApatchState) -> Vec<Strin
     // it is said here, for each slot the page would write, where the page
     // knows it, not asked about.
     if let Some(current) = cx.info.slot {
-        for slot in root.pick.slots(current) {
+        for slot in root.pick.slots(Some(current)) {
             if root.patched_slots[slot.number() as usize] == Some(true) {
                 let slot = slot.letter();
                 notes.push(crate::t!(S_SLOT_S_IMAGE_CARRIES_THE_PATCH_ALREADY, slot = slot));
