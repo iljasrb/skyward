@@ -11,7 +11,7 @@
 #   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG]
 #
 # Needs rustup's aarch64-linux-android target, cargo-ndk, and an Android NDK
-# r29 or newer in ANDROID_NDK_HOME (or one under ~/toolchains).
+# r29 or newer in ANDROID_NDK_HOME (or one under ~/toolchains or /opt).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,7 +33,7 @@ done
 
 ndk=${ANDROID_NDK_HOME:-}
 if [ -z "$ndk" ]; then
-    ndk=$( { ls -d "$HOME"/toolchains/android-ndk-* "$HOME"/Android/Sdk/ndk/* 2>/dev/null || true; } | tail -n 1)
+    ndk=$( { ls -d "$HOME"/toolchains/android-ndk-* "$HOME"/Android/Sdk/ndk/* /opt/android-ndk* 2>/dev/null || true; } | tail -n 1)
 fi
 [ -n "$ndk" ] || { echo "no NDK: set ANDROID_NDK_HOME" >&2; exit 1; }
 export ANDROID_NDK_HOME=$ndk
