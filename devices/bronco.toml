@@ -1,0 +1,385 @@
+# Skyward device configuration for the Motorola ThinkPhone (bronco).
+#
+# `./build.sh` copies this to `devices/bronco.toml` in a Skyward checkout and
+# packs the recovery image with it. Every fact here comes from the AERA device
+# tree for this phone: its docs/bronco-device-notes.md and recovery/root/.
+
+[device]
+codename = "bronco"
+brand = "motorola"
+model = "ThinkPhone by motorola"
+ab = true
+soc = "Snapdragon® 8+ Gen 1 Mobile Platform"
+os_version_prop = "ro.build.version.incremental"
+
+[display]
+width = 1080
+height = 2400
+density = 400
+diagonal = 6.6
+# Untuned: bronco's stock overlay does not publish a corner radius.
+corner_radius = 60
+
+# Touch is Motorola's own stack: goodix_brl_mmi over SPI on top of
+# touchscreen_mmi, both in the vendor_boot ramdisk, which first-stage init
+# leaves unloaded. The driver reports positions itself, so nothing has to be
+# written to it after the input device appears.
+[modules]
+load = ["touchscreen_mmi", "goodix_brl_mmi"]
+
+# adsp.mdt and the WLAN's bdwlan.bin are on the modem partition, which
+# ueventd asks for as /firmware/image/.
+[firmware]
+partition = "modem"
+
+# The SPU's NVM segments (secdb, iar_db) live on persist; spdaemon and
+# sec_nvm keep their state there and the gatekeeper TA answers
+# ERROR_RETRY_TIMEOUT to everything if the partition is not the real one.
+# The WLAN's MAC address is there as well, read by path below rather than by
+# mounting the partition again: it is mounted here already, and a second mount
+# of it is refused with "Device or resource busy", which stops the WLAN before
+# its driver is even loaded.
+[partitions]
+mounted = ["persist"]
+
+# The recovery ramdisk carries no logd, so the phone's own programs (qseecomd,
+# the credential and key services) have nowhere to say what they are doing. The
+# installed system's logd runs on its own bootstrap libraries, and then adb
+# logcat works from a computer. It comes first, so everything after is in it.
+[[service]]
+path = "/mnt/system/system/bin/logd"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/system/lib"]
+user = "root"
+groups = ["root"]
+
+# logd keeps its sockets to itself until the phones's own programs are let in;
+# they run as system, and what they log is the only way to see the TEE chain.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /dev/socket/logdw ] && [ $i -lt 50 ]; do i=$((i+1)); sleep 0.1; done; chmod 0666 /dev/socket/logd /dev/socket/logdw /dev/socket/logdr 2>/dev/null; chmod 0777 /dev/socket 2>/dev/null; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The phone's own programs run on the library worlds this phone has, and the
+# order is the one that works here: the vendor partition's, then the installed
+# system's platform libraries, then the recovery's own, then the installed
+# system's bootstrap folder, whose libdl_android, libc and libm are real files
+# rather than links into the runtime bundle (a recovery cannot open this
+# phone's bundles, and the vendor programs need exactly those).
+# The vendor's libc++ is the only one with a symbol its libdmabufheap needs,
+# and the installed system's libvndksupport is the only one the vendor's
+# libutils takes; neither world is complete on its own. Verified per binary on
+# the phone. Keymint alone comes first for the installed system, because its
+# libbinder is the one that registers with servicemanager rather than with the
+# vendor's own.
+#
+# Two of the phone's binder worlds disagree about the parcels they pass: the
+# recovery's own service directory is built with the recovery's libbinder, and
+# a program loading the installed system's copy is answered "Mixing copies of
+# libbinder". So the key service and the boot control run on the recovery's
+# libbinder, and the one library they take from the vendor partition is its
+# libc++, which is the only copy with a symbol the vendor's libdmabufheap
+# needs. It is put in a folder of its own, searched first.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "mkdir -p /tmp/libkt; cp -f /vendor/lib64/libc++.so /tmp/libkt/libc++.so; chmod 755 /tmp/libkt; chmod 644 /tmp/libkt/libc++.so"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# spdaemon and sec_nvm keep the SPU's NVM segments under /mnt/vendor/persist,
+# and the secure world is only brought up at all when the phone's own init
+# says it may: AERA's recovery init sets this property and makes these folders
+# before either program starts.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "for d in iar_db secnvm; do mkdir -p /mnt/vendor/persist/$d; chown system:system /mnt/vendor/persist/$d; chmod 0770 /mnt/vendor/persist/$d; done; setprop persist.vendor.enable_spu true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The TEE: qseecomd owns /dev/qseecom, and every key service below waits on
+# its listeners.
+
+# SELinux permissive, first of all: recovery's policy does not grant its
+# domain the TEE connections the credential and key services need, and the
+# credential TA answers ERROR_RETRY_TIMEOUT to everything without them.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "echo 0 > /sys/fs/selinux/enforce"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The one node that decides whether a PIN can be checked at all:
+# /dev/qsee_ipc_irq_spss is the SPL's way to the SPU, and left root-only the
+# credential TA answers -2 to every verify, right or wrong PIN alike. It is
+# given to system:drmrpc before qseecomd, which runs as system, opens it.
+# Skyward hands every node the owner /vendor/etc/ueventd.rc names first, but
+# this one is made by a probe that can land after that pass.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /dev/qsee_ipc_irq_spss ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; for n in qseecom smcinvoke qsee_ipc_irq_spss; do chown system:drmrpc /dev/$n 2>/dev/null; chmod 0660 /dev/$n 2>/dev/null; done; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64/bootstrap"]
+ready_property = "vendor.sys.listeners.registered"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The SPU's shared-memory devices are made by a ueventd rule in
+# /vendor/etc/ueventd.rc, and a recovery's ueventd starts before /vendor is
+# mounted, so those rules never take: sec_nvm then cannot open
+# /dev/mem_buf_vm/qcom,cp_spss_hlos_shared ("Unable to open ... errno: 2"),
+# the SPSS never serves the credential TA, and every verify waits thirty
+# seconds in spss_utils to no purpose. The nodes are made from the kernel's
+# own view of them, with the owner and mode that rule gives.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "mkdir -p /dev/mem_buf_vm; for d in /sys/class/mem_buf_vm/*/; do n=$(basename $d); [ -e /dev/mem_buf_vm/$n ] || mknod /dev/mem_buf_vm/$n c $(cat $d/dev | tr \":\" \" \") 2>/dev/null; done; chown -R system:system /dev/mem_buf_vm; chmod 0444 /dev/mem_buf_vm/*; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# spdaemon loads the SPSS's own apps from /vendor/firmware_mnt/image, which is
+# where the phone's table mounts the modem partition in Android. A recovery
+# mounts it at /firmware, so the directory in the vendor image (empty) is given
+# the same content as well; without it the app load fails with
+# "file [/vendor/firmware_mnt/image/macch1p.sig] not exist" and the SPSS is
+# started without the app the credential TA runs in.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /firmware/image ] && [ $i -lt 150 ]; do i=$((i+1)); sleep 0.2; done; mkdir -p /vendor/firmware_mnt; mountpoint -q /vendor/firmware_mnt || mount -o bind /firmware /vendor/firmware_mnt; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The secure processing unit. sec_nvm comes first: it registers the SPU's
+# channels, and spdaemon started before it spends minutes retrying before it
+# attaches; started after, it attaches in seconds. spdaemon then attaches
+# 188101c.remoteproc-spss itself and signals spcom's pil_called, which is what
+# brings the SPSS's link up for the credential TA ("spcom_wait_for_sp_link_up:
+# PIL not called !" and -45 are what a processor started any other way gives).
+# Both run on the recovery's own libbinder like the key service: the vendor
+# partition's copy looks for /dev/vndbinder, which a recovery does not serve,
+# and its fallback waits forever on a binder-RPC socket that no recovery makes.
+[[service]]
+path = "/vendor/bin/sec_nvm"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+[[service]]
+path = "/vendor/bin/spdaemon"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+# spdaemon does the attach and then signals spcom's pil_called, which is what
+# makes the SPSS's link come up for the credential TA: started through the
+# remoteproc's state file instead, the processor runs without it and every
+# check ends in "spcom_wait_for_sp_link_up: PIL not called !" and -45. So
+# nothing here fakes that start; spdaemon is given its nodes and its time, and
+# what it does is watched by asking whether it has opened /dev/spcom.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "( i=0; while [ $i -lt 300 ]; do p=$(pidof spdaemon); [ -n \"$p\" ] && ls -l /proc/$p/fd 2>/dev/null | grep -q spcom && break; i=$((i+1)); sleep 0.2; done ) >/dev/null 2>&1 &"]
+oneshot = true
+user = "root"
+groups = ["root"]
+[[service]]
+path = "/vendor/bin/hw/vendor.qti.spu@1.1-service"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+[[service]]
+path = "/vendor/bin/hw/vendor.qti.spu@2.0-service"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+[[service]]
+path = "/system_ext/bin/hwservicemanager"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system_ext/lib64"]
+ready_property = "hwservicemanager.ready"
+user = "system"
+groups = ["system", "readproc"]
+
+# The key service, which is the only thing that can use the keys the phone
+# wrapped in hardware. It must link the recovery's own libbinder before the
+# vendor VNDK copy, which would register it with vndservicemanager instead.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.security.keymint-service-qti"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
+user = "system"
+groups = ["system", "drmrpc"]
+
+# The credential service: bronco ships only HIDL gatekeeper, and it aborts in
+# QSEECom_start_app as uid 1000 in recovery, so it runs as root here. Skyward
+# checks credentials against this HAL directly, so no gatekeeperd is needed.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
+libraries = ["/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64/bootstrap"]
+ready_hardware_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# cnss2 only starts the WLAN firmware download once fs_ready is written, and
+# the driver has to be loaded after that; skyward writes it while bringing
+# the driver up, so publish it at boot instead (see README.md).
+# It comes after the key services because a oneshot runs to its end before
+# the next program starts: this one would hold decryption up until cnss2
+# exposes the switch, and it never does when the WLAN is not there.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /sys/kernel/cnss/fs_ready ] && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done; [ -e /sys/kernel/cnss/fs_ready ] && echo 1 > /sys/kernel/cnss/fs_ready"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# WLAN calibration and MAC: stock init starts it before the driver is
+# probed. The page comes up before the user can turn WLAN on, so it is
+# already running by then.
+[[service]]
+path = "/vendor/bin/cnss-daemon"
+libraries = ["/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64/bootstrap"]
+args = ["-n", "-l"]
+user = "system"
+# The names are the ones the vendor partition carries: inet, net_admin and
+# wifi are the platform's, and a recovery reads only the phone's own.
+groups = ["system"]
+capabilities = ["NET_ADMIN"]
+# It exits at once while the WLAN driver is not loaded, and a recovery that
+# keeps starting it again only fills the kernel log; it is run once, as the
+# page comes up, and Skyward brings the WLAN up on its own.
+oneshot = true
+
+# The boot control, which says which slot the bootloader starts next and
+# switches it. It comes last: the recovery is usable without it.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot-service.qti"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+ready_service = "android.hardware.boot.IBootControl/default"
+user = "root"
+groups = ["root"]
+
+# WLAN: the QCA6490 on PCIe, driven by qca_cld3_qca6490 over cnss2. cnss2
+# itself is loaded by first-stage init; the host driver is in vendor_dlkm.
+# The driver reads its settings and MAC through the firmware loader from
+# links in /vendor/firmware, which a recovery covers with the modem's, so
+# both are handed to the loader again from where they really are.
+# fwpath is not passed to the module: skyward loads modules without
+# arguments (see README.md).
+[wlan]
+modules = ["qca_cld3_qca6490", "rmnet_wlan"]
+writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
+firmware = [
+    { name = "wlan/qca_cld/qca6490/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/qca6490/WCNSS_qcom_cfg.ini" },
+    { name = "wlan/qca_cld/qca6490/wlan_mac.bin", path = "/mnt/vendor/persist/qca6490/wlan_mac.bin" },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+# The recovery's libbinder, like the other binder services: the supplicant
+# registers itself as a service before it ever opens nl80211, and on the
+# vendor's libbinder that registration never returns in a recovery, so it
+# waits forever instead of making the socket the port talks to.
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connectivitycheck.gstatic.com/generate_204"
+
+# qcom-hv-haptics. The LRA frequency is measured at boot and kept by the
+# driver; the click is made from samples at that frequency. Untuned.
+[haptics]
+# The motor's driver here plays a constant force for as long as the effect
+# lasts, at the strength asked for; it takes no made periodic samples.
+length = 40
+strength = { lightest = 0.5, strongest = 1.0 }
+
+# The partitions a baseband and EFS backup takes, and what of the data
+# partition an older copy would not open: the TEE's own storage and the
+# SPU-backed keystore state.
+[backup]
+# The baseband's own copy of the phone's identity and the sensors' calibration.
+# `fsg` is kept per slot on this phone; the other slot's is the same
+# partition's twin, and the one it runs from is the one backed up.
+#
+# `persist` is deliberately not here. It holds the secure world's own
+# non-volatile storage -- the keymaster and gatekeeper state the screen lock
+# is bound to -- so restoring an older copy of it leaves the phone's PIN
+# unverifiable: the trustlet derives a different proof than the one the data
+# partition recorded. A backup of it is worth taking by hand, with a ring of
+# salt; restoring one is not a thing to do by accident.
+efs = ["modemst1", "modemst2", "fsg", "fsc", "devinfo", "utags"]
+data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
+
+# Where the phone's own programs keep logs and crash records in the data
+# partition. /data/vendor/wifi is in the list because recovery used to leave
+# unlabelled sockets there that stopped Android's cnss-daemon.
+[wipe]
+logs = [
+    "/data/vendor/diag",
+    "/data/vendor/log",
+    "/data/vendor/ramdump",
+    "/data/vendor/ramdump_ssr",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wifi",
+    "/data/vendor/wlan_logs",
+]
+
+# No [stock] here: the recovery this phone's build rides on is published as an
+# image of its own, with its sum beside it, not inside an update package, so
+# nothing has to be taken out of one. The release that carries the image
+# fetches it from there (see .github/workflows/release.yml).
+
+# Where this phone's recovery images are published: the fork's releases on
+# GitHub, and the file in a release that this phone is written from.
+[update]
+repo = "iljasrb/skyward"
+asset = "skyward-bronco.img"
+
+
+# The charge limit the system keeps, so the recovery keeps to it too: the
+# kernel switch that stops and starts charging, and the LineageOS settings
+# database whose `system` table holds `charging_control_enabled` and
+# `charging_control_charging_limit`. Writing 0 to the switch stops charging,
+# 1 starts it.
+[charging]
+switch = "/sys/module/qpnp_adaptive_charge/parameters/charging_enabled"
+system = "/data/user_de/0/org.lineageos.lineagesettings/databases/lineagesettings.db"
+# The limit last read, kept where the recovery reads before the data
+# partition opens, so a start that never opens it still keeps to the limit.
+cache = "/metadata/skyward/charge-limit"
+
+# The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
+# exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
+# android13-5.10's. Skyward would read the announced version and ask ksud for
+# the android13-5.10 module, which the kernel refuses with "disagrees about
+# version of symbol module_layout", leaving KernelSU "Not Installed". The
+# kernel's config sets that version string in
+# arch/arm64/configs/vendor/waipio_GKI.config; the module that loads is this
+# one.
+[ksu]
+kmi = "android12-5.10"
+
+# The phone's own kernel, offered on the root page beside APatch and the
+# KernelSU family. It is a complete boot image from the Shinobu releases:
+# the newest stable one is downloaded, checked against its SHA-256, and
+# written whole to the boot partitions. The kernel carries BakaSU, so its
+# manager is installed in Android rather than patched in here.
+[[root]]
+kind = "kernel"
+name = "Shinobu kernel"
+subtitle = "BakaSU + SUSFS"
+repo = "iljasrb/bronco-shinobu-kernel"
+asset = "shinobu-kernel-{version}.img"
+folder = "Shinobu"
+note = "The kernel carries BakaSU; its manager is kept with the run for Android to install after the phone starts."
+manager_name = "BakaSU"
