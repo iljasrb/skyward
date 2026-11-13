@@ -5,7 +5,7 @@
 Skyward is a recovery written in Rust, from scratch. This is a fork's generic
 branch: it carries the code, not one phone's files. Device branches add a
 `devices/<codename>.toml`, a build script and a release workflow; the ThinkPhone
-(`bronco`) branch is `bronco`, and the Galaxy S20 FE 5G (`r8q`) branch is `r8q`.
+(`bronco`) branch is `device/bronco`, and the Galaxy S20 FE 5G (`r8q`) branch is `device/r8q`.
 
 
 ## Fork changes
@@ -74,8 +74,8 @@ RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 b
 
 The service is built for the phone and the packer for the computer. Packing an
 image needs the phone's stock recovery and a device configuration; a device
-branch supplies both. See `scripts/build-bronco.sh` on the `bronco` branch and
-`scripts/build-r8q.sh` on the `r8q` branch for examples.
+branch supplies both. See `scripts/build-bronco.sh` on the `device/bronco` branch and
+`scripts/build-r8q.sh` on the `device/r8q` branch for examples.
 
 Tests and lints run on the computer; what runs only on the phone is linted for
 it:
