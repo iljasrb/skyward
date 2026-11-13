@@ -1,0 +1,358 @@
+# Skyward device configuration for the Samsung Galaxy S20 FE 5G (r8q).
+#
+# The recovery this is packed onto is the LineageOS one for r8q, which is
+# boot header version 2: a kernel, a gzip ramdisk, the recovery dtbo and the
+# dtb in one image. The phone has no slots: its partitions are in super
+# without a suffix, and its recovery is a partition of its own.
+#
+# Every fact here comes from the LineageOS device trees for r8q and
+# sm8250-common, the OrangeFox r8q tree, and the phone itself. Values that
+# have not been tried on the phone are marked untuned.
+
+[device]
+codename = "r8q"
+brand = "samsung"
+model = "Galaxy S20 FE 5G"
+ab = false
+soc = "Snapdragon® 865 5G Mobile Platform"
+os_version_prop = "ro.build.display.id"
+
+[display]
+width = 1080
+height = 2400
+density = 420
+diagonal = 6.5
+# Untuned: the panel's corners are rounded, but the radius is not published.
+corner_radius = 60
+
+# The kernel is monolithic: the touchscreen, the WLAN and the rest are built
+# in, and there are no modules to load.
+[modules]
+load = []
+
+# The phone's own table mounts these where its programs and drivers look for
+# them. persist and efs carry the secure world's state and the baseband's;
+# apnhlos and modem carry the firmware the modem and the sensors ask for, at
+# /vendor/firmware_mnt and /vendor/firmware-modem. The WLAN's own images are
+# on the vendor partition, which the recovery mounts as /vendor.
+[partitions]
+mounted = ["persist", "metadata", "efs", "sec_efs", "apnhlos", "modem", "spu"]
+
+# The microSD tray hangs on a controller of its own, which the vendor's table
+# lists for the installed system: /devices/platform/soc/8804000.sdhci/mmc_host*.
+# The card shows there, read and written, for files to be installed from it and
+# backups and logs to be saved to it.
+[sdcard]
+host = "8804000.sdhci"
+# The stock tree calls the tray's detect line active high and leaves it with
+# no pull, while the board pulls the line up and grounds it as a card goes in.
+# The build puts both right in the recovery's own tree, as the vendor's tree
+# for the reference boards of this chip has them; the installed system keeps
+# its own.
+detect_pin = 77
+
+# The recovery ramdisk carries no logd, so the phone's own programs have
+# nowhere to say what they are doing. The installed system's logd runs on its
+# own bootstrap libraries, and then adb logcat works from a computer.
+[[service]]
+path = "/mnt/system/system/bin/logd"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/system/lib"]
+user = "root"
+groups = ["root"]
+
+# logd keeps its sockets to itself until the phone's own programs are let in.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /dev/socket/logdw ] && [ $i -lt 50 ]; do i=$((i+1)); sleep 0.1; done; chmod 0666 /dev/socket/logd /dev/socket/logdw /dev/socket/logdr 2>/dev/null; chmod 0777 /dev/socket 2>/dev/null; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The vendor's libc++ is the one the vendor's own programs were built
+# against; the recovery's libbinder is the one that registers with the
+# recovery's servicemanager. Both are put where the WLAN's supplicant and the
+# MAC loader find them.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "mkdir -p /tmp/libkt; cp -f /vendor/lib64/libc++.so /tmp/libkt/libc++.so; chmod 755 /tmp/libkt; chmod 644 /tmp/libkt/libc++.so"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# SELinux permissive: recovery's policy does not grant the vendor's programs
+# the nodes they open. Untuned, but the OrangeFox tree runs its own services
+# under the recovery domain as well.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "echo 0 > /sys/fs/selinux/enforce"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The node the phone's own MAC loader writes the WLAN's address to belongs to
+# wifi, as the phone's own init gives it: the loader runs as that user, and
+# the node is the kernel's.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "[ -e /sys/wifi/mac_addr ] && chown wifi:wifi /sys/wifi/mac_addr && chmod 0660 /sys/wifi/mac_addr; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The phone's own init mounts persist at /mnt/vendor/persist and its
+# programs still open /persist, as the stock system does.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "[ -e /persist ] || ln -s /mnt/vendor/persist /persist; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The images the WLAN's firmware is in are on the vendor partition, but the
+# kernel looks for firmware under the folders its own command line names,
+# which are the modem's. The kernel follows a link like any other path, so
+# one from where it looks to where the images are is enough.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "mkdir -p /lib/firmware; ln -sfn /vendor/firmware/qca6390 /lib/firmware/qca6390"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The IPA firmware. The phone's own init writes to this node at early-boot,
+# and that write is what makes the IPA driver attach to the SMMU and note, per
+# client, whether it is bypassed. Left unwritten, the IPA driver still holds
+# every client as bypassed while the WLAN's SMMU is not, and the WLAN's host
+# driver refuses to probe against that mismatch with -EFAULT: the chip reaches
+# MISSION_MODE, the firmware comes up, and the driver is never loaded.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "echo 1 > /dev/ipa"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The name service the phone's own programs find each other by. The WLAN's
+# firmware publishes its own service there, and without a name service the
+# daemon that sends the firmware its board data never finds it: the daemon
+# starts, finds nothing to talk to, and the driver gives up on the firmware.
+[[service]]
+path = "/vendor/bin/qrtr-ns"
+args = ["-f"]
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root"]
+oneshot = false
+
+# The WLAN's own daemon: the stock system starts it at late_start, and it
+# sends the chip's firmware the board data it waits for before it will come
+# up. It has to be running before the driver asks the chip for that firmware:
+# a chip asked with nobody to answer gives up twenty seconds later, and the
+# driver recovers from that with state the chip's driver will not probe
+# through. So it is held until the WLAN worker has made the folders it keeps
+# its socket in.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /skyward/run/wlan-folders ] && [ $i -lt 18000 ]; do i=$((i+1)); sleep 0.1; done; LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/mnt/system/system/lib64:/mnt/system/system/lib:/system/lib64:/system/lib:/mnt/system/system/lib64/bootstrap exec /vendor/bin/cnss-daemon -n -l"]
+user = "system"
+groups = ["system", "inet", "net_admin", "wifi"]
+capabilities = ["NET_ADMIN"]
+oneshot = false
+
+
+# The WLAN's MAC address is kept in efs and written to the driver by the
+# phone's own loader. It runs once, before the supplicant is started.
+[[service]]
+path = "/vendor/bin/hw/macloader"
+libraries = ["/tmp/libkt", "/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "wifi"
+groups = ["wifi", "inet", "net_raw", "net_admin"]
+capabilities = ["NET_ADMIN", "NET_RAW", "SYS_MODULE"]
+# It waits for the WLAN driver and the MAC file, and a recovery that waits
+# for it never brings the screen up; it is started and left to it.
+oneshot = false
+
+# The phone's own hardware service directory. The key service and the
+# credential service are HIDL: they register with this one, not with the AIDL
+# servicemanager the recovery starts, and a program run once is not waited
+# for, so naming the services they register costs nothing at boot.
+[[service]]
+path = "/system_ext/bin/hwservicemanager"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system_ext/lib64"]
+ready_property = "hwservicemanager.ready"
+user = "system"
+groups = ["system", "readproc"]
+
+# The nodes the secure world's programs open, given the owners the phone's
+# own ueventd.rc gives them.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "for n in qseecom qsee_ipc_irq_spss; do [ -e /dev/$n ] && chown system:drmrpc /dev/$n && chmod 0660 /dev/$n; done; for n in ion sp_keymaster spu_hal_ssr; do [ -e /dev/$n ] && chown system:system /dev/$n && chmod 0660 /dev/$n; done; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The secure processing unit's own folders and the switch its programs read.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "for d in iar_db secnvm; do mkdir -p /mnt/vendor/persist/$d; chown system:system /mnt/vendor/persist/$d; chmod 0770 /mnt/vendor/persist/$d; done; setprop persist.vendor.enable_spu true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The property the key services wait for; the phone's own prepdecrypt.sh
+# sets it once the installed system's build version is known, which Skyward
+# does before it starts the programs.
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "setprop crypto.ready 1"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# The TEE: qseecomd owns /dev/qseecom, and the key and credential services
+# wait on its listeners.
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+ready_property = "vendor.sys.listeners.registered"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The key service: Samsung's Keymaster 4.0. It is the only thing that can
+# use the keys the phone wrapped in hardware.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.keymaster@4.0-service.samsung"
+hardware = ["android.hardware.keymaster@4.0::IKeymasterDevice/default"]
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The credential service. The installed system's fingerprint is Samsung's,
+# so the QTI gatekeeper is the one the phone's own build uses.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
+hardware = ["android.hardware.gatekeeper@1.0::IGatekeeper/default"]
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The SPU's NVM segments, then the daemon that attaches the SPU, then the
+# strongbox key service that runs in it.
+[[service]]
+path = "/vendor/bin/sec_nvm"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+[[service]]
+path = "/vendor/bin/spdaemon"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "system"
+groups = ["system"]
+
+[[service]]
+path = "/vendor/bin/hw/android.hardware.keymaster@4.0-strongbox-service-qti"
+hardware = ["android.hardware.keymaster@4.0::IKeymasterDevice/strongbox"]
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The modem's own services, which the phone's init starts at late_start.
+[[service]]
+path = "/vendor/bin/pd-mapper"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root"]
+
+[[service]]
+path = "/vendor/bin/pm-service"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root"]
+
+[[service]]
+path = "/vendor/bin/mdm_helper"
+libraries = ["/vendor/lib64", "/vendor/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+user = "root"
+groups = ["root"]
+
+# WLAN: Samsung's own driver, built into the kernel, with the phone's AIDL
+# wpa_supplicant. Its configuration and its images both come from the vendor
+# partition: the configuration through the firmware loader, which the entry
+# below places where it looks, and the images through the link the services
+# above make in /lib/firmware.
+[wlan]
+# Built in, so nothing to load.
+modules = []
+# Nothing is written to the driver: the WLAN worker asks it to load itself,
+# and the phone's own cnss-daemon sends it the board data once the firmware
+# is up. The driver's fwpath parameter has a buffer too small for the path
+# the kernel already passes it in firmware_class.path, and con_mode is a
+# load-time parameter the driver refuses once it is running.
+writes = []
+firmware = [
+    { name = "wlan/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/WCNSS_qcom_cfg.ini" },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/tmp/libkt", "/system/lib64", "/system/lib", "/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/mnt/system/system/lib64/bootstrap"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connectivitycheck.gstatic.com/generate_204"
+
+# The baseband's own copy of the phone's identity, twice over as Samsung's
+# own recovery takes it, efs and sec_efs, and the modem's settings beside it
+# in modemst1, modemst2, fsg and fsc. devinfo is the block that names the
+# phone, and the camera's optics is the module's per-unit tuning, which no
+# image brings back once it is gone.
+#
+# prism and omr are the vendor's configuration as shipped -- the CSC, the
+# preload, the regional settings -- and keydata and keyrefuge the keys
+# Samsung's own layer keeps. prism is the largest by far, most of a
+# gigabyte against a few megabytes for the rest.
+#
+# persist and spu are deliberately not here. They hold the secure world's own
+# non-volatile storage -- the keymaster and gatekeeper state the screen lock
+# is bound to -- so restoring an older copy of either leaves the phone's PIN
+# unverifiable: the trustlet derives a different proof than the one the data
+# partition recorded. A backup of them is worth taking by hand, with a ring
+# of salt; restoring one is not a thing to do by accident.
+[backup]
+efs = ["efs", "sec_efs", "modemst1", "modemst2", "fsg", "fsc", "devinfo", "optics", "prism", "omr", "keydata", "keyrefuge"]
+data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/spu", "vendor/fingerprint"]
+
+# Where the phone's own programs keep logs and crash records in the data
+# partition.
+[wipe]
+logs = [
+    "/data/vendor/diag",
+    "/data/vendor/log",
+    "/data/vendor/ramdump",
+    "/data/vendor/ramdump_ssr",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wifi",
+    "/data/vendor/wlan_logs",
+    "/data/log",
+]
+
+# Where this phone's recovery images are published: the fork's releases on
+# GitHub, and the file in a release that this phone is written from.
+[update]
+repo = "iljasrb/skyward"
+asset = "skyward-r8q.img"
+
+# The charge limit the system keeps, so the recovery keeps to it too. The
+# switch is the battery's own; the LineageOS settings database holds the
+# limit, and the last one read is kept on metadata, which the recovery reads
+# before the data partition opens.
+[charging]
+switch = "/sys/class/power_supply/battery/charging_enabled"
+system = "/data/user_de/0/org.lineageos.lineagesettings/databases/lineagesettings.db"
+cache = "/metadata/skyward/charge-limit"
+
+# No [rom] here: the phone's system is LineageOS, whose update feed is not
+# the shape the ROM page reads, and this build installs packages rather than
+# switching slots.
+#
+# No [ksu] and no [[root]]: this branch builds without the root methods.
