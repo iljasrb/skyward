@@ -6,8 +6,7 @@
 # Skyward. That base is the stock recovery partition, which is the phone
 # maker's to hand out and so is not in this repository:
 #
-# The image carries the root methods, which give the Root page (marked
-# beta there); a build without it is the recovery as it has always been.
+# This build carries no root methods: no `--features roots`, no Root page.
 #
 #   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG]
 #
@@ -25,7 +24,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --stock) stock=$2; shift 2 ;;
         --out) out=$2; shift 2 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -44,7 +43,7 @@ export ANDROID_NDK_HOME=$ndk
 # compares; nothing at runtime parses a time.
 export SKYWARD_BUILD=${SKYWARD_BUILD:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
-cargo ndk -t arm64-v8a --platform 30 build --release --features roots -p skyward
+cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
 cargo build --release -p skyward-pack
 
 # The second system's first program runs before any library is there to

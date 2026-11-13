@@ -8,12 +8,12 @@ Rust, for the Motorola ThinkPhone (`bronco`), based on the fork's generic
 
 Works on Android 16 `W1TBS36H.1-63-2-9`: decrypt, WLAN, settings, backup and
 restore, installs from storage and `adb sideload`, fastbootd, recovery
-updates, haptics, MTP and adb. ROM updates are not offered on this branch.
+updates, haptics, MTP and adb. ROM updates are not offered on this branch, and
+this build carries no root methods.
 
 ## Fork changes
 
 - Payload/OTA tooling
-- Root boot image patching
 - Recovery updates from the fork's own releases
 - Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist

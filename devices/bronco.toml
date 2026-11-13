@@ -345,7 +345,6 @@ logs = [
 repo = "iljasrb/skyward"
 asset = "skyward-bronco.img"
 
-
 # The charge limit the system keeps, so the recovery keeps to it too: the
 # kernel switch that stops and starts charging, and the LineageOS settings
 # database whose `system` table holds `charging_control_enabled` and
@@ -357,29 +356,3 @@ system = "/data/user_de/0/org.lineageos.lineagesettings/databases/lineagesetting
 # The limit last read, kept where the recovery reads before the data
 # partition opens, so a start that never opens it still keeps to the limit.
 cache = "/metadata/skyward/charge-limit"
-
-# The kernel announces itself as `5.10.269-android13-0-g0e4b4e9fccd7`, but its
-# exported symbols' CRCs match android12-5.10 exactly (all 7,298 of them), not
-# android13-5.10's. Skyward would read the announced version and ask ksud for
-# the android13-5.10 module, which the kernel refuses with "disagrees about
-# version of symbol module_layout", leaving KernelSU "Not Installed". The
-# kernel's config sets that version string in
-# arch/arm64/configs/vendor/waipio_GKI.config; the module that loads is this
-# one.
-[ksu]
-kmi = "android12-5.10"
-
-# The phone's own kernel, offered on the root page beside APatch and the
-# KernelSU family. It is a complete boot image from the Shinobu releases:
-# the newest stable one is downloaded, checked against its SHA-256, and
-# written whole to the boot partitions. The kernel carries BakaSU, so its
-# manager is installed in Android rather than patched in here.
-[[root]]
-kind = "kernel"
-name = "Shinobu kernel"
-subtitle = "BakaSU + SUSFS"
-repo = "iljasrb/bronco-shinobu-kernel"
-asset = "shinobu-kernel-{version}.img"
-folder = "Shinobu"
-note = "The kernel carries BakaSU; its manager is kept with the run for Android to install after the phone starts."
-manager_name = "BakaSU"
