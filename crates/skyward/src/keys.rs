@@ -52,7 +52,13 @@ fn read(slot: Option<skyward_vab::Slot>) -> Result<Phone> {
     let mut partitions = Vec::new();
     for name in PARTITIONS {
         let named = skyward_vab::partition_name(name, slot);
-        let partition = mounted.iter().find(|m| m.partition == named).with_context(|| format!("{named} is not mounted"))?;
+        let Some(partition) = mounted.iter().find(|m| m.partition == named) else {
+            // A phone need not carry every partition the installed system
+            // may have; the programs on the ones it does carry are still
+            // read.
+            let _ = skyward_sys::kmsg(&format!("{named} is not mounted, so its programs are not read"));
+            continue;
+        };
         partitions.push(Partition::mounted(name, &partition.mount_point));
     }
     Phone::read(partitions, properties)

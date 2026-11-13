@@ -132,7 +132,15 @@ fn open(service: &KeyMint) -> Result<Opened> {
         // itself; a recovery kernel may not know one of them and refuses the
         // whole mount over it. The files read and write without them, so
         // keep only what every kernel knows.
-        let options: Vec<String> = entry.options.iter().filter(|o| matches!(o.as_str(), "noatime" | "nosuid" | "nodev")).cloned().collect();
+        // `inlinecrypt` stays: a phone whose storage hardware unwraps the
+        // key needs it, and without it every read of a file encrypted with
+        // such a key fails with EINVAL.
+        let options: Vec<String> = entry
+            .options
+            .iter()
+            .filter(|o| matches!(o.as_str(), "noatime" | "nosuid" | "nodev" | "inlinecrypt"))
+            .cloned()
+            .collect();
         mount::mount(&mapped, Path::new(MOUNT), &entry.filesystem, &options)?;
         Ok((checked, entry.filesystem.clone()))
     })();
