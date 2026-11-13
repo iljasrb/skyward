@@ -245,21 +245,19 @@ user = "root"
 groups = ["root"]
 
 # WLAN calibration and MAC: stock init starts it before the driver is
-# probed. The page comes up before the user can turn WLAN on, so it is
-# already running by then.
+# probed, and it sends the chip's firmware the board data it waits for
+# before it will come up. It has to be running before the driver asks the
+# chip for that firmware: a chip asked with nobody to answer gives up twenty
+# seconds later, and the driver recovers from that with state the chip's
+# driver will not probe through. It is held until the WLAN worker has made
+# the folders it keeps its socket in, which it does as the page comes up.
 [[service]]
-path = "/vendor/bin/cnss-daemon"
-libraries = ["/vendor/lib64", "/vendor/lib", "/mnt/system/system/lib64", "/mnt/system/system/lib", "/system/lib64", "/system/lib", "/mnt/system/system/lib64/bootstrap"]
-args = ["-n", "-l"]
+path = "/system/bin/sh"
+args = ["-c", "i=0; while [ ! -e /skyward/run/wlan-folders ] && [ $i -lt 18000 ]; do i=$((i+1)); sleep 0.1; done; LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/mnt/system/system/lib64:/mnt/system/system/lib:/system/lib64:/system/lib:/mnt/system/system/lib64/bootstrap exec /vendor/bin/cnss-daemon -n -l"]
 user = "system"
-# The names are the ones the vendor partition carries: inet, net_admin and
-# wifi are the platform's, and a recovery reads only the phone's own.
-groups = ["system"]
+groups = ["system", "inet", "net_admin", "wifi"]
 capabilities = ["NET_ADMIN"]
-# It exits at once while the WLAN driver is not loaded, and a recovery that
-# keeps starting it again only fills the kernel log; it is run once, as the
-# page comes up, and Skyward brings the WLAN up on its own.
-oneshot = true
+oneshot = false
 
 # The boot control, which says which slot the bootloader starts next and
 # switches it. It comes last: the recovery is usable without it.
