@@ -358,9 +358,11 @@ impl Shared {
     }
 
     /// The function went away before the control thread heard of it: give
-    /// it a moment to.
+    /// it a moment to. The wait is short because it is also how long an
+    /// idle endpoint is left before the transfer asks it again: a longer
+    /// one is paid for every block the computer sends.
     fn settle(&self) {
-        let _ = self.changed.wait_timeout(self.lock(), Duration::from_millis(10));
+        let _ = self.changed.wait_timeout(self.lock(), Duration::from_millis(1));
     }
 }
 
@@ -378,6 +380,28 @@ fn aborted(e: &io::Error) -> bool {
     e.raw_os_error() == Some(libc::ESHUTDOWN)
 }
 
+impl Endpoints {
+    /// Wait until `file` may be read or written, or `timeout` passes. The
+    /// endpoint is non-blocking, so this is how an idle one is waited on
+    /// without paying a fixed sleep for every block the computer sends.
+    fn wait(&self, file: &File, events: libc::c_short, timeout: Duration) -> io::Result<()> {
+        let mut waiting = libc::pollfd { fd: file.as_raw_fd(), events, revents: 0 };
+        let ready = unsafe { libc::poll(&mut waiting, 1, timeout.as_millis() as libc::c_int) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        if ready > 0 && waiting.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            // The function may be going away; let the loop ask `ready`.
+            self.shared.settle();
+        }
+        Ok(())
+    }
+}
+
 impl Link for Endpoints {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Nothing to read is not the end of the stream: the port reports the
@@ -388,9 +412,9 @@ impl Link for Endpoints {
             self.shared.ready()?;
             match (&self.out).read(buf) {
                 Ok(0) if silent.elapsed() >= SILENT_MAX => return Ok(0),
-                Ok(0) => self.shared.settle(),
+                Ok(0) => self.wait(&self.out, libc::POLLIN, Duration::from_millis(10))?,
                 Ok(n) => return Ok(n),
-                Err(e) if e.kind() == ErrorKind::WouldBlock => self.shared.settle(),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => self.wait(&self.out, libc::POLLIN, Duration::from_millis(10))?,
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) if aborted(&e) => return Err(io::Error::from(ErrorKind::ConnectionAborted)),
                 Err(e) => return Err(e),
@@ -403,9 +427,9 @@ impl Link for Endpoints {
             self.shared.ready()?;
             match (&self.inn).write(data) {
                 // The same as a full endpoint: no room yet, not a failure.
-                Ok(0) => self.shared.settle(),
+                Ok(0) => self.wait(&self.inn, libc::POLLOUT, Duration::from_millis(10))?,
                 Ok(n) => data = &data[n..],
-                Err(e) if e.kind() == ErrorKind::WouldBlock => self.shared.settle(),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => self.wait(&self.inn, libc::POLLOUT, Duration::from_millis(10))?,
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) if aborted(&e) => return Err(io::Error::from(ErrorKind::ConnectionAborted)),
                 Err(e) => return Err(e),

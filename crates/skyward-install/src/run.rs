@@ -28,7 +28,6 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -53,10 +52,6 @@ const BINARY: &str = "/skyward/run/update-binary";
 const SCRIPT_MAX: u64 = 16 << 20;
 const API_VERSION: &str = "3";
 const RETRY: &str = "retry";
-
-/// How long the engine's output is still read after it has exited, so that
-/// a line it wrote just before going is not lost.
-const ENGINE_LINGER: Duration = Duration::from_secs(1);
 
 /// Scripts written for other recoveries start with the shell they find
 /// here, and look for programs where those recoveries keep them.
@@ -780,20 +775,17 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     let stderr = child.stderr.take().expect("stderr is piped");
 
     let (tx, rx) = mpsc::channel();
-    let stop = Arc::new(AtomicBool::new(false));
     let status_tx = tx.clone();
-    let status_stop = stop.clone();
     let status = thread::spawn(move || {
-        lines_until(File::from(status_read), &status_stop, |line| {
+        lines(File::from(status_read), |line| {
             if let Some(s) = ota::status(line) {
                 let _ = status_tx.send(Line::Status(s));
             }
             Ok(())
         })
     });
-    let logged_stop = stop.clone();
     let logged = thread::spawn(move || {
-        lines_until(stderr, &logged_stop, |line| {
+        lines(stderr, |line| {
             if let Some(l) = ota::log(line) {
                 let _ = tx.send(Line::Log(l));
             }
@@ -806,18 +798,7 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     ctx.send(Event::Progress(stage.clone()));
     let mut told = Instant::now();
     let (mut partitions, mut verifying, mut finishing, mut error) = (0, None, false, None);
-    // The engine's exit is looked at separately from its pipes closing:
-    // update_engine starts helpers of its own, such as snapuserd serving the
-    // snapshots of the slot it writes, and they inherit its pipes. A helper
-    // that outlives the engine keeps both pipes open, so waiting for them to
-    // close would leave the install spinning for ever. The helper is not
-    // ended: it may be serving live snapshots.
-    let mut ended = None;
     loop {
-        if ended.is_none()
-            && let Some(status) = child.try_wait().context("check whether update_engine has exited")? {
-                ended = Some((status, Instant::now()));
-            }
         match rx.recv_timeout(PROGRESS_EVERY) {
             Ok(Line::Status(Status::Step(step))) => finishing = step == 2,
             Ok(Line::Status(Status::Error(code))) => error = Some(code),
@@ -825,11 +806,8 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             Ok(Line::Log(Log::Overwriting)) => ctx.send(Event::Overwriting),
             Ok(Line::Log(Log::Hashing { index, partition })) => verifying = Some((index, partition)),
             Err(RecvTimeoutError::Timeout) => {}
-            // Both outputs closed. That is not proof that the engine has
-            // ended: it may have handed them on and kept working.
-            Err(RecvTimeoutError::Disconnected) => {
-                ended = Some((child.wait().context("wait for update_engine")?, Instant::now()));
-            }
+            // Both outputs closed: the program has ended.
+            Err(RecvTimeoutError::Disconnected) => break,
         }
         let now = if finishing {
             Stage::Finishing
@@ -844,16 +822,8 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             ctx.send(Event::Progress(stage.clone()));
             told = Instant::now();
         }
-        if let Some((_, at)) = ended
-            && at.elapsed() >= ENGINE_LINGER {
-                break;
-            }
     }
-    stop.store(true, Ordering::Relaxed);
-    let ended = match ended {
-        Some((status, _)) => status,
-        None => child.wait().context("wait for update_engine")?,
-    };
+    let ended = child.wait().context("wait for update_engine")?;
     status.join().expect("the status reader does not panic").context("read update_engine's status")?;
     logged.join().expect("the log reader does not panic").context("read update_engine's log")?;
     match (ended.code(), error) {
@@ -875,50 +845,6 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
         }
         each(String::from_utf8_lossy(&line).trim_end_matches(['\n', '\r']))?;
     }
-}
-
-/// [`lines`], but reading with a deadline so that it can always be let go,
-/// including the line it is holding without a newline: a pipe kept open by a
-/// helper that outlives the engine would otherwise strand the thread for as
-/// long as the phone runs.
-fn lines_until(mut from: impl Read + AsRawFd, stop: &AtomicBool, mut each: impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
-    let mut pending = Vec::new();
-    let mut buf = [0; 4096];
-    while !stop.load(Ordering::Relaxed) {
-        let mut waiting = libc::pollfd { fd: from.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        let ready = unsafe { libc::poll(&mut waiting, 1, 100) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if ready == 0 {
-            continue;
-        }
-        let read = match from.read(&mut buf) {
-            Ok(read) => read,
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if read == 0 {
-            break;
-        }
-        pending.extend_from_slice(&buf[..read]);
-        let mut start = 0;
-        for end in 0..pending.len() {
-            if pending[end] == b'\n' {
-                each(String::from_utf8_lossy(&pending[start..end]).trim_end_matches('\r'))?;
-                start = end + 1;
-            }
-        }
-        pending.drain(..start);
-    }
-    if !pending.is_empty() {
-        each(String::from_utf8_lossy(&pending).trim_end_matches('\r'))?;
-    }
-    Ok(())
 }
 
 fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
