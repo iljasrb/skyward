@@ -1,0 +1,65 @@
+name: Release
+
+# A tag names a version of the recovery for this phone: the image is built from
+# it and published, and the update page of every phone running an older build
+# sees it. The stock recovery the image rides on is not in this repository; it
+# is taken from the mirror the ROM is published on, checked against the sums
+# published beside it.
+on:
+  push:
+    tags: ["bronco-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  image:
+    name: Build and publish the recovery image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+
+      - name: Take the recovery image the ROM publishes
+        env:
+          ROM: https://rom.flac.moe/bronco/latest
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o SHA256SUMS "$ROM/SHA256SUMS"
+          # The separate recovery.img is not the file the sums name on every
+          # mirror update; the full partition inside additional_images is.
+          zip=$(grep -oE 'additional_images-[^ ]+\.zip' SHA256SUMS | head -n 1)
+          curl -fsSL --retry 3 -o "$zip" "$ROM/$zip"
+          grep -F "  $zip" SHA256SUMS | sha256sum -c -
+          unzip -q -o "$zip" recovery.img -d .
+          grep -E '  recovery\.img$' SHA256SUMS | sha256sum -c -
+          mv recovery.img stock-recovery.img
+
+      - name: Build
+        # Stamped with the tag it is built from, which is what the update page
+        # of a phone on that build compares against the newest release.
+        env:
+          SKYWARD_BUILD: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: scripts/build-bronco.sh --stock "$RUNNER_TEMP/stock-recovery.img"
+
+      - name: Publish the image and its sums
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp out/skyward-bronco.img.sha256 SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" \
+            --notes "Skyward for the ThinkPhone (bronco), built from ${GITHUB_SHA:0:12}. This build carries no root methods and offers no ROM updates."
+          # A release left as a draft is published here, so the phone's update
+          # page, which reads published releases, sees the image.
+          gh release edit "$TAG" --draft=false
+          gh release upload "$TAG" out/skyward-bronco.img SHA256SUMS --clobber

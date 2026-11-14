@@ -1,23 +1,24 @@
-![Skyward Recovery](assets/hero.jpg)
+# Skyward for the ThinkPhone (bronco)
 
-# Skyward
+A fork of [Skyward](https://github.com/kirklin/skyward), a recovery written in
+Rust, for the Motorola ThinkPhone (`bronco`), based on the fork's generic
+`main` branch. The pages are English; their texts live in `locales/en.json`.
 
-Skyward is a recovery written in Rust, from scratch. This is a fork's generic
-branch: it carries the code, not one phone's files. Device branches add a
-`devices/<codename>.toml`, a build script and a release workflow; the ThinkPhone
-(`bronco`) branch is `device/bronco`, and the Galaxy S20 FE 5G (`r8q`) branch is `device/r8q`.
+## Status
 
+Works on Android 16 `W1TBS36H.1-63-2-9`: decrypt, WLAN, settings, backup and
+restore, installs from storage and `adb sideload`, fastbootd, recovery
+updates, haptics, MTP and adb. ROM updates are not offered on this branch, and
+this build carries no root methods.
 
 ## Fork changes
 
 - Payload/OTA tooling
-- Root boot image patching, behind the `roots` feature and off for now
 - Recovery updates from the fork's own releases
 - Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
 - Safety fixes
-- Separated locales, with `scripts/locales.py` to take a merge of upstream's
-  three-language texts into `locales/en.json` (see `locales/README.md`)
+- Separated locales
 - An older build or security patch is agreed to by a swipe, not refused
 - Payload data is checked before it is written, and an install waits on
   update_engine itself rather than on helpers that keep its pipes open
@@ -28,7 +29,6 @@ branch: it carries the code, not one phone's files. Device branches add a
   longer stops the recovery
 - Pages a phone cannot use are left out: the ROM update page without a feed,
   the charge limit without its switch, and A/B updates without slots
-
 
 ## Features
 
@@ -51,31 +51,22 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
 - Light and dark themes; English
 
-## Building
+## Build
 
-Skyward builds with the version of Rust that `rust-toolchain.toml` names, with its
-`aarch64-linux-android` target, the Android NDK r29 and
-[cargo-ndk](https://github.com/bbqsrc/cargo-ndk).
+The image rides on the phone's stock recovery ramdisk, which is not in this
+repository. Build the recovery service and the packer, then pack the image on
+that stock recovery:
 
 ```sh
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 
-cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
-cargo build --release -p skyward-pack
+scripts/build-bronco.sh --stock /path/to/stock-recovery.img
 ```
 
-The second system's first program runs before any library is there to load, so it
-is built as a static program:
-
-```sh
-RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init --target-dir target/system-init
-```
-
-The service is built for the phone and the packer for the computer. Packing an
-image needs the phone's stock recovery and a device configuration; a device
-branch supplies both. See `scripts/build-bronco.sh` on the `device/bronco` branch and
-`scripts/build-r8q.sh` on the `device/r8q` branch for examples.
+The script builds the recovery service, the packer and the second system's
+first program, which is linked statically, and packs them onto the stock
+recovery. The output is `out/skyward-bronco.img`.
 
 Tests and lints run on the computer; what runs only on the phone is linted for
 it:
@@ -86,20 +77,25 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo ndk -t arm64-v8a --platform 30 clippy --workspace --all-targets -- -D warnings
 ```
 
-The tests whose names start with `on_the_phone` make filesystems, mount them and
-set encryption keys, which only a phone does. With a phone in Skyward attached over
-adb, its data partition open, `cargo ndk` pushes each test program to the phone and
-runs it there, one test at a time:
+## Flash
 
 ```sh
-cargo ndk -t arm64-v8a --platform 30 test -p skyward -p skyward-block -p skyward-files -p skyward-mtp on_the_phone -- --test-threads=1
+adb reboot bootloader
+fastboot flash recovery_<slot> out/skyward-bronco.img
+fastboot reboot recovery
 ```
 
-## Languages
+Use `recovery_a` or `recovery_b` for the slot the phone runs from.
 
-The pages' texts live in `locales/en.json`, one flat key for each text, in a
-format Crowdin imports and exports. See `locales/README.md`.
+## Notes
 
-## License
+- `persist` carries the secure world's state the screen lock is bound to.
+  Restoring an old copy can make the PIN unverifiable.
+- Releases are published from `bronco-*` tags by
+  `.github/workflows/release.yml`.
 
-[GPL-3.0-or-later](LICENSE). Skyward is KirKlin's.
+## Credit
+
+Skyward is KirKlin's, GPL-3.0-or-later. Device facts come from the AERA port;
+some fixes were ported from [huime180/skyward](https://github.com/huime180/skyward)
+and [Rinrroy/skyward](https://github.com/Rinrroy/skyward).

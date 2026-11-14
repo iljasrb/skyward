@@ -1007,4 +1007,19 @@ mod tests {
         assert!(with("{ name = \"mac.bin\", partition = \"persist\", path = \"/kiwi/mac.bin\" }").is_err());
         assert!(with("{ name = \"mac.bin\", partition = \"by-name/persist\", path = \"mac.bin\" }").is_err());
     }
+    #[test]
+    fn the_thinkphone_is_an_ab_phone_with_no_rom_feed_and_no_root_methods() {
+        let cfg = DeviceConfig::parse(include_str!("../../../devices/bronco.toml")).unwrap();
+        assert_eq!((cfg.device.codename.as_str(), cfg.device.ab), ("bronco", true));
+        assert_eq!((cfg.display.width, cfg.display.height, cfg.display.density), (1080, 2400, 400));
+        assert!(cfg.sdcard.is_none(), "it has no card tray");
+        assert_eq!(cfg.firmware.as_ref().map(|f| f.partition.as_str()), Some("modem"));
+        assert!(cfg.rom.is_none(), "this branch offers no ROM updates");
+        assert!(cfg.update.is_some(), "the fork publishes its images");
+        assert!(cfg.charging.is_some());
+        assert_eq!(cfg.ksu.kmi, None, "this build carries no root methods");
+        assert!(cfg.root_methods.is_empty(), "this build carries no root methods");
+        assert!(cfg.services.iter().any(|s| s.path == "/vendor/bin/qseecomd"), "the fork's tuned key chain stays");
+    }
+
 }
