@@ -3424,11 +3424,10 @@ impl App {
         if let Some(kept) = kept {
             kept.apply(&mut self.state);
         }
-        if !self.state.language_chosen {
-            if let Some(lang) = named.or(kept.and_then(Settings::spoken)) {
+        if !self.state.language_chosen
+            && let Some(lang) = named.or(kept.and_then(Settings::spoken)) {
                 self.state.lang = lang;
             }
-        }
         self.refresh();
     }
 
@@ -3442,18 +3441,16 @@ impl App {
         // An entry of the file manager held long enough, under a finger or
         // the power key, opens what can be done with it, a folder as much as
         // a file, with a tap of the motor.
-        if let Drag::Press { action: Some(Action::OpenEntry(i)), at, .. } = self.drag {
-            if now >= at + LONG_PRESS_MS {
+        if let Drag::Press { action: Some(Action::OpenEntry(i)), at, .. } = self.drag
+            && now >= at + LONG_PRESS_MS {
                 self.drag = Drag::Held;
                 fx.extend(self.held_entry(i));
             }
-        }
-        if let Some((key, Press::Power { spot: Spot { stop: Stop::Hit(Action::OpenEntry(i)), .. }, at })) = self.button {
-            if now >= at + LONG_PRESS_MS {
+        if let Some((key, Press::Power { spot: Spot { stop: Stop::Hit(Action::OpenEntry(i)), .. }, at })) = self.button
+            && now >= at + LONG_PRESS_MS {
                 self.button = Some((key, Press::Spent));
                 fx.extend(self.held_entry(i));
             }
-        }
         let active = *self.active.get_or_insert(now);
         if let (true, Some(after)) = (self.display_on, SCREEN_OFF[self.state.screen_off]) {
             let idle = now.saturating_sub(active);
@@ -3558,12 +3555,11 @@ impl App {
         }
         // A volume key held moves the light on and on, once the page it
         // last moved on has been drawn.
-        if let Some((key, Press::Volume { down, next })) = self.button {
-            if now >= next && self.frame.is_some() {
+        if let Some((key, Press::Volume { down, next })) = self.button
+            && now >= next && self.frame.is_some() {
                 self.button = Some((key, Press::Volume { down, next: now + REPEAT_MS }));
                 fx.extend(self.volume(down, now));
             }
-        }
         if let Some((_, _, s)) = self.cue {
             self.dirty = true;
             if s.at(now).1 {
@@ -4520,11 +4516,10 @@ impl App {
         let entry = self.state.file.as_mut().expect("the permissions page shows an entry");
         entry.mode = (entry.mode & !0o7777) | bits;
         let name = entry.name.clone();
-        if let Ok(entries) = &mut self.state.files.entries {
-            if let Some(listed) = entries.iter_mut().find(|e| e.name == name) {
+        if let Ok(entries) = &mut self.state.files.entries
+            && let Some(listed) = entries.iter_mut().find(|e| e.name == name) {
                 listed.mode = (listed.mode & !0o7777) | bits;
             }
-        }
         if bits != wanted {
             self.say(S_PERMISSIONS_CANT_BE_CHANGED_HERE, now);
         }
@@ -4867,13 +4862,11 @@ impl App {
         }
         // The entry the file page describes stands as the folder it is in
         // lists it again, as after its file is saved.
-        if screen == Screen::Files && folder == self.state.files.path {
-            if let (Some(file), Ok(entries)) = (self.state.file.as_mut(), &files) {
-                if let Some(listed) = entries.iter().find(|e| e.name == file.name) {
+        if screen == Screen::Files && folder == self.state.files.path
+            && let (Some(file), Ok(entries)) = (self.state.file.as_mut(), &files)
+                && let Some(listed) = entries.iter().find(|e| e.name == file.name) {
                     *file = listed.clone();
                 }
-            }
-        }
         let shown = self.state.folder_mut(screen);
         shown.path = folder;
         shown.entries = files;
@@ -5204,11 +5197,10 @@ impl App {
         // The light goes over its control, in the part of the screen the
         // control is drawn in, under whatever is laid over that part.
         let shine = |out: &mut Canvas, part: Group| {
-            if let Some((g, r, radius, tint)) = view.light {
-                if g == part {
+            if let Some((g, r, radius, tint)) = view.light
+                && g == part {
                     out.fill_round_rect(r.x, r.y, r.w, r.h, radius, tint);
                 }
-            }
         };
         let frame = self.frame.as_ref().expect("a page is drawn from its frame");
         let (_, big, small) = self.titles.as_mut().expect("a page's titles are drawn with it");
@@ -5294,15 +5286,14 @@ impl App {
         }
         // The search page's round button and the home page's search bar
         // darken at once under a finger.
-        if let Some(a) = pressing.filter(|a| matches!(a, Action::CloseSearch | Action::Open(Screen::Search))) {
-            if let Some(r) = frame.hits.iter().find(|h| h.action == a).map(|h| h.rect) {
+        if let Some(a) = pressing.filter(|a| matches!(a, Action::CloseSearch | Action::Open(Screen::Search)))
+            && let Some(r) = frame.hits.iter().find(|h| h.action == a).map(|h| h.rect) {
                 match frame.shown(r, offset) {
                     Some(r) if a == Action::CloseSearch => widgets::cancel_held(out, t, r),
                     Some(r) => widgets::search_bar_held(out, t, r),
                     None => {}
                 }
             }
-        }
         if let Some(caret) = frame.caret.as_ref().filter(|_| view.caret) {
             out.lay(&caret.art, caret.x, caret.y - offset as i32, 1.0);
         }
@@ -5967,12 +5958,11 @@ impl App {
             Screen::Update => {
                 let online = self.state.online();
                 let mut asks = Vec::new();
-                if let Some(rom) = &mut self.state.rom {
-                    if matches!(rom.check, RomCheck::Idle | RomCheck::Failed(_)) && online {
+                if let Some(rom) = &mut self.state.rom
+                    && matches!(rom.check, RomCheck::Idle | RomCheck::Failed(_)) && online {
                         rom.check = RomCheck::Asking;
                         asks.push(Effect::CheckRom);
                     }
-                }
                 asks
             }
             // The system update a package left is read where packages are
@@ -6146,12 +6136,11 @@ impl App {
             }
             Action::StopExtract => return vec![Effect::StopExtract],
             Action::FlashPartition(k) => {
-                if let Install::Choosing(choice) = &mut self.state.install {
-                    if k < choice.partitions.len() {
+                if let Install::Choosing(choice) = &mut self.state.install
+                    && k < choice.partitions.len() {
                         choice.partition = k;
                         self.refresh();
                     }
-                }
             }
             Action::FlashSlots(pick) => {
                 if let Install::Choosing(choice) = &mut self.state.install {
@@ -6243,13 +6232,12 @@ impl App {
                 return vec![Effect::Paste { op: clip.op, path: clip.path, into, clash: Some(choice) }];
             }
             Action::StopJob => {
-                if let Some(job) = self.state.job.as_mut() {
-                    if job.outcome.is_none() && !job.stopping {
+                if let Some(job) = self.state.job.as_mut()
+                    && job.outcome.is_none() && !job.stopping {
                         job.stopping = true;
                         self.refresh();
                         return vec![Effect::StopJob];
                     }
-                }
             }
             #[cfg(feature = "roots")]
             Action::Apatch(action) => {
@@ -6330,13 +6318,12 @@ impl App {
                 self.refresh();
             }
             Action::StopRelabel => {
-                if let Some(job) = self.state.relabel.as_mut() {
-                    if job.outcome.is_none() && !job.stopping {
+                if let Some(job) = self.state.relabel.as_mut()
+                    && job.outcome.is_none() && !job.stopping {
                         job.stopping = true;
                         self.refresh();
                         return vec![Effect::StopRelabel];
                     }
-                }
             }
             Action::OpenFilesystem(k) => {
                 let Some(rows) = self.state.filesystems.as_ref().and_then(|rows| rows.as_ref().ok()) else { return Vec::new() };
@@ -6389,13 +6376,12 @@ impl App {
                 self.refresh();
             }
             Action::StopBackup => {
-                if let Some(job) = self.state.backup_job.as_mut() {
-                    if job.outcome.is_none() && !job.stopping {
+                if let Some(job) = self.state.backup_job.as_mut()
+                    && job.outcome.is_none() && !job.stopping {
                         job.stopping = true;
                         self.refresh();
                         return vec![Effect::StopBackup];
                     }
-                }
             }
             Action::LogPart(k) => {
                 self.state.logs[k] = !self.state.logs[k];
@@ -6650,13 +6636,12 @@ impl App {
             // Only the download stops: writing, once begun, goes on to its
             // end.
             Action::StopSkywardUpdate => {
-                if let Some(job) = self.state.skyward_job.as_mut() {
-                    if job.outcome.is_none() && !job.stopping && !matches!(job.stage, Some(SkywardStage::Write { .. })) {
+                if let Some(job) = self.state.skyward_job.as_mut()
+                    && job.outcome.is_none() && !job.stopping && !matches!(job.stage, Some(SkywardStage::Write { .. })) {
                         job.stopping = true;
                         self.refresh();
                         return vec![Effect::StopSkywardUpdate];
                     }
-                }
             }
             // Asking takes a network, which the WLAN page joins.
             Action::CheckRom => {
@@ -6702,13 +6687,12 @@ impl App {
             }
             Action::StopRomDownload => {
                 let Some(rom) = &mut self.state.rom else { return Vec::new() };
-                if let Some(job) = rom.download.as_mut() {
-                    if job.outcome.is_none() && !job.stopping {
+                if let Some(job) = rom.download.as_mut()
+                    && job.outcome.is_none() && !job.stopping {
                         job.stopping = true;
                         self.refresh();
                         return vec![Effect::StopRomDownload];
                     }
-                }
             }
             Action::InstallRom => {
                 let Some(release) = self.state.rom_newest().cloned() else { return Vec::new() };
@@ -7464,11 +7448,10 @@ impl App {
         // Any button stops a gliding page, and brings a sliding one to rest.
         self.fling = None;
         self.end_turn();
-        if let Some((first, at)) = self.chord {
-            if matches!((first, key), (Key::Power, Key::VolumeDown) | (Key::VolumeDown, Key::Power)) && now < at + CHORD_MS {
+        if let Some((first, at)) = self.chord
+            && matches!((first, key), (Key::Power, Key::VolumeDown) | (Key::VolumeDown, Key::Power)) && now < at + CHORD_MS {
                 return self.screenshot(key, now);
             }
-        }
         let mut fx = self.let_chord_go(now);
         if !self.display_on {
             // The power key lights the dark panel, and does only that, as on
@@ -7811,14 +7794,13 @@ impl App {
                 }
             }
             Confirm::SwitchSystem => {
-                if let (Some(Ok(systems)), Some(pick)) = (&self.state.systems, self.state.system_pick) {
-                    if pick != starting(systems) {
+                if let (Some(Ok(systems)), Some(pick)) = (&self.state.systems, self.state.system_pick)
+                    && pick != starting(systems) {
                         fx.push(Effect::SwitchSystem(pick));
                         self.state.systems_work = Some(SystemsWork::Switching(pick));
                         self.state.system_pick = None;
                         self.refresh();
                     }
-                }
             }
             Confirm::RemoveSystem => {
                 fx.push(Effect::RemoveSystem);
@@ -8447,18 +8429,16 @@ mod tests {
             let (x, y) = h.rect.centre();
             return (x, y - scroll);
         }
-        if let Some(p) = &fr.pinned {
-            if let Some(h) = p.hits.iter().find(|h| h.action == action) {
+        if let Some(p) = &fr.pinned
+            && let Some(h) = p.hits.iter().find(|h| h.action == action) {
                 let (x, y) = h.rect.centre();
                 return (x, y + pinned_top(&t, p, scroll));
             }
-        }
-        if let Some(d) = &fr.dock {
-            if let Some(h) = d.hits.iter().find(|h| h.action == action) {
+        if let Some(d) = &fr.dock
+            && let Some(h) = d.hits.iter().find(|h| h.action == action) {
                 let (x, y) = h.rect.centre();
                 return (x, y + H as f32 - d.canvas.h as f32);
             }
-        }
         let rows = fr.rows.as_ref().expect("control on the page");
         let answer = rows.action.expect("control on the page");
         let k = (0..rows.count()).find(|&k| answer(k) == action).expect("control on the page");
@@ -10884,6 +10864,7 @@ mod tests {
             other: Some(skyward_systems::Other { id: "ubuntu".into(), name: "Ubuntu Touch".into(), version: "24.04".into(), size: 16 << 30 }),
             other_starts: false,
             changed: false,
+            held: skyward_systems::Held::Recorded,
         }
     }
 

@@ -6,7 +6,7 @@ use anyhow::Result;
 use skyward_binder::driver::Binder;
 use skyward_crypto::data::{self, Closed, Opening};
 use skyward_crypto::keymint::KeyMint;
-use skyward_sys::worker;
+use skyward_sys::worker::Worker;
 
 pub enum Job {
     /// Open the partition as far as it opens with nothing a user knows.
@@ -22,23 +22,25 @@ pub enum Ended {
     Unlocked(Result<Vec<Closed>, String>),
 }
 
+/// A job done on a thread of its own, which the screen lets go once the
+/// job has ended.
 pub struct Decryptor {
-    pub worker: worker::Worker<Ended>,
+    pub worker: Worker<Ended>,
 }
 
 impl Decryptor {
     pub fn start(job: Job) -> Result<Decryptor> {
-        let worker = worker::Worker::start("decrypt", "the decrypting thread", move |tell| {
-            let ended = match job {
+        let worker = Worker::start("decrypt", move |tell| {
+            tell.tell(match job {
                 Job::Open => Ended::Opened(with_key_service(data::open_without_credential)),
                 Job::Unlock { closed, user, credential } => {
                     Ended::Unlocked(with_key_service(|service| data::unlock(service, &closed, user, &credential)))
                 }
-            };
-            tell.send(ended);
+            });
         })?;
         Ok(Decryptor { worker })
     }
+
 }
 
 /// Do `work` with the phone's key service, reached afresh for it, and say

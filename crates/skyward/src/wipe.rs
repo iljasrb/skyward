@@ -6,7 +6,7 @@ use skyward_block::fstab::{self, Entry};
 use skyward_block::{erase, mount};
 use skyward_crypto::data::{self, Opening};
 use skyward_sys::bcb;
-use skyward_sys::worker;
+use skyward_sys::worker::Worker;
 use skyward_vab::Hold;
 use std::ffi::CString;
 use std::fs;
@@ -766,17 +766,19 @@ pub enum Event {
 /// discarding a whole data partition can take minutes, and so can deleting
 /// all a user keeps.
 pub struct Eraser {
-    pub worker: worker::Worker<Event>,
+    pub worker: Worker<Event>,
 }
 
 impl Eraser {
     /// Run `work` on its thread; what it tells, and how it ends, come back
     /// as events.
     pub fn start(work: impl FnOnce(&mut dyn FnMut(Event)) -> Result<(), Stop> + Send + 'static) -> Result<Eraser> {
-        let worker = worker::Worker::start("eraser", "the eraser", move |tell| {
-            let mut say = |event: Event| tell.send(event);
-            let ended = work(&mut say);
-            say(Event::Ended(ended));
+        let worker = Worker::start("eraser", move |teller| {
+            let mut tell = |event: Event| {
+                teller.tell(event);
+            };
+            let ended = work(&mut tell);
+            tell(Event::Ended(ended));
         })?;
         Ok(Eraser { worker })
     }
@@ -785,6 +787,8 @@ impl Eraser {
     pub fn stopped(stop: Stop) -> Result<Eraser> {
         Eraser::start(move |_| Err(stop))
     }
+
+
 }
 
 /// How erasing stopped, said for the kernel log.
@@ -804,12 +808,11 @@ mod tests {
     use super::*;
     use skyward_crypto::fscrypt::{self, NAME_BYTES};
 
-    /// A folder for a test, in the temporary folder. On the phone that is
-    /// the folder the users' shared storage is in, /data/media: on the data
-    /// partition, and encrypted under no key of its own, so a folder in it
-    /// takes a key the way each user's own folder there does.
+    /// A folder for a test, in the folder the users' shared storage is in:
+    /// on the data partition, and encrypted under no key of its own, so a
+    /// folder in it takes a key the way each user's own folder there does.
     fn scratch(test: &str) -> PathBuf {
-        let at = std::env::temp_dir().join(format!("skyward-wipe-{test}-{}", std::process::id()));
+        let at = Path::new(data::SHARED_STORAGE).join(format!("skyward-wipe-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&at);
         fs::create_dir_all(&at).unwrap();
         at

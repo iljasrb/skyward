@@ -50,15 +50,15 @@ pub struct Worker {
 impl Worker {
     /// Start a run of `task` on a thread of its own.
     pub fn start(task: Task, servers: Servers) -> Result<Worker> {
-        let worker = worker::Worker::start("kernel", "the kernel worker", move |tell| {
-            let mut told = |stage: Stage| tell.send(Told::Stage(stage));
+        let worker = worker::Worker::start("kernel", move |tell| {
+            let mut told = |stage: Stage| tell.tell(Told::Stage(stage));
             let outcome = run(task, servers, &mut told);
             let _ = skyward_sys::kmsg(match &outcome {
                 Outcome::Installed(_) => "kernel: the boot partitions are written",
                 Outcome::Refused(_) => "kernel: nothing was written",
                 Outcome::Failed(_) => "kernel: the run did not finish",
             });
-            tell.send(Told::Ended(outcome));
+            tell.tell(Told::Ended(outcome));
         })?;
         Ok(Worker { worker })
     }
@@ -82,12 +82,12 @@ pub struct Checker {
 
 impl Checker {
     pub fn start(plugin: Plugin, servers: Servers) -> Result<Checker> {
-        let worker = worker::Worker::start("kernel-release", "the kernel release checker", move |tell| {
+        let worker = worker::Worker::start("kernel-release", move |tell| {
             let checked = details(&plugin, servers);
             if let Err(e) = &checked {
                 let _ = skyward_sys::kmsg(&format!("kernel release check failed: {e}"));
             }
-            tell.send(Checked::Done(checked));
+            tell.tell(Checked::Done(checked));
         })?;
         Ok(Checker { worker })
     }

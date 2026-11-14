@@ -190,11 +190,10 @@ impl<'a> Run<'a> {
             return Err(Stop::Why(anyhow::anyhow!("the manager's APK, {}, is not there", apk.display())));
         }
         let sha256 = hash_file(apk)?;
-        if let Some(expected) = &self.options.apk_sha256 {
-            if !sha256.eq_ignore_ascii_case(expected) {
+        if let Some(expected) = &self.options.apk_sha256
+            && !sha256.eq_ignore_ascii_case(expected) {
                 return Err(Stop::Refused(Refusal::Damaged));
             }
-        }
         self.kmi = self.options.kmi.clone().or_else(kmi);
         let slots = crate::slots(&self.options.slots).map_err(|_| Stop::Refused(Refusal::NoSlot))?;
         let mut need = MARGIN + fs::metadata(apk).map(|m| m.len()).unwrap_or(0);

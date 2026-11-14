@@ -7,13 +7,11 @@ use skyward_backup::store::{self, Reader, Stored, Writer};
 use skyward_backup::{Item, Manifest, Part, FORMAT};
 use skyward_block::{mount, BY_NAME};
 use skyward_files::{Cancelled, Ownership};
-use skyward_sys::worker;
 use skyward_vab::{Slot, SnapshotState};
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -183,7 +181,7 @@ pub enum End {
 }
 
 pub struct Worker {
-    pub worker: worker::Worker<Event>,
+    pub worker: skyward_sys::worker::Worker<Event>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -191,11 +189,13 @@ impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let worker = worker::Worker::start("backup", "the backup worker", move |tell| {
-            let say = |event: Event| tell.send(event);
+        let worker = skyward_sys::worker::Worker::start("backup", move |teller| {
+            let tell = |event: Event| {
+                teller.tell(event);
+            };
             let ended = match task {
-                Task::Backup(t) => backup(t, &say, &stop).map(End::Saved),
-                Task::Restore(t) => restore(t, &say, &stop).map(|unmade| End::Restored { unmade }),
+                Task::Backup(t) => backup(t, &tell, &stop).map(End::Saved),
+                Task::Restore(t) => restore(t, &tell, &stop).map(|unmade| End::Restored { unmade }),
             };
             let end = match ended {
                 Ok(end) => end,
@@ -213,10 +213,11 @@ impl Worker {
                 End::Failed(why) => format!("backup failed: {why}"),
             };
             skyward_sys::kmsg(&said).expect("the kernel log takes a line");
-            say(Event::Ended(end));
+            tell(Event::Ended(end));
         })?;
         Ok(Worker { worker, cancel })
     }
+
 
     /// Ask the work to stop; it does between two chunks, and a restore
     /// only while nothing is written yet.
@@ -298,18 +299,13 @@ fn copy(from: &mut impl Read, to: &mut impl Write, len: u64, cancel: &AtomicBool
 /// with, in hex.
 fn data_key() -> Result<String> {
     let bytes = fs::read(DATA_KEY).with_context(|| format!("read {DATA_KEY}"))?;
-    Ok(skyward_files::hex(&bytes))
+    Ok(hex::encode(bytes))
 }
 
 /// The bytes free where `path` is, or would be made.
 fn free_bytes(path: &Path) -> Result<u64> {
     let there = path.ancestors().find(|p| p.exists()).context("the root is always there")?;
-    let c = std::ffi::CString::new(there.as_os_str().as_bytes()).with_context(|| format!("{} holds a NUL", there.display()))?;
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
-        return Err(io::Error::last_os_error()).with_context(|| format!("look at the room on {}", there.display()));
-    }
-    Ok(st.f_bavail as u64 * st.f_frsize as u64)
+    Ok(mount::space(there).with_context(|| format!("look at the room on {}", there.display()))?.available)
 }
 
 /// How little room is left where the backup goes before it is stopped: a

@@ -1291,11 +1291,10 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
     app.take_settings(kept.settings(), named);
     // The limit the system kept when the data partition was last open, which
     // is all there is until it opens again.
-    if let Some(cache) = &charge_cache {
-        if let Some(limit) = charging::cached(Path::new(cache)) {
+    if let Some(cache) = &charge_cache
+        && let Some(limit) = charging::cached(Path::new(cache)) {
             app.set_charge_limit(Some(limit));
         }
-    }
     let mut keeper = Keeper::new(&kept);
     let mut wlan_wanted = kept.settings().is_some_and(|s| s.wlan);
     skyward_sys::kmsg(&format!(
@@ -1493,12 +1492,11 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
     }
     // The port came up with adb alone; at rest it offers file transfer
     // beside it.
-    if transfer.is_some() && !fastboot && !sideloading {
-        if let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
+    if transfer.is_some() && !fastboot && !sideloading
+        && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
             skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
             app.report(&format!("{e:#}"), monotonic_ms());
         }
-    }
     // Once the work the system asked for is done, the page shows it for a
     // moment; then the phone starts the system, or powers off where the
     // request says to.
@@ -2195,11 +2193,10 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                         match end {
                             extract::End::Done { path, size } => {
                                 let path = path.to_string_lossy().into_owned();
-                                if let Some(path) = app.package_extracted(path, size, now) {
-                                    if withhold(&mut transfer, &mut app, now)? {
+                                if let Some(path) = app.package_extracted(path, size, now)
+                                    && withhold(&mut transfer, &mut app, now)? {
                                         installer = Some(Installer::open(PathBuf::from(path), detach(cfg.services.clone()), install_options(&app))?);
                                     }
-                                }
                             }
                             extract::End::Stopped => app.package_stopped(now),
                             extract::End::Failed(why) => app.package_failed(why, now),
@@ -2234,7 +2231,7 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
             }
             // Merged or not, the phone's readings say where the update
             // stands now.
-            if m.worker.finished() {
+            if m.worker.ended() {
                 merger = None;
                 read_at = Instant::now();
                 info = skyward_info::collect(cfg)?;
@@ -2319,8 +2316,8 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
             || backuper.is_some()
             || part_worker.is_some()
             || systems_worker.as_ref().is_some_and(systems::Worker::busy);
-        if !metadata_busy {
-            if let Some(due) = keeper.due(app.settings(), now) {
+        if !metadata_busy
+            && let Some(due) = keeper.due(app.settings(), now) {
                 match settings::write(&due) {
                     Ok(()) => {
                         skyward_sys::kmsg("the settings are kept")?;
@@ -2332,7 +2329,6 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                     }
                 }
             }
-        }
         let mut checked = false;
         if let Some(c) = &checker {
             for ev in c.worker.events() {
@@ -2491,11 +2487,10 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                     // The supplicant keeps its networks in memory until the
                     // data partition is open: it reads the ones saved there
                     // now, and joins one.
-                    if wlan_wanted && !app.state.online() {
-                        if let Some(w) = &wlan {
+                    if wlan_wanted && !app.state.online()
+                        && let Some(w) = &wlan {
                             w.send(wlan::Command::On);
                         }
-                    }
                     if let Some(w) = &wlan {
                         w.send(wlan::Command::Adopt);
                     }
@@ -2525,13 +2520,12 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
             }
             // Screenshots taken while internal storage was closed go into
             // the gallery's once it opens.
-            if app.state.place_open(Place::Storage) {
-                if let Err(e) = keep_held_screenshots() {
+            if app.state.place_open(Place::Storage)
+                && let Err(e) = keep_held_screenshots() {
                     let why = format!("{e:#}");
                     skyward_sys::kmsg(&format!("the screenshots held did not go into the gallery's: {why}"))?;
                     app.screenshots_not_kept(&why, now);
                 }
-            }
             // The update the system asked for starts once what holds it is
             // open; until the user whose own files hold it unlocks them,
             // its page says to.
@@ -3294,13 +3288,12 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                         skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
                         if let Some(found) = fastboot_found.take() {
                             let asked = bcb::read(&misc)?;
-                            if asked != found {
-                                if let Some(target) = left_for(&asked) {
+                            if asked != found
+                                && let Some(target) = left_for(&asked) {
                                     skyward_sys::kmsg(&format!("fastbootd asked the phone to leave for {target:?}"))?;
                                     power(target)?;
                                     return Ok(());
                                 }
-                            }
                         }
                         let slot = skyward_vab::current_slot()?;
                         crate::prepare(cfg, slot)?;
@@ -3328,12 +3321,11 @@ pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, r
                             (true, None) => match Transfer::start(cfg, &info, app.state.time_zone) {
                                 Ok(t) => {
                                     transfer = Some(t);
-                                    if rests {
-                                        if let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
+                                    if rests
+                                        && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
                                             skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
                                             app.report(&format!("{e:#}"), now);
                                         }
-                                    }
                                 }
                                 Err(e) => {
                                     skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;

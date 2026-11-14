@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use skyward_binder::driver::Binder;
-use skyward_sys::worker;
+use skyward_sys::worker::Worker;
 use skyward_vab::boot::BootControl;
 use skyward_vab::{Merge, Slot};
 use std::thread;
@@ -50,18 +50,21 @@ pub enum Event {
 
 /// A merge followed on a thread of its own.
 pub struct Merger {
-    pub worker: worker::Worker<Event>,
+    pub worker: Worker<Event>,
 }
 
 impl Merger {
     /// Follow the merge into `slot` as [`run`] does, starting it first where
     /// `start`.
     pub fn start(slot: Slot, start: bool) -> Result<Merger> {
-        let worker = worker::Worker::start("merge", "the merger", move |tell| {
-            if let Err(e) = run(slot, start, &mut |merge| tell.send(Event::Looked(*merge))) {
-                tell.send(Event::Failed(format!("{e:#}")));
+        let worker = Worker::start("merge", move |tell| {
+            if let Err(e) = run(slot, start, &mut |merge| {
+                tell.tell(Event::Looked(*merge));
+            }) {
+                tell.tell(Event::Failed(format!("{e:#}")));
             }
         })?;
         Ok(Merger { worker })
     }
+
 }

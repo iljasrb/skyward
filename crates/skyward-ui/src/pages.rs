@@ -2029,12 +2029,11 @@ pub fn restore_backup(cx: &Ctx) -> Frame {
                 }
                 // The boot partitions' vbmeta checks the system's: one of
                 // another version without the other may not start.
-                if let (Some(was), Some(now)) = (&held.system, &i.os_version) {
-                    if was != now && chosen[0] != chosen[1] {
+                if let (Some(was), Some(now)) = (&held.system, &i.os_version)
+                    && was != now && chosen[0] != chosen[1] {
                         let warn = crate::t!(S_THIS_BACKUP_IS_FROM_AND_THIS_PHONE_RUNS_RESTORING_ONLY_ONE_OF_THE_BOOT_AND_SYSTEM_PARTITIONS_MAY_KEEP_THE_PHONE_FROM_STARTING, was = was, now = now);
                         y = widgets::footnote(&mut c, t, f, y, &warn);
                     }
-                }
                 let (label, danger) = confirm_label(Confirm::Restore, cx.state);
                 let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
                 out.push(Hit { rect: track, action: Action::Confirm(Confirm::Restore) });

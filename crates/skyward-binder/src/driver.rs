@@ -1,5 +1,11 @@
 use crate::parcel::{Parcel, Payload, Reader};
 use crate::serve::{Answer, Objects};
+use crate::wire::{
+    BC_ACQUIRE, BC_ACQUIRE_DONE, BC_ENTER_LOOPER, BC_FREE_BUFFER, BC_INCREFS_DONE, BC_RELEASE, BC_REPLY, BC_TRANSACTION, BC_TRANSACTION_SG,
+    BINDER_SET_MAX_THREADS, BINDER_VERSION, BINDER_WRITE_READ, BR_ACQUIRE, BR_DEAD_REPLY, BR_DECREFS, BR_ERROR, BR_FAILED_REPLY, BR_FROZEN_REPLY,
+    BR_INCREFS, BR_NOOP, BR_OK, BR_RELEASE, BR_REPLY, BR_SPAWN_LOOPER, BR_TRANSACTION, BR_TRANSACTION_COMPLETE,
+};
+use crate::wire::{TransactionData, WriteRead};
 use anyhow::{bail, ensure, Context, Result};
 use std::convert::Infallible;
 use std::fs::File;
@@ -24,43 +30,6 @@ const PROTOCOL: i32 = 8;
 /// for: a megabyte less the two pages the driver keeps for itself.
 const MAP_BYTES: usize = 1024 * 1024 - 8192;
 
-/// Build a driver request number the way the kernel's headers do.
-const fn ioc(dir: u32, kind: u8, nr: u8, size: usize) -> u32 {
-    (dir << 30) | ((size as u32) << 16) | ((kind as u32) << 8) | nr as u32
-}
-
-const WRITE: u32 = 1;
-const READ: u32 = 2;
-
-const BINDER_WRITE_READ: u32 = ioc(WRITE | READ, b'b', 1, size_of::<WriteRead>());
-const BINDER_SET_MAX_THREADS: u32 = ioc(WRITE, b'b', 5, 4);
-const BINDER_VERSION: u32 = ioc(WRITE | READ, b'b', 9, 4);
-
-const BC_TRANSACTION: u32 = ioc(WRITE, b'c', 0, size_of::<TransactionData>());
-const BC_REPLY: u32 = ioc(WRITE, b'c', 1, size_of::<TransactionData>());
-const BC_TRANSACTION_SG: u32 = ioc(WRITE, b'c', 17, size_of::<TransactionData>() + 8);
-const BC_FREE_BUFFER: u32 = ioc(WRITE, b'c', 3, 8);
-const BC_ACQUIRE: u32 = ioc(WRITE, b'c', 5, 4);
-const BC_RELEASE: u32 = ioc(WRITE, b'c', 6, 4);
-const BC_INCREFS_DONE: u32 = ioc(WRITE, b'c', 8, 16);
-const BC_ACQUIRE_DONE: u32 = ioc(WRITE, b'c', 9, 16);
-const BC_ENTER_LOOPER: u32 = ioc(0, b'c', 12, 0);
-
-const BR_ERROR: u32 = ioc(READ, b'r', 0, 4);
-const BR_OK: u32 = ioc(0, b'r', 1, 0);
-const BR_TRANSACTION: u32 = ioc(READ, b'r', 2, size_of::<TransactionData>());
-const BR_REPLY: u32 = ioc(READ, b'r', 3, size_of::<TransactionData>());
-const BR_DEAD_REPLY: u32 = ioc(0, b'r', 5, 0);
-const BR_TRANSACTION_COMPLETE: u32 = ioc(0, b'r', 6, 0);
-const BR_INCREFS: u32 = ioc(READ, b'r', 7, 16);
-const BR_ACQUIRE: u32 = ioc(READ, b'r', 8, 16);
-const BR_RELEASE: u32 = ioc(READ, b'r', 9, 16);
-const BR_DECREFS: u32 = ioc(READ, b'r', 10, 16);
-const BR_NOOP: u32 = ioc(0, b'r', 12, 0);
-const BR_SPAWN_LOOPER: u32 = ioc(0, b'r', 13, 0);
-const BR_FAILED_REPLY: u32 = ioc(0, b'r', 17, 0);
-const BR_FROZEN_REPLY: u32 = ioc(0, b'r', 18, 0);
-
 /// The caller waits for no reply.
 const TF_ONE_WAY: u32 = 0x01;
 /// The call takes no file descriptors but is willing to receive them.
@@ -75,32 +44,6 @@ const UNKNOWN_TRANSACTION: i32 = -74;
 /// The most the driver says in one go that is read at a time; what does
 /// not fit comes the next time.
 const SAID_BYTES: usize = 256;
-
-#[repr(C)]
-#[derive(Default)]
-struct WriteRead {
-    write_size: u64,
-    write_consumed: u64,
-    write_buffer: u64,
-    read_size: u64,
-    read_consumed: u64,
-    read_buffer: u64,
-}
-
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-struct TransactionData {
-    target: u64,
-    cookie: u64,
-    code: u32,
-    flags: u32,
-    sender_pid: i32,
-    sender_euid: u32,
-    data_size: u64,
-    offsets_size: u64,
-    buffer: u64,
-    offsets: u64,
-}
 
 fn bytes_of<T>(v: &T) -> &[u8] {
     // Every field is a plain integer, so the struct is its own bytes.
@@ -437,7 +380,7 @@ fn part<'a>(said: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
 unsafe fn call(file: &File, request: u32, arg: *mut libc::c_void) -> Result<()> {
     // The driver answers a signal with EINTR and expects the call again.
     loop {
-        if libc::ioctl(file.as_raw_fd(), request as libc::Ioctl, arg) >= 0 {
+        if unsafe { libc::ioctl(file.as_raw_fd(), request as libc::Ioctl, arg) } >= 0 {
             return Ok(());
         }
         let err = std::io::Error::last_os_error();

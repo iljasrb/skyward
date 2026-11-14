@@ -4,7 +4,6 @@
 use crate::relabel;
 use anyhow::Result;
 use skyward_files::{Cancelled, Clash, Ownership, Progress, Relabeling};
-use skyward_sys::worker;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -38,7 +37,7 @@ pub enum Event {
 }
 
 pub struct Worker {
-    pub worker: worker::Worker<Event>,
+    pub worker: skyward_sys::worker::Worker<Event>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -46,21 +45,19 @@ impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let worker = worker::Worker::start("files", "the file worker", move |tell| {
+        let worker = skyward_sys::worker::Worker::start("files", move |tell| {
             let mut told = Instant::now() - PROGRESS_EVERY;
             let mut last = None;
             let mut report = |event: Event| {
                 if told.elapsed() >= PROGRESS_EVERY {
                     told = Instant::now();
-                    tell.send(event.clone());
+                    tell.tell(event.clone());
                 }
                 last = Some(event);
             };
             let mut progress = |p: Progress| report(Event::Progress(p));
             let ended = match task {
-                Task::Copy { from, into, clash, ownership } => {
-                    skyward_files::copy(&[from], &into, clash, ownership, &stop, &mut progress)
-                }
+                Task::Copy { from, into, clash, ownership } => skyward_files::copy(&[from], &into, clash, ownership, &stop, &mut progress),
                 Task::Move { from, into, clash, ownership } => {
                     skyward_files::move_into(&[from], &into, clash, ownership, &stop, &mut progress)
                 }
@@ -69,9 +66,9 @@ impl Worker {
             };
             // Work that stops or fails shows how far it came in the end.
             if let Some(event) = last {
-                tell.send(event);
+                tell.tell(event);
             }
-            tell.send(Event::Ended(match ended {
+            tell.tell(Event::Ended(match ended {
                 Ok(()) => End::Done,
                 Err(e) if e.is::<Cancelled>() => End::Stopped,
                 Err(e) => End::Failed(format!("{e:#}")),
@@ -79,6 +76,7 @@ impl Worker {
         })?;
         Ok(Worker { worker, cancel })
     }
+
 
     /// Ask the work to stop; it does between two chunks of a file.
     pub fn stop(&self) {

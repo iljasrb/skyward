@@ -757,7 +757,7 @@ pub fn file_line(l: Lang, f: &FileRow, now: i64, zone: usize) -> String {
 
 /// The parts a backup holds: `boot, system`.
 pub fn parts(l: Lang, held: &[bool; 4]) -> String {
-    list(l, BACKUP_PARTS.iter().zip(held).filter(|(_, &on)| on).map(|(name, _)| *name))
+    list(l, BACKUP_PARTS.iter().zip(held).filter(|&(_, &on)| on).map(|(name, _)| *name))
 }
 
 /// What an image is, and what it holds.

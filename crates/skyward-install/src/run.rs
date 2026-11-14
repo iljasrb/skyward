@@ -17,12 +17,13 @@ use crate::script::{self, Bar, Request};
 use crate::signature::{self, Verdict};
 use crate::{Command, Event, Failure, Options, Outcome, Reflash, Refusal, Stage, ENGINE_LOG, SCRIPT_LOG};
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
-use skyward_sys::{kmsg, prop, worker};
+use skyward_sys::worker::{Teller, Worker};
+use skyward_sys::{kmsg, prop};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -72,7 +73,7 @@ const LINGER: Duration = Duration::from_secs(1);
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Installer {
-    pub worker: worker::Worker<Event>,
+    pub worker: Worker<Event>,
     commands: Sender<Command>,
     shared: Arc<Shared>,
 }
@@ -120,15 +121,24 @@ impl Installer {
     ) -> Result<Installer> {
         let (commands, command_rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
-        let ctx_shared = shared.clone();
-        let worker = worker::Worker::start("installer", "the installer", move |tell| {
-            let mut ctx =
-                Context { events: tell, commands: command_rx, shared: ctx_shared, detach: Some(detach), options, origin };
+        let theirs = shared.clone();
+        let worker = Worker::start("installer", move |events| {
+            let mut ctx = Context { events, commands: command_rx, shared: theirs, detach: Some(detach), options, origin };
             let outcome = work(&mut ctx);
             let _ = kmsg(&format!("install: {outcome:?}"));
             ctx.send(Event::Finished(outcome));
         })?;
         Ok(Installer { worker, commands, shared })
+    }
+
+    /// Readable while events wait.
+    pub fn fd(&self) -> RawFd {
+        self.worker.fd()
+    }
+
+    /// The events since the last call.
+    pub fn events(&self) -> Vec<Event> {
+        self.worker.events()
     }
 
     /// Write the image the installer holds to `partition` in `slots`.
@@ -181,7 +191,7 @@ enum Origin {
 }
 
 struct Context {
-    events: worker::Tell<Event>,
+    events: Teller<Event>,
     commands: Receiver<Command>,
     shared: Arc<Shared>,
     detach: Option<Detach>,
@@ -191,7 +201,7 @@ struct Context {
 
 impl Context {
     fn send(&self, event: Event) {
-        self.events.send(event);
+        self.events.tell(event);
     }
 }
 
@@ -573,11 +583,10 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     // Going back to an older build or security patch is the user's to
     // agree to, by a swipe, rather than a reason to refuse the package.
     let downgrade = package::downgrade(update, &phone);
-    if let Err(refusal) = package::check(update, &phone) {
-        if !matches!(refusal, Refusal::Older { .. } | Refusal::OlderPatch { .. }) {
+    if let Err(refusal) = package::check(update, &phone)
+        && !matches!(refusal, Refusal::Older { .. } | Refusal::OlderPatch { .. }) {
             return Ok(Done::Decided(Outcome::Refused(refusal)));
         }
-    }
     if let Some(refusal) = short_of_charge(ctx.origin)? {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
     }
@@ -746,7 +755,7 @@ enum Line {
 /// Run update_engine on the package, telling the screen how far it is,
 /// and give its exit code.
 fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
-    let (status_read, status_write) = pipe(0)?;
+    let (status_read, status_write) = pipe()?;
     let status_fd = status_write.as_raw_fd();
     let mut command = std::process::Command::new(ota::PROGRAM);
     command
@@ -805,11 +814,10 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     // ended: it may be serving live snapshots.
     let mut ended = None;
     loop {
-        if ended.is_none() {
-            if let Some(status) = child.try_wait().context("check whether update_engine has exited")? {
+        if ended.is_none()
+            && let Some(status) = child.try_wait().context("check whether update_engine has exited")? {
                 ended = Some((status, Instant::now()));
             }
-        }
         match rx.recv_timeout(PROGRESS_EVERY) {
             Ok(Line::Status(Status::Step(step))) => finishing = step == 2,
             Ok(Line::Status(Status::Error(code))) => error = Some(code),
@@ -836,11 +844,10 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             ctx.send(Event::Progress(stage.clone()));
             told = Instant::now();
         }
-        if let Some((_, at)) = ended {
-            if at.elapsed() >= ENGINE_LINGER {
+        if let Some((_, at)) = ended
+            && at.elapsed() >= ENGINE_LINGER {
                 break;
             }
-        }
     }
     stop.store(true, Ordering::Relaxed);
     let ended = match ended {
@@ -1096,8 +1103,8 @@ impl Drop for Group {
 /// leaves running is ended with it.
 fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
-    let (requests_read, requests_write) = pipe(0)?;
-    let (output_read, output_write) = pipe(0)?;
+    let (requests_read, requests_write) = pipe()?;
+    let (output_read, output_write) = pipe()?;
     let fd = requests_write.as_raw_fd();
     let mut command = std::process::Command::new(BINARY);
     command.args([API_VERSION, &fd.to_string(), fuse::PACKAGE]);
@@ -1244,10 +1251,10 @@ fn failed(e: anyhow::Error) -> Outcome {
     Outcome::Failed(Failure::Error(format!("{e:#}")))
 }
 
-/// A pipe, both ends closed on exec, with `flags` added.
-fn pipe(flags: libc::c_int) -> Result<(OwnedFd, OwnedFd)> {
+/// A pipe, both ends closed on exec.
+fn pipe() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | flags) } != 0 {
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(io::Error::last_os_error()).context("make a pipe");
     }
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })

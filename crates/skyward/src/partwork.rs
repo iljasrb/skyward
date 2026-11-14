@@ -13,7 +13,7 @@ use skyward_crypto::data;
 use skyward_install::package::Phone;
 use skyward_install::wipe::{self as package, Wipe};
 use skyward_install::Refusal;
-use skyward_sys::{bcb, prop, worker};
+use skyward_sys::{bcb, prop};
 use skyward_vab::Slot;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -87,23 +87,26 @@ pub enum Event {
 }
 
 pub struct Worker {
-    pub worker: worker::Worker<Event>,
+    pub worker: skyward_sys::worker::Worker<Event>,
 }
 
 impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
-        let worker = worker::Worker::start("partitions", "the partition worker", move |tell| {
-            let mut say = |event: Event| tell.send(event);
-            let done = match task {
-                Task::Disable { package_size } => disable(package_size, &mut say),
-                Task::Unshare { slot } => unshare(slot, &mut say),
-                Task::Repair(part) => repair(part, &mut say),
-                Task::Remake(part, filesystem) => remake(part, &filesystem, &mut say),
+        let worker = skyward_sys::worker::Worker::start("partitions", move |teller| {
+            let mut tell = |event: Event| {
+                teller.tell(event);
             };
-            say(Event::Done(done));
+            let done = match task {
+                Task::Disable { package_size } => disable(package_size, &mut tell),
+                Task::Unshare { slot } => unshare(slot, &mut tell),
+                Task::Repair(part) => repair(part, &mut tell),
+                Task::Remake(part, filesystem) => remake(part, &filesystem, &mut tell),
+            };
+            tell(Event::Done(done));
         })?;
         Ok(Worker { worker })
     }
+
 }
 
 /// Why something failed, as the page shows it.

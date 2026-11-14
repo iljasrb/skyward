@@ -56,6 +56,8 @@ mod systems;
 mod ui;
 #[cfg(target_os = "android")]
 mod updates;
+#[cfg(any(target_os = "android", test))]
+mod waveform;
 #[cfg(target_os = "android")]
 mod wipe;
 #[cfg(target_os = "android")]
@@ -319,7 +321,7 @@ fn main() -> Result<()> {
             let libraries = secure::libraries()?;
             services::start(&services, libraries.as_deref())?;
             let steps = keys::without_config(keys::found(slot, libraries.as_deref())?.steps?, &cfg.services);
-            keys::start(&steps, libraries.as_deref())?;
+            keys::start(&steps)?;
             loop {
                 std::thread::park();
             }
@@ -555,10 +557,10 @@ fn bring_up(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>, found: Result<k
     adopt_installed_version(&props)?;
     // Without logd the phone's own programs still run, and only what they
     // log is lost, so why it did not start goes to the kernel log.
-    if let Some(logd) = &cfg.logd {
-        if let Err(e) = start_logd(logd) {
-            skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
-        }
+    if let Some(logd) = &cfg.logd
+        && let Err(e) = start_logd(logd)
+    {
+        skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
     }
     let services: Vec<Started> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().map(Started::from).collect();
     // The drivers ask for their firmware by name, and the kernel looks only
@@ -641,7 +643,7 @@ fn bring_up(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>, found: Result<k
     for line in keys::describe(&steps) {
         skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;
     }
-    if let Err(e) = keys::start(&steps, libraries.as_deref()) {
+    if let Err(e) = keys::start(&steps) {
         skyward_sys::kmsg(&format!("the phone's key programs did not start: {e:#}"))?;
     }
     agree_on_the_notes_key(&registering)
@@ -857,10 +859,11 @@ fn recovery() -> Result<()> {
         // off is taken up again as a retry; one that follows the kernel
         // stopping is not started at all.
         #[cfg(target_os = "android")]
-        if let bcb::Work::Update(update) = &request.work {
-            if update.retry == 0 && !ui::panicked() {
-                bcb::write(&misc, &message.with_retry(1))?;
-            }
+        if let bcb::Work::Update(update) = &request.work
+            && update.retry == 0
+            && !ui::panicked()
+        {
+            bcb::write(&misc, &message.with_retry(1))?;
         }
         // The kernel starts the clock from the RTC, days after 1970 on these
         // phones; the screen and the files written still work without the

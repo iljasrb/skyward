@@ -43,8 +43,8 @@ impl Worker {
     pub fn start(task: Task) -> Result<Worker> {
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let worker = worker::Worker::start("extract", "the package extractor", move |tell| {
-            let say = |event: Event| tell.send(event);
+        let worker = worker::Worker::start("extract", move |tell| {
+            let say = |event: Event| { tell.tell(event); };
             let ended = extract(&task, &say, &stop);
             let end = match ended {
                 Ok((path, size)) => End::Done { path, size },

@@ -84,8 +84,10 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let agent: Arc<Mutex<Option<ureq::Agent>>> = Arc::new(Mutex::new(None));
         let (stopping, using) = (stop.clone(), agent.clone());
-        let worker = worker::Worker::start("updates", "the update worker", move |tell| {
-            let say = |event: Event| tell.send(event);
+        let worker = worker::Worker::start("updates", move |tell| {
+            let say = |event: Event| {
+                tell.tell(event);
+            };
             match task {
                 Task::Check { repo, asset, build, probe } => {
                     let a = http::agent(servers.clone());
