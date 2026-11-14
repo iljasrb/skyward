@@ -1007,4 +1007,18 @@ mod tests {
         assert!(with("{ name = \"mac.bin\", partition = \"persist\", path = \"/kiwi/mac.bin\" }").is_err());
         assert!(with("{ name = \"mac.bin\", partition = \"by-name/persist\", path = \"mac.bin\" }").is_err());
     }
+    #[test]
+    fn the_galaxy_s20_fe_5g_has_no_slots_no_rom_feed_and_no_root_methods() {
+        let cfg = DeviceConfig::parse(include_str!("../../../devices/r8q.toml")).unwrap();
+        assert_eq!((cfg.device.codename.as_str(), cfg.device.ab), ("r8q", false));
+        assert_eq!((cfg.display.width, cfg.display.height, cfg.display.density), (1080, 2400, 420));
+        assert!(cfg.sdcard.is_some(), "its card tray is part of the build");
+        assert!(cfg.rom.is_none(), "LineageOS publishes no feed the page reads");
+        assert!(cfg.update.is_some());
+        assert!(cfg.charging.is_some());
+        assert_eq!(cfg.ksu.kmi, None);
+        assert!(cfg.root_methods.is_empty(), "this build carries no root methods");
+        assert!(cfg.services.iter().any(|s| s.path == "/vendor/bin/qseecomd"), "the fork's tuned key chain stays");
+    }
+
 }

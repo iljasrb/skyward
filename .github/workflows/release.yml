@@ -1,0 +1,51 @@
+name: Release
+
+# A tag names a version of the recovery for this phone: the image is built from
+# it and published, and the update page of every phone running an older build
+# sees it. The recovery the image rides on is the LineageOS one for r8q, which
+# scripts/build-r8q.sh downloads and checks against its SHA-256.
+on:
+  push:
+    tags: ["r8q-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  image:
+    name: Build and publish the recovery image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+
+      - name: Build
+        # Stamped with the tag it is built from, which is what the update page
+        # of a phone on that build compares against the newest release.
+        env:
+          SKYWARD_BUILD: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: scripts/build-r8q.sh
+
+      - name: Publish the image and its sums
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp out/skyward-r8q.img.sha256 SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" \
+            --notes "Skyward for the Galaxy S20 FE 5G (r8q), built from ${GITHUB_SHA:0:12}. This build carries no root methods."
+          # A release left as a draft is published here, so the phone's update
+          # page, which reads published releases, sees the image.
+          gh release edit "$TAG" --draft=false
+          tar -H ustar --owner=0 --group=0 --numeric-owner -cf out/skyward-r8q.tar -C out --transform 's,^skyward-r8q.img$,recovery.img,' skyward-r8q.img
+          ( cd out && sha256sum skyward-r8q.tar >> ../SHA256SUMS )
+          gh release upload "$TAG" out/skyward-r8q.tar out/skyward-r8q.img SHA256SUMS --clobber
