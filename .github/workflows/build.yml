@@ -49,10 +49,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
-      # A merge of upstream lands with its texts written in three languages;
-      # this says to run scripts/locales.py convert before committing.
-      - name: Check the pages' texts are in the language file
-        run: python3 scripts/locales.py check
       - name: Lint what runs on the computer
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test

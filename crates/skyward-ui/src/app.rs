@@ -11,6 +11,7 @@ use crate::geom::Rect;
 use crate::glow::{self, GlowClock};
 use crate::lang::{Lang, Text};
 use crate::motion::{self, Spring};
+use crate::same;
 use crate::strings::*;
 use crate::pages::{self, Band, Ctx};
 use crate::sprite::{Blurs, Sprite};
@@ -52,6 +53,8 @@ pub enum Screen {
     Specs,
     /// How long the screen stays on with nothing touched.
     ScreenOff,
+    /// The languages the pages speak, each named in itself.
+    Language,
     /// Finding a feature or partition by name, typed on the screen's own
     /// keyboard.
     Search,
@@ -1542,7 +1545,7 @@ pub const TIME_ZONES: [(Text, Text, &str); 9] = [
     (S_HONG_KONG_TIME, S_HONG_KONG, "Asia/Hong_Kong"),
     (S_TAIPEI_TIME, S_TAIPEI, "Asia/Taipei"),
     (S_JAPAN_STANDARD_TIME, S_TOKYO, "Asia/Tokyo"),
-    (S_COORDINATED_UNIVERSAL_TIME, "UTC", "UTC"),
+    (S_COORDINATED_UNIVERSAL_TIME, same!("UTC"), "UTC"),
     (S_BRITISH_TIME, S_LONDON, "Europe/London"),
     (S_CENTRAL_EUROPEAN_TIME, S_BERLIN_PARIS, "Europe/Berlin"),
     (S_EASTERN_TIME, S_NEW_YORK, "America/New_York"),
@@ -1591,6 +1594,8 @@ pub enum Action {
     ScreenOff(usize),
     /// Keep the time zone at this place in [`TIME_ZONES`].
     TimeZone(usize),
+    /// Speak this language.
+    Language(Lang),
     /// Tick or untick a part of the backup, by its place in
     /// [`BACKUP_PARTS`].
     BackupPart(usize),
@@ -3428,6 +3433,7 @@ impl App {
             && let Some(lang) = named.or(kept.and_then(Settings::spoken)) {
                 self.state.lang = lang;
             }
+        Lang::speak(self.state.lang);
         self.refresh();
     }
 
@@ -4884,6 +4890,7 @@ impl App {
     /// [`App::frame`], drawing of a page rendered anew only its columns
     /// from the left edge to `wide`.
     fn render(&mut self, f: &Fonts, info: &DeviceInfo, wide: u32) -> &Frame {
+        Lang::speak(self.state.lang);
         if self.frame.is_some() && !self.stale.is_empty() {
             let t = self.theme();
             let screen = self.screen();
@@ -6352,6 +6359,12 @@ impl App {
             }
             Action::TimeZone(k) => {
                 self.state.time_zone = k;
+                self.refresh();
+            }
+            Action::Language(l) => {
+                self.state.lang = l;
+                self.state.language_chosen = true;
+                Lang::speak(l);
                 self.refresh();
             }
             Action::BackupPart(k) => {
@@ -10596,6 +10609,36 @@ mod tests {
         assert_eq!(app.state.time_zone, london);
         tap(&mut app, &f, &i, Action::TimeZone(0));
         assert_eq!(app.state.time_zone, 0, "and China again");
+    }
+
+    #[test]
+    fn a_language_chosen_is_spoken_on_every_page() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        tap(&mut app, &f, &i, Action::Open(Screen::Language));
+        assert_eq!(app.screen(), Screen::Language);
+        assert_eq!(app.frame(&f, &i).title, "Language");
+        tap(&mut app, &f, &i, Action::Language(Lang::Hant));
+        assert_eq!((app.state.lang, app.state.language_chosen), (Lang::Hant, true), "the page stays");
+        assert_eq!(app.frame(&f, &i).title, "語言");
+        assert_eq!(app.settings().language.as_deref(), Some("zh-Hant"));
+        let mut next = App::new(Screen::Home, W, H, PPD);
+        next.take_settings(Some(&app.settings()), None);
+        assert_eq!(next.state.lang, Lang::Hant, "the next start speaks the language chosen");
+        tap(&mut next, &f, &i, Action::Open(Screen::Settings));
+        assert_eq!(next.frame(&f, &i).title, "設定");
+        Lang::En.speak();
+    }
+
+    #[test]
+    fn the_system_language_is_spoken_where_the_pages_speak_it() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.take_settings(None, Some(Lang::Tr));
+        assert_eq!(app.state.lang, Lang::Tr);
+        tap(&mut app, &f, &i, Action::Open(Screen::Settings));
+        assert_eq!(app.frame(&f, &i).title, "Ayarlar");
+        Lang::En.speak();
     }
 
     #[test]

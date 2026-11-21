@@ -1,5 +1,6 @@
 use crate::app::Screen;
 use crate::lang::{Lang, Text};
+use crate::same;
 use crate::strings::*;
 
 /// A feature or partition the search finds, and the page it opens.
@@ -18,8 +19,8 @@ const fn entry(title: Text, place: Text, screen: Screen, keys: &'static [&'stati
 }
 
 /// A partition, named the same in every language.
-const fn partition(name: &'static str, place: Text, screen: Screen) -> Entry {
-    Entry { title: name, place, screen, keys: &[] }
+const fn partition(title: Text, place: Text, screen: Screen) -> Entry {
+    Entry { title, place, screen, keys: &[] }
 }
 
 const HOME: Text = S_HOME;
@@ -29,7 +30,7 @@ const SETTINGS: Text = S_SETTINGS;
 const MOUNT: Text = S_MOUNT;
 
 pub const ENTRIES: &[Entry] = &[
-    entry("Wi-Fi", HOME, Screen::Wlan, &["wifi", "wlan"]),
+    entry(same!("Wi-Fi"), HOME, Screen::Wlan, &["wifi", "wlan"]),
     entry(S_DUAL_BOOT, HOME, Screen::Systems, &["dualboot", "multiboot", "linux", "dual", "boot"]),
     entry(INSTALL, HOME, Screen::Install, &["anzhuang", "az", "install", "shuaji", "sj"]),
     entry(
@@ -88,6 +89,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(S_VIBRATION_INTENSITY, SETTINGS, Screen::Settings, &["zhendongqiangdu", "zdqd", "qiangdu", "qd", "intensity", "strength"]),
     entry(S_TOUCH_VIBRATION, SETTINGS, Screen::Settings, &["chumozhendong", "cmzd", "zhendong", "vibrate", "haptic"]),
     entry(S_FILE_TRANSFER, SETTINGS, Screen::Settings, &["wenjianchuanshu", "wjcs", "chuanshu", "mtp", "usb"]),
+    entry(S_LANGUAGE, SETTINGS, Screen::Language, &["yuyan", "yy", "language", "english"]),
     entry(S_TIME_ZONE, SETTINGS, Screen::TimeZone, &["shiqu", "sq", "timezone"]),
     entry(S_REBOOT, HOME, Screen::Reboot, &["chongqi", "cq", "reboot", "fastboot", "bootloader", "edl", "guanji"]),
     entry(S_BOOT_SLOT, S_REBOOT, Screen::Slot, &["qidongcaowei", "qdcw", "caowei", "cw", "slot"]),
@@ -116,31 +118,31 @@ pub const ENTRIES: &[Entry] = &[
         Screen::FontLicense,
         &["jiemianziti", "jmzt", "ziti", "font", "misans", "kirkmono", "dengkuan"],
     ),
-    partition("vendor_boot", INSTALL, Screen::Install),
-    partition("vendor_boot", INSTALL, Screen::Install),
-    partition("vendor_boot", INSTALL, Screen::Install),
-    partition("recovery", INSTALL, Screen::Install),
-    partition("dtbo", INSTALL, Screen::Install),
-    partition("vbmeta", INSTALL, Screen::Install),
-    partition("system", MOUNT, Screen::Mount),
-    partition("system_ext", MOUNT, Screen::Mount),
-    partition("product", MOUNT, Screen::Mount),
-    partition("vendor", MOUNT, Screen::Mount),
-    partition("odm", MOUNT, Screen::Mount),
-    partition("vendor_dlkm", MOUNT, Screen::Mount),
-    partition("system_dlkm", MOUNT, Screen::Mount),
-    partition("odm_dlkm", MOUNT, Screen::Mount),
+    partition(same!("vendor_boot"), INSTALL, Screen::Install),
+    partition(same!("vendor_boot"), INSTALL, Screen::Install),
+    partition(same!("vendor_boot"), INSTALL, Screen::Install),
+    partition(same!("recovery"), INSTALL, Screen::Install),
+    partition(same!("dtbo"), INSTALL, Screen::Install),
+    partition(same!("vbmeta"), INSTALL, Screen::Install),
+    partition(same!("system"), MOUNT, Screen::Mount),
+    partition(same!("system_ext"), MOUNT, Screen::Mount),
+    partition(same!("product"), MOUNT, Screen::Mount),
+    partition(same!("vendor"), MOUNT, Screen::Mount),
+    partition(same!("odm"), MOUNT, Screen::Mount),
+    partition(same!("vendor_dlkm"), MOUNT, Screen::Mount),
+    partition(same!("system_dlkm"), MOUNT, Screen::Mount),
+    partition(same!("odm_dlkm"), MOUNT, Screen::Mount),
 ];
 
 /// The entries `query` finds, best first: a title in `l` holding it, then a
 /// key starting with it, then a key holding it.
-pub fn find(query: &str, _l: Lang) -> Vec<&'static Entry> {
+pub fn find(query: &str, l: Lang) -> Vec<&'static Entry> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
     }
     let rank = |e: &Entry| {
-        if e.title.to_lowercase().contains(&q) {
+        if e.title.in_language(l).to_lowercase().contains(&q) {
             Some(0)
         } else if e.keys.iter().any(|k| k.starts_with(&q)) {
             Some(1)
@@ -166,7 +168,7 @@ mod tests {
     use super::*;
 
     fn titles(query: &str) -> Vec<&'static str> {
-        find(query, Lang::En).iter().map(|e| e.title).collect()
+        find(query, Lang::En).iter().map(|e| e.title.in_language(Lang::En)).collect()
     }
 
     #[test]

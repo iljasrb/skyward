@@ -14,16 +14,27 @@ use skyward_ui::app::{
     JobEnd, Key, Keys, MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Screen, SkywardEnd, SkywardJob, SkywardStage,
     Source, SystemChoice, SystemsWork, TermEnd, Touch, Medium, UsbLink, SCREEN_OFF,
 };
+use skyward_ui::canvas::Drawn;
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
 use skyward_ui::{editor, fmt, pages, Canvas, Ctx, Fonts, Lang, Theme};
 use skyward_vab::{BootSlots, FailureCode, Hold, Slot, SnapshotState, Standing};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 mod matcher;
 
 const CLOCK: &str = "23:46";
+
+/// The language the pages are drawn in, as `--lang` names its locale;
+/// English when none is named.
+static LANG: OnceLock<Lang> = OnceLock::new();
+
+fn lang() -> Lang {
+    *LANG.get().expect("the language is chosen before any page is drawn")
+}
 
 /// What a shell in the recovery writes for a few commands, colours and all.
 const SHELL_SAMPLE: &[u8] = b"ishtar:/ # getprop ro.product.device\r\nishtar\r\n\
@@ -119,6 +130,13 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let out = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("preview-out"));
     std::fs::create_dir_all(&out)?;
+    let chosen = match args.iter().position(|a| a == "--lang") {
+        Some(k) => Lang::for_locale(args.get(k + 1).ok_or_else(|| anyhow!("--lang needs a locale"))?)?,
+        None => Lang::En,
+    };
+    LANG.set(chosen).expect("the language is chosen once");
+    Lang::speak(chosen);
+    skyward_ui::canvas::watch_texts();
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let font_path = font_path()?;
@@ -162,11 +180,12 @@ fn main() -> Result<()> {
     let pattern = Data::Locked { user: 0, keys: Keys::Pattern, checking: false };
     // Whole pages, the way a long screenshot shows them. The About page's
     // field is drawn only on screen, so it appears among the moments below.
-    let shots: [Shot; 12] = [
+    let shots: [Shot; 13] = [
         ("01-decrypt-dark", Screen::Decrypt, true, &info, pattern, &[0, 3, 4, 5, 8]),
         ("02-home-light", Screen::Home, false, &info, Data::Open, &[]),
         ("03-home-dark-update-pending", Screen::Home, true, &pending, Data::Open, &[]),
         ("04-settings-light", Screen::Settings, false, &info, Data::Open, &[]),
+        ("04b-language-light", Screen::Language, false, &info, Data::Open, &[]),
         ("05-settings-dark", Screen::Settings, true, &info, Data::Open, &[]),
         ("06-reboot-dark", Screen::Reboot, true, &info, Data::Open, &[]),
         ("07-wipe-light", Screen::Wipe, false, &info, Data::Open, &[]),
@@ -178,7 +197,7 @@ fn main() -> Result<()> {
     ];
     for (name, screen, dark, info, data, pattern) in shots {
         let mut app = App::new(screen, w, h, ppd);
-        app.state.lang = Lang::En;
+        app.state.lang = lang();
         app.state.dark = dark;
         app.state.data = data;
         app.state.pattern = pattern.to_vec();
@@ -1072,7 +1091,7 @@ fn main() -> Result<()> {
     let wanting = DeviceInfo { battery, snapshot: SnapshotState::Snapshotted, ..info.clone() };
     for (name, dark) in [("188-home-notices-light", false), ("189-home-notices-dark", true)] {
         let mut app = App::new(Screen::Home, w, h, ppd);
-        app.state.lang = Lang::En;
+        app.state.lang = lang();
         app.state.dark = dark;
         app.set_boot_slots(Ok(BootSlots { active: Slot::A, bootable: [true, true], successful: [true, true] }));
         let path = out.join(format!("{name}.png"));
@@ -1434,7 +1453,7 @@ fn skyward_online(app: &mut App) {
 /// open, its owner's own files with it.
 fn opened(screen: Screen, w: u32, h: u32, ppd: f32) -> App {
     let mut app = App::new(screen, w, h, ppd);
-    app.state.lang = Lang::En;
+    app.state.lang = lang();
     app.state.data = Data::Open;
     app
 }
@@ -1551,6 +1570,11 @@ fn font_path() -> Result<PathBuf> {
     Err(anyhow!("no font found; set SKYWARD_FONT to a .ttf/.ttc path"))
 }
 
+/// Write `canvas` as a PNG, and say which of the texts drawn since the last
+/// one was written did not fit its place: among the names the samples make
+/// long on purpose, a text the language writes too long. A text is cut
+/// short where it has a room to end in; where it has none, it runs past
+/// the screen's edge or into the text beside it.
 fn write_png(path: &Path, canvas: &Canvas) -> Result<()> {
     let file = File::create(path)?;
     let w = BufWriter::new(file);
@@ -1558,5 +1582,35 @@ fn write_png(path: &Path, canvas: &Canvas) -> Result<()> {
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(&canvas.data)?;
+    let shot = path.file_stem().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let watched = skyward_ui::canvas::take_watched();
+    for text in &watched.cut {
+        println!("cut short in {shot}: {text}");
+    }
+    for (text, part) in &watched.smaller {
+        println!("set at {:.0}% in {shot}: {text}", part * 100.0);
+    }
+    // Of what was drawn for this picture, only what was drawn on a canvas
+    // of its size lies where the picture shows it; a text drawn again in
+    // the same place, as a page drawn twice draws it, is one text.
+    let runs: Vec<&Drawn> = watched.drawn.iter().filter(|run| run.canvas == (canvas.w, canvas.h) && !run.text.trim().is_empty()).collect();
+    let mut said = BTreeSet::new();
+    for (k, run) in runs.iter().enumerate() {
+        if (run.left < -EDGE || run.right > canvas.w as f32 + EDGE) && said.insert(run.text.clone()) {
+            println!("past the edge in {shot}: {}", run.text);
+        }
+        for other in &runs[k + 1..] {
+            let same = run.text == other.text && run.left == other.left && run.top == other.top;
+            let across = run.left.max(other.left) + EDGE < run.right.min(other.right);
+            let down = run.top.max(other.top) + EDGE < run.bottom.min(other.bottom);
+            if !same && across && down && said.insert(format!("{}\n{}", run.text, other.text)) {
+                println!("overlap in {shot}: {} | {}", run.text, other.text);
+            }
+        }
+    }
     Ok(())
 }
+
+/// How far, in pixels, a text's box may reach past the screen's edge or
+/// into another's before the preview says so.
+const EDGE: f32 = 1.0;
