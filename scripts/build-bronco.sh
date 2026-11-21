@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Build the Skyward recovery image for the Motorola ThinkPhone (bronco).
 #
-# Skyward rides on the phone's own recovery image: its init, adbd, fastbootd,
+# Skyward rides on the Infinity X recovery image: its init, adbd, fastbootd,
 # SELinux policy and libraries stay, and only system/bin/recovery becomes
-# Skyward. That base is the stock recovery partition, which is the phone
-# maker's to hand out and so is not in this repository:
+# Skyward. That base is the recovery the Infinity X build makes, such as
+# ../bronco/out/target/product/bronco/recovery.img, and is not in this
+# repository:
 #
 # This build carries no root methods: no `--features roots`, no Root page.
 #
-#   scripts/build-bronco.sh --stock /path/to/stock-recovery.img [--out IMG]
+#   scripts/build-bronco.sh --stock ../bronco/out/target/product/bronco/recovery.img [--out IMG]
 #
 # Needs rustup's aarch64-linux-android target, cargo-ndk, and an Android NDK
 # r29 or newer in ANDROID_NDK_HOME (or one under ~/toolchains or /opt).

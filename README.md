@@ -56,15 +56,16 @@ this build carries no root methods.
 
 ## Build
 
-The image rides on the phone's stock recovery ramdisk, which is not in this
+The image rides on the Infinity X recovery's ramdisk, which is not in this
 repository. Build the recovery service and the packer, then pack the image on
-that stock recovery:
+that recovery, such as the one the Infinity X build leaves in
+`../bronco/out/target/product/bronco/recovery.img`:
 
 ```sh
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 
-scripts/build-bronco.sh --stock /path/to/stock-recovery.img
+scripts/build-bronco.sh --stock ../bronco/out/target/product/bronco/recovery.img
 ```
 
 The script builds the recovery service, the packer and the second system's
