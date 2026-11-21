@@ -64,8 +64,8 @@ pub fn with_data_keys<T>(work: impl FnOnce(Option<&KeyMint>) -> Result<T>) -> Re
         if !data::keyed()? {
             return work(None);
         }
-        let binder = Binder::open()?;
-        let service = KeyMint::open(&binder)?;
+        let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
+        let service = KeyMint::open(&binder, Some(&hardware))?;
         work(Some(&service))
     })();
     done.map_err(|e| format!("{e:#}"))
