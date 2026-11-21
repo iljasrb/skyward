@@ -435,9 +435,14 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
-            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
-            let service = skyward_crypto::keymint::KeyMint::open(&binder, Some(&hardware))?;
-            let opening = data::open_without_credential(&service)?;
+            let binder = skyward_binder::driver::Binder::open()?;
+            // A partition the phone's table has encrypted in no way opens
+            // with no key service.
+            let service = match data::keyed()? {
+                true => Some(skyward_crypto::keymint::KeyMint::open(&binder)?),
+                false => None,
+            };
+            let opening = data::open_without_credential(service.as_ref())?;
             match &opening.mounted {
                 Some(mounted) => {
                     if let Some(checked) = &mounted.checked {
@@ -450,8 +455,8 @@ fn main() -> Result<()> {
             }
             let mut closed = opening.closed;
             let asked = closed.iter().find(|c| !c.made_up).map(|c| c.user);
-            if let (Some(credential), Some(user)) = (&credential, asked) {
-                closed = data::unlock(&service, &closed, user, credential.as_bytes())?;
+            if let (Some(credential), Some(user), Some(service)) = (&credential, asked, &service) {
+                closed = data::unlock(service, &closed, user, credential.as_bytes())?;
             }
             for c in &closed {
                 match &c.why {
@@ -649,10 +654,18 @@ fn bring_up(cfg: &DeviceConfig, slot: Option<skyward_vab::Slot>, found: Result<k
     agree_on_the_notes_key(&registering)
 }
 
+/// How long a file handed over may take to be there once the modules are
+/// loaded: a driver makes its files as it takes its device up, and ueventd
+/// makes the device's node once the kernel has told it of the device,
+/// either of which may come after the load of the module returns.
+#[cfg(target_os = "android")]
+const FILES_MADE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Give each file the phone's own init hands over as it boots to the
 /// account it names, with the mode it gives, as its chown and chmod lines
-/// do. The files are the ones the modules just loaded made, which the
-/// phone's own programs open as those accounts.
+/// do. The files are the ones the modules just loaded make, which the
+/// phone's own programs open as those accounts; one not there yet is
+/// waited for.
 #[cfg(target_os = "android")]
 fn hand_over(owners: &[skyward_config::Owners]) -> Result<usize> {
     use skyward_sys::ueventd;
@@ -663,6 +676,7 @@ fn hand_over(owners: &[skyward_config::Owners]) -> Result<usize> {
     for run in owners {
         let (uid, gid) = (id(&run.user)?, id(&run.group)?);
         for path in &run.paths {
+            skyward_sys::wait_file(Path::new(path), FILES_MADE).context("wait for a file the modules just loaded make")?;
             std::os::unix::fs::chown(path, Some(uid), Some(gid)).with_context(|| format!("give {path} to {}:{}", run.user, run.group))?;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(run.mode))
                 .with_context(|| format!("give {path} the mode {:o}", run.mode))?;
