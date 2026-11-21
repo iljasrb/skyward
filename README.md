@@ -105,16 +105,6 @@ where each text shows. The build reads every file and stops on a text that is
 missing, or that names a value in braces the English text does not.
 
 To correct a translation, change its text in the language's file. To check how it
-looks, draw the pages in that language with `skyward-preview --lang`.
-
-### Translations
-
-Each language's texts are one file in `crates/skyward-ui/locales`, named by its
-locale: `tr.toml`, `pt-BR.toml`. `en.toml` is the reference, with a comment on
-where each text shows. The build reads every file and stops on a text that is
-missing, or that names a value in braces the English text does not.
-
-To correct a translation, change its text in the language's file. To check how it
 looks, draw the pages in that language with `skyward-preview --lang`. With each
 page, it says which texts did not fit their place: `cut short in` for a text that
 ends in an ellipsis, `set at 80% in` for a label set smaller to fit its key, button
