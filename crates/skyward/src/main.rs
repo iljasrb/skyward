@@ -435,11 +435,11 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
-            let binder = skyward_binder::driver::Binder::open()?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
             // A partition the phone's table has encrypted in no way opens
             // with no key service.
             let service = match data::keyed()? {
-                true => Some(skyward_crypto::keymint::KeyMint::open(&binder)?),
+                true => Some(skyward_crypto::keymint::KeyMint::open(&binder, Some(&hardware))?),
                 false => None,
             };
             let opening = data::open_without_credential(service.as_ref())?;
