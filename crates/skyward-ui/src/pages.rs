@@ -13,12 +13,13 @@ use crate::files;
 use crate::fmt::{self, Verb};
 use crate::font::Fonts;
 use crate::geom::Rect;
+use crate::icons::{self, Icon};
 use crate::lang::{Lang, Text};
+use crate::same;
 use crate::search;
 use crate::strings::*;
 use crate::term::{self, Term};
 use crate::theme::Theme;
-use crate::icons::{self, Icon};
 use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
 use skyward_info::{DeviceInfo, BUILD, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
@@ -93,6 +94,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Filesystems => filesystems(cx),
         Screen::Filesystem => filesystem(cx),
         Screen::PartWork => part_work(cx),
+        Screen::Language => language(cx),
         Screen::TimeZone => time_zone(cx),
         Screen::Logs => logs(cx),
         Screen::Update => update(cx),
@@ -186,15 +188,15 @@ pub const SEARCH_HINT: Text = S_SEARCH_FEATURES_AND_PARTITIONS;
 const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
     (S_SYSTEM, None),
     (S_RECOVERY, None),
-    ("Fastboot", Some(S_USERSPACE_FASTBOOTD)),
-    ("Bootloader", None),
-    ("EDL", Some(S_QUALCOMM_EMERGENCY_DOWNLOAD)),
+    (same!("Fastboot"), Some(S_USERSPACE_FASTBOOTD)),
+    (same!("Bootloader"), None),
+    (same!("EDL"), Some(S_QUALCOMM_EMERGENCY_DOWNLOAD)),
     (S_POWER_OFF, None),
 ];
 
 /// What pages are called both on the rows that open them and in their own
 /// titles.
-const WLAN: Text = "Wi-Fi";
+const WLAN: Text = same!("Wi-Fi");
 const DECRYPT: Text = S_DECRYPT;
 const ADVANCED: Text = S_ADVANCED;
 const SETTINGS: Text = S_SETTINGS;
@@ -208,6 +210,7 @@ const UPDATE: Text = S_UPDATE;
 const SKYWARD_UPDATE: Text = S_SKYWARD_UPDATE;
 const FILES: Text = S_FILE_MANAGER;
 const TERMINAL: Text = S_TERMINAL;
+const LANGUAGE: Text = S_LANGUAGE;
 const TIME_ZONE: Text = S_TIME_ZONE;
 const LICENSE: Text = S_OPEN_SOURCE_LICENSES;
 const FONTS: Text = S_UI_FONTS;
@@ -417,9 +420,10 @@ pub fn settings(cx: &Ctx) -> Frame {
     }
     y = widgets::section(&mut c, t, f, vibration.bottom, S_GENERAL);
     let general = widgets::list(&mut c, t, f, y, &[
+        Row::new(LANGUAGE).icon(BLUE, Icon::Globe).trail(Trail::Value(l.name())),
         Row::new(TIME_ZONE).icon(ORANGE, Icon::Clock).trail(Trail::Value(TIME_ZONES[s.time_zone].0)),
     ]);
-    out.extend(hits(&general.rows, &[Action::Open(Screen::TimeZone)]));
+    out.extend(hits(&general.rows, &[Action::Open(Screen::Language), Action::Open(Screen::TimeZone)]));
     y = widgets::section(&mut c, t, f, general.bottom, "USB");
     let usb = widgets::list(&mut c, t, f, y, &[Row::new(S_FILE_TRANSFER).icon(BLUE, Icon::Usb).trail(Trail::Switch(s.file_transfer))]);
     out.extend(hits(&usb.rows, &[Action::Toggle(Switch::FileTransfer)]));
@@ -687,7 +691,7 @@ pub fn specs(cx: &Ctx) -> Frame {
     }
     if let Some(unlocked) = i.boot.unlocked {
         let state = if unlocked { S_UNLOCKED } else { S_LOCKED };
-        boot.push(("Bootloader", state.to_string()));
+        boot.push((same!("Bootloader"), state.to_string()));
     }
     if let Some(v) = &i.boot.verified {
         boot.push((S_VERIFIED_BOOT, fmt::verified(l, v)));
@@ -1302,8 +1306,8 @@ pub fn installing(cx: &Ctx) -> Frame {
                     S_WITH_A_SYSTEM_UPDATE_PACKAGE_FLASHABLE_ZIP_OR_PARTITION_IMAGE_AS_FILE
                     .into(),
                 ),
-                ("adb rescue getprop", S_READS_THIS_PHONES_VERSIONS_AND_DEVICE_DETAILS.into()),
-                ("adb rescue wipe userdata", S_WIPES_ALL_OF_THIS_PHONES_DATA.into()),
+                (same!("adb rescue getprop"), S_READS_THIS_PHONES_VERSIONS_AND_DEVICE_DETAILS.into()),
+                (same!("adb rescue wipe userdata"), S_WIPES_ALL_OF_THIS_PHONES_DATA.into()),
             ]);
             let note = S_THE_COMPUTER_NEEDS_ANDROID_SDK_PLATFORM_TOOLS_GOING_BACK_LEAVES_RESCUE_MODE_AND_SWITCHES_USB_BACK_TO_ADB_DEBUGGING;
             widgets::footnote(&mut c, t, f, y, note)
@@ -2668,9 +2672,9 @@ fn download_offer(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>, have: Ha
         _ => None,
     };
     let sub = if !s.data.storage_open() {
-        Some(DECRYPT_NEEDED)
+        Some(&**DECRYPT_NEEDED)
     } else if !s.online() {
-        Some(WLAN_FIRST)
+        Some(&**WLAN_FIRST)
     } else {
         had.as_deref()
     };
@@ -2730,7 +2734,7 @@ fn rom_update(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
 /// What a progress card says of a download, and the share of it done:
 /// what an earlier download left being checked, or the rest coming at
 /// `rate` bytes a second.
-fn downloaded(_l: Lang, progress: Progress, rate: u64) -> (&'static str, String, Option<f32>) {
+fn downloaded(_l: Lang, progress: Progress, rate: u64) -> (Text, String, Option<f32>) {
     match progress {
         Progress::Checking { done, total } => (CHECKING_PART, format!("{} / {}", fmt::file_size(done), fmt::file_size(total)), Some(share(done, total))),
         Progress::Downloading { done, total } => (
@@ -3132,10 +3136,10 @@ pub fn choose(cx: &Ctx, place: Place) -> Frame {
     // none.
     let absent = match (place, medium) {
         (Place::Storage, _) => None,
-        (_, None) => Some((wanted, detail)),
+        (_, None) => Some((&**wanted, &**detail)),
         (_, Some(Medium::Unreadable(why))) => {
             unreadable = crate::t!(hint, why = why);
-            Some((unreadable_name, unreadable.as_str()))
+            Some((&**unreadable_name, unreadable.as_str()))
         }
         (_, Some(Medium::Shown)) => None,
     };
@@ -3286,13 +3290,14 @@ pub fn permissions(cx: &Ctx) -> Frame {
     let top = t.m.content_top;
     let mode = e.mode & 0o7777;
     let bits = fmt::mode(e.mode);
-    let facts = [(NAME, e.name.clone()), (PERMISSIONS, crate::t!(S_TEXT_8, bits = bits, mode = mode))];
+    let octal = format!("{mode:04o}");
+    let facts = [(NAME, e.name.clone()), (PERMISSIONS, crate::t!(S_TEXT_8, bits = bits, mode = octal))];
     let mut y = widgets::info_card(&mut c, t, f, top, &facts);
     let mut out = Vec::new();
     let classes = [(S_OWNER, 6), (S_GROUP, 3), (S_OTHERS, 0)];
     let (read, write, run) = (S_READ_2, S_WRITE, S_EXECUTE);
     let groups = classes.map(|(title, shift)| (title, [(read, 4 << shift), (write, 2 << shift), (run, 1 << shift)]));
-    let special = (S_SPECIAL, [("SUID", 0o4000), ("SGID", 0o2000), (S_STICKY, 0o1000)]);
+    let special = (S_SPECIAL, [(same!("SUID"), 0o4000), (same!("SGID"), 0o2000), (S_STICKY, 0o1000)]);
     for (title, bits) in groups.into_iter().chain([special]) {
         y = widgets::section(&mut c, t, f, y, title);
         let rows = bits.map(|(name, bit)| Row::new(name).trail(Trail::Switch(mode & bit != 0)));
@@ -3465,6 +3470,17 @@ pub fn editor(cx: &Ctx) -> Frame {
     out.extend(keys.into_iter().map(|(rect, key)| Hit { rect, action: Action::TermKey(key) }));
     let button = ed.changed.then_some((widgets::Glyph::Done, Action::SaveText));
     Frame { scrollback: Some((l.card, l.pitch)), caret, button, ..Frame::new(t, c, out, S_EDIT, t.m.content_top) }
+}
+
+/// The languages the pages speak, each named in itself, to speak another.
+pub fn language(cx: &Ctx) -> Frame {
+    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
+    let mut c = long_page(cx);
+    let top = t.m.content_top;
+    let rows: Vec<Row> = Lang::ALL.iter().map(|&k| Row::new(k.name()).trail(Trail::Check(k == l))).collect();
+    let list = widgets::list(&mut c, t, f, top, &rows);
+    let out = hits(&list.rows, &Lang::ALL.map(Action::Language));
+    Frame::new(t, fit(c, t, list.bottom), out, LANGUAGE, top)
 }
 
 /// The time zone the status bar's clock and the times on the pages keep.

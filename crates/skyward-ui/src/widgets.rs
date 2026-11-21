@@ -4,7 +4,7 @@ use crate::fmt;
 use crate::font::{Face, Fonts};
 use crate::geom::Rect;
 use crate::icons::{self, Icon};
-use crate::lang::Lang;
+use crate::lang::{Lang, Text};
 use crate::sprite::Sprite;
 use crate::strings::*;
 use crate::theme::Theme;
@@ -2383,7 +2383,7 @@ pub fn facts(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Fact], tone
 
 /// The About page hardware card: the model in large type (`title` may hold
 /// several lines separated by `\n`), then values with small captions.
-pub fn spec_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, items: &[(&str, String)], tone: &Tone) -> f32 {
+pub fn spec_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, items: &[(Text, String)], tone: &Tone) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
     let x = card_x + m.inner;
@@ -2454,7 +2454,7 @@ pub fn spec_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Spec])
 
 /// Parameters-page card of title-over-value entries; values keep their own
 /// line breaks and wrap to the card.
-pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str, String)]) -> f32 {
+pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(Text, String)]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
     let x = card_x + m.inner;

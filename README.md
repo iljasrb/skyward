@@ -16,8 +16,6 @@ branch: it carries the code, not one phone's files. Device branches add a
 - Installer compatibility/hardening, with `7za`, `zstd` and `unzip` built in
 - Settings persist
 - Safety fixes
-- Separated locales, with `scripts/locales.py` to take a merge of upstream's
-  three-language texts into `locales/en.json` (see `locales/README.md`)
 - An older build or security patch is agreed to by a swipe, not refused
 - Payload data is checked before it is written, and an install waits on
   update_engine itself rather than on helpers that keep its pipes open
@@ -49,7 +47,11 @@ branch: it carries the code, not one phone's files. Device branches add a
 - WLAN
 - MTP file transfer, adb and fastbootd
 - Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
-- Light and dark themes; English
+- Light and dark themes
+- 15 languages: 简体中文, 繁體中文, English, Türkçe, Русский, Українська, Español,
+  Português (Brasil), Bahasa Indonesia, Tiếng Việt, Deutsch, Français, Italiano,
+  Polski and 日本語. Skyward starts in the system's language where it speaks it,
+  and in English otherwise
 
 ## Building
 
@@ -97,8 +99,13 @@ cargo ndk -t arm64-v8a --platform 30 test -p skyward -p skyward-block -p skyward
 
 ## Languages
 
-The pages' texts live in `locales/en.json`, one flat key for each text, in a
-format Crowdin imports and exports. See `locales/README.md`.
+Each language's texts are one file in `crates/skyward-ui/locales`, named by its
+locale: `tr.toml`, `pt-BR.toml`. `en.toml` is the reference, with a comment on
+where each text shows. The build reads every file and stops on a text that is
+missing, or that names a value in braces the English text does not.
+
+To correct a translation, change its text in the language's file. To check how it
+looks, draw the pages in that language with `skyward-preview --lang`.
 
 ## License
 
